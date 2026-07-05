@@ -73,16 +73,51 @@ case "$cmd" in
       echo "typed (NOT submitted; verify then 'agent-ctl.sh submit') -> $id: $text"
     fi ;;
   status)
-    # Classify a single screen snapshot: line 1 = idle|busy|waiting, then a short tail for context.
-    # Reuses agent-wait.sh's markers so inject.sh can branch without blindly pushing into a prompt.
+    # Classify a session: line 1 = idle|busy|waiting, then a short screen tail for context.
+    # We ALWAYS compute BOTH signals and decide on both — neither is reliable alone:
+    #
+    #   (1) NATIVE — agterm's per-session .status from `tree --json` (idle|active|blocked|completed),
+    #       published by a LOCAL agent's Claude Code lifecycle hooks (Stop->completed,
+    #       UserPromptSubmit->active, Notification->blocked). Authoritative but can be STALE (a focused
+    #       session auto-resets on visit) or ABSENT (an SSH agent runs Claude on a remote host that
+    #       can't reach this socket — $AGTERM_SESSION_ID is unset there — so it never sets one).
+    #   (2) SCREEN — a footer-anchored read of the LIVE buffer. The bottom footer is definitive and
+    #       mutually exclusive: idle shows "? for shortcuts", busy "esc to interrupt", a live prompt
+    #       "Esc to cancel" (whose menu can sit above a rendered task list, so scan a wider window for
+    #       it). Anchoring on the footer — NOT the whole screen — is what stops the orchestrator's own
+    #       transcript (which quotes worker prompt strings) from reading as a live prompt. "unknown"
+    #       when the footer shows none of them (e.g. a plain shell, or a self-scrape of a blank frame).
+    #       NB: "← for agents" is in BOTH idle and busy footers, so only "? for shortcuts" means idle.
+    #
+    # DECISION: the LIVE screen wins when it is definitive (it reflects the current frame); native
+    # fills the gap when the screen is inconclusive. So an SSH agent (native none) rides on the screen;
+    # a focused local whose native went stale rides on its live footer; and a self-scrape that catches
+    # a blank frame falls back to native. This never re-blocks a real /o inject (a live idle footer
+    # beats a stale native busy) and never injects into a menu (a menu footer is never "? for shortcuts").
+    native="$("$AGT" tree --json | jq -r --arg id "$id" '
+        .result.tree.workspaces[].sessions[] | select(.id==$id) | (.status // "")' | head -1)"
+    case "$native" in
+      idle|completed) nat=idle ;;
+      active)         nat=busy ;;
+      blocked)        nat=waiting ;;
+      *)              nat=none ;;
+    esac
     txt="$("$AGT" session text --target "$id" --json 2>/dev/null | jq -r '.result.text')"
-    work_re='to run in background|[Ee]sc to interrupt|↓ [0-9]|· ↓'
-    wait_re='(❯|›|>)[[:space:]]*[0-9]+[.)][[:space:]]*(Yes|Allow|Proceed|No)|Do you want to proceed|requires approval|don.?t ask again'
-    if   printf '%s' "$txt" | grep -qE "$wait_re"; then st=waiting
-    elif printf '%s' "$txt" | grep -qE "$work_re"; then st=busy
+    nb="$(printf '%s\n' "$txt" | grep -vE '^[[:space:]]*$')"
+    foot="$(printf '%s\n' "$nb" | tail -6)"
+    region="$(printf '%s\n' "$nb" | tail -20)"
+    busy_re='to run in background|[Ee]sc to interrupt|ctrl\+b|· ↓ [0-9]'
+    idle_re='\? for shortcuts|accept edits on|bypass permissions on|plan mode on'
+    wait_re='Esc to cancel|Do you want to (proceed|create|make)|(❯|›)[[:space:]]*[0-9]+[.)][[:space:]]*(Yes|Allow|Proceed|No)'
+    if   printf '%s' "$foot"   | grep -qE "$busy_re"; then scr=busy
+    elif printf '%s' "$foot"   | grep -qE "$idle_re"; then scr=idle
+    elif printf '%s' "$region" | grep -qE "$wait_re"; then scr=waiting
+    else scr=unknown; fi
+    if   [ "$scr" != unknown ]; then st="$scr"
+    elif [ "$nat" != none ];    then st="$nat"
     else st=idle; fi
     echo "$st"
-    echo "--- screen tail ---"
-    printf '%s\n' "$txt" | grep -vE '^[[:space:]]*$' | tail -12 ;;
+    echo "--- native=${native:-<none>} screen=$scr -> $st ---"
+    printf '%s\n' "$nb" | tail -12 ;;
   *) echo "unknown subcommand: '$cmd'"; exit 1 ;;
 esac

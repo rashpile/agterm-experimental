@@ -34,7 +34,7 @@ non-macOS / non-agterm environments.
 | spawn a worker agent | `scripts/agent-ctl.sh spawn <ws-id\|name-prefix> <name> <cwd> [command]` → prints new id (allow-listed; avoids the ad-hoc `$(agtermctl…\|jq)` pipeline that re-prompts) |
 | view it | `agtermctl session select --target <id>` |
 | read its screen | `agtermctl session text --target <id> [--lines N \| --all] [--pane left\|right]` |
-| classify a session's state | `scripts/agent-ctl.sh status <id>` → `idle\|busy\|waiting` + screen tail |
+| classify a session's state | `scripts/agent-ctl.sh status <id>` → `idle\|busy\|waiting` + screen tail (reads agterm **native** session status first; screen-scrapes only for SSH agents) |
 | answer a prompt / menu | `printf '\r' \| agtermctl session type --stdin --target <id>` |
 | navigation keys | `\r`=Enter, `\x1b[B`=↓, `\x1b[A`=↑, `\x03`=Ctrl-C, `\x7f`=Backspace |
 | send a full instruction | clear input (backspaces) → type → **verify via `session text`** → `\r` |
@@ -155,6 +155,8 @@ payload first and decide** — don't reflexively press Enter. Target a specific 
 | `Enter` does nothing / text won't submit | The box text may be a greyed **prompt suggestion** (ghost), not real input — the box is actually EMPTY, so `\r` submits nothing. `session text` can't tell ghost from real. Don't rely on `submit`; **type the text for real** (`say`) or accept the suggestion first (`key <s> right`, i.e. `\x1b[C`) then `submit`. |
 | Keystrokes dropped | Injecting mid-render/mid-init loses keys — small `sleep` after spawn and between steps. |
 | Worker vanishes on exit | Run workers in real **sessions** (persistent), not overlays (auto-close when the program exits). |
+| `status`/`inject` misread the **orchestrator** as "waiting on a prompt" | Don't classify a Claude session by scraping its screen — its transcript quotes worker prompt strings (`Do you want to proceed`, `❯ 1. Yes`) that a scraper reads as a *live* prompt, wrongly blocking real `/o` injects. **First-class fix:** `agent-ctl.sh status` reads agterm's **native** session status (`idle\|active\|blocked\|completed`, published by the Stop/UserPromptSubmit/Notification hooks in `~/.config/agterm/agent-status/agterm-agent-status.sh` → mapped `idle/completed→idle`, `active→busy`, `blocked→waiting`). |
+| SSH worker always screen-scraped, never native | An **SSH** agent (session `foreground=ssh`) runs Claude on a *remote* host with no `AGTERM_SESSION_ID` and no local socket, so it can't publish native status. `status` detects `foreground=ssh` and falls back to the screen heuristic (anchored on the bottom footer: idle=`? for shortcuts`, busy=`esc to interrupt`, prompt=`Esc to cancel`). Local agents get native; only SSH needs the scrape. |
 
 ## Real-world impact
 Drove a worker agent through a full bug-fix → PR merge → remote Docker deploy → healthcheck: 6 permission
