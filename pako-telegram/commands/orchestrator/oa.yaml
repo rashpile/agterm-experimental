@@ -1,0 +1,6 @@
+name: oa
+description: "Type exact text into the orchestrator (no Enter). Bare word ENTER = Enter keypress."
+command: bash $HOME/.claude/skills/orchestrating-agterm-agents/scripts/oa.sh
+timeout: 15s
+category: ai
+icon: "⌨️"

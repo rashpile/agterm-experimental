@@ -1,0 +1,32 @@
+name: os
+description: "Show the orchestrator's screen (read-only — no prompt sent)"
+command: |
+  export PATH=/opt/homebrew/bin:$PATH
+  regfile="$HOME/.config/orchestrating-agterm-agents/orchestrator_session"
+  target="$(tr -d '[:space:]' < "$regfile" 2>/dev/null)"
+  if [ -z "$target" ]; then
+    echo "orchestrator not registered — start the orchestrating-agterm-agents skill so it registers its session."
+    exit 0
+  fi
+  text="$(/opt/homebrew/bin/agtermctl session text --target "$target" --json 2>/dev/null | jq -r '.result.text')"
+  # Keep the message small and pure-ASCII. The bot wraps command output in a ``` Markdown code
+  # block and BYTE-truncates anything over ~4KB (streamer.go), which splits the terminal's
+  # multi-byte box-drawing/emoji into invalid UTF-8 that Telegram silently rejects (no log).
+  # So: strip to printable ASCII, drop blank/separator lines, cap width + line count + bytes.
+  out="$(printf '%s' "$text" \
+    | LC_ALL=C tr -cd '\11\12\15\40-\176' \
+    | grep -vE '^[[:space:]]*$' \
+    | sed -E 's/[[:space:]]+$//' \
+    | tail -25 \
+    | cut -c1-100 \
+    | tr '\140' "'" \
+    | head -c 3200)"
+  if [ -z "$out" ]; then
+    echo "(orchestrator screen is empty — it's idle right now)"
+  else
+    printf '%s\n' "$out"
+  fi
+timeout: 20s
+max_output: 4000
+category: ai
+icon: "👁️"

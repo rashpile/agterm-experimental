@@ -1,0 +1,14 @@
+name: o
+description: "Send a message to the live agterm orchestrator"
+arguments:
+  - name: message
+    description: "Message for the orchestrator"
+    required: true
+    type: string
+command: |
+  export PATH=/opt/homebrew/bin:$PATH
+  $HOME/.claude/skills/orchestrating-agterm-agents/scripts/inject.sh "{{.message}}"
+timeout: 30s
+max_output: 500
+category: ai
+icon: "🎛️"
