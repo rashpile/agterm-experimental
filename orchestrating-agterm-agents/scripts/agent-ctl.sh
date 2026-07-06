@@ -10,6 +10,7 @@
 #   agent-ctl.sh say    <session> <text...>  # clear input box, type <text>, then submit
 #   agent-ctl.sh id     <name>               # resolve a session name -> id (kills the ad-hoc tree|jq)
 #   agent-ctl.sh select <session>            # bring a session to the foreground (steals focus; rare)
+#   agent-ctl.sh close  <session>            # close a session (e.g. a spawned worker) — allow-listed teardown
 #   agent-ctl.sh ready  <session> [secs]     # block until the worker's Claude box is up (dismisses the
 #                                            #   first-run "trust folder" prompt); default 15s. So the
 #                                            #   orchestrator never hand-rolls raw `session text` polling.
@@ -91,6 +92,9 @@ case "$cmd" in
     # Bring a session to the foreground (steals focus). Rarely needed — read/status populate the buffer
     # without it — but wrapping it keeps even this allow-listed instead of a raw prompting agtermctl call.
     "$AGT" session select --target "$id" >/dev/null && echo "selected -> $id" ;;
+  close)
+    # Close a session (e.g. a worker you spawned) — allow-listed so shutdown/cleanup never prompts.
+    "$AGT" session close --target "$id" >/dev/null && echo "closed -> $id" ;;
   read)
     "$AGT" session text --target "$id" --json | jq -r '.result.text' | tail -n "${1:-20}" ;;
   submit)

@@ -57,6 +57,9 @@ allow-list can't match them — they re-prompt. The fix is stable script paths. 
   (`submit`, `say`, `key enter|esc`) it auto-clears a stale **blocked** glyph on the target (see
   `agterm-clear-status.sh` below); and `id` prints the input unchanged when no name matched, so a caller
   can tell resolve-miss from hit.
+- **`oselfclose.sh`** — the orchestrator's final graceful-shutdown act (see "Graceful shutdown"): clears
+  its Telegram registration and deletes its own workspace, closing this session. Allow-listed so it runs
+  without a prompt over Telegram.
 - **`agterm-clear-status.sh <session-id>`** — smart-clear a stale agterm agent-status. Answering a
   permission prompt is just a keystroke, so no Claude lifecycle hook fires and the session's sidebar
   glyph stays **blocked** (blinking "needs you") even though the agent already resumed. This flips a
@@ -131,6 +134,19 @@ notify.sh --level done      "worker X finished: <result>"       # idle → task 
   when you're **idle**. If you're **busy** it tells the user "resend in a moment"; if a **prompt/menu** is
   up it tells them what's being asked instead of firing text into the menu. So a `[tg]` message you
   receive means you were idle — a clean new turn, never a mid-render keystroke.
+
+## Graceful shutdown (responding to `/oclose`)
+`/oclose` (Telegram) posts `[tg] Graceful shutdown requested…` instead of hard-killing you — so wind
+down cleanly rather than just stopping:
+1. **Close your workers** — `agent-ctl.sh close <worker-id>` for each session you spawned.
+2. **Summarize + sign off** — a couple of lines on what got done: `notify.sh --level done "<summary>"`.
+3. **Close yourself** — `scripts/oselfclose.sh` clears your Telegram registration and deletes your
+   workspace (ending this session). It's your final act; nothing runs after it.
+
+All three are allow-listed, so none prompts — essential, since `/oclose` arrives over Telegram where you
+can't approve a dialog on yourself. If `oselfclose.sh` can't delete the workspace (you're the window's
+only one) it closes just your session; the user can finish with the force close (`oclose.sh force`), the
+escape hatch for a wedged orchestrator.
 
 ## The orchestration loop
 1. **Spawn** — `agent-ctl.sh spawn [--create-workspace] <ws> <name> <cwd>` (defaults the command to the
