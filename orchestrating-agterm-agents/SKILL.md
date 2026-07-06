@@ -47,12 +47,19 @@ Always target by the quoted `--target <id>`, and call `agtermctl` by absolute pa
 
 ## Bundled helper scripts (allow-list these, not ad-hoc pipelines)
 Compound one-liners (`printf … | agtermctl … | jq …`) are a *novel* command each time, so a permission
-allow-list can't match them — they re-prompt. The fix is stable script paths. Two are bundled in
+allow-list can't match them — they re-prompt. The fix is stable script paths. Several are bundled in
 `scripts/`; allow-list them once as `Bash(/abs/path/scripts/<name>:*)`:
 - **`agent-ctl.sh <read|submit|key|type|say> <session> [args]`** — the driving verbs:
   `read <s> [N]` (tail screen), `submit <s>` (Enter), `key <s> enter|down|up|ctrl-c|esc`,
   `type <s> <text>` (clear box + type, no submit), `say <s> <text>` (type + submit). Prefer these over
-  raw `agtermctl session type/text` so the calls stay allow-listable.
+  raw `agtermctl session type/text` so the calls stay allow-listable. After an *answering* verb
+  (`submit`, `say`, `key enter|esc`) it auto-clears a stale **blocked** glyph on the target (below).
+- **`agterm-clear-status.sh <session-id>`** — smart-clear a stale agterm agent-status. Answering a
+  permission prompt is just a keystroke, so no Claude lifecycle hook fires and the session's sidebar
+  glyph stays **blocked** (blinking "needs you") even though the agent already resumed. This flips a
+  *blocked* session to **active**; it no-ops on any other status, so it's safe after any keystroke.
+  Wired into `agent-ctl.sh` (answering verbs), `oapprove.sh` (Telegram approval), and `oa.sh` (when the
+  keystroke batch includes Enter) — so a remotely-approved prompt clears its own attention glyph.
 - **`agent-wait.sh <session> [--stable N] [--interval S] [--timeout T] [--tail L]`** — blocks until the
   worker's screen goes **quiet** (static for N polls), then prints `STATE=waiting|idle`, the new lines
   since the wait started, and the tail. Run it in the background; its exit wakes you to decide. This is

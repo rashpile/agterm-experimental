@@ -51,7 +51,8 @@ case "$cmd" in
   read)
     "$AGT" session text --target "$id" --json | jq -r '.result.text' | tail -n "${1:-20}" ;;
   submit)
-    printf '\r' | "$AGT" session type --stdin --target "$id" >/dev/null && echo "submitted Enter -> $id" ;;
+    printf '\r' | "$AGT" session type --stdin --target "$id" >/dev/null && echo "submitted Enter -> $id"
+    "$(dirname "$0")/agterm-clear-status.sh" "$id" 2>/dev/null || true ;;
   key)
     case "${1:-}" in
       enter)  s=$'\r' ;;   down) s=$'\x1b[B' ;;   up) s=$'\x1b[A' ;;
@@ -59,7 +60,9 @@ case "$cmd" in
       ctrl-c) s=$'\x03' ;; esc)  s=$'\x1b' ;;
       *) echo "unknown key: '${1:-}' (enter|down|up|left|right|ctrl-c|esc)"; exit 1 ;;
     esac
-    printf '%s' "$s" | "$AGT" session type --stdin --target "$id" >/dev/null && echo "sent '$1' -> $id" ;;
+    printf '%s' "$s" | "$AGT" session type --stdin --target "$id" >/dev/null && echo "sent '$1' -> $id"
+    # enter/esc ANSWER a prompt (navigation keys don't) — clear a stale "blocked" glyph only then.
+    case "$1" in enter|esc) "$(dirname "$0")/agterm-clear-status.sh" "$id" 2>/dev/null || true ;; esac ;;
   type|say)
     text="$*"; [ -n "$text" ] || { echo "missing text"; exit 1; }
     # clear any queued text (200 backspaces) then type ours
@@ -68,6 +71,7 @@ case "$cmd" in
     if [ "$cmd" = say ]; then
       sleep 1
       printf '\r' | "$AGT" session type --stdin --target "$id" >/dev/null
+      "$(dirname "$0")/agterm-clear-status.sh" "$id" 2>/dev/null || true
       echo "said + submitted -> $id: $text"
     else
       echo "typed (NOT submitted; verify then 'agent-ctl.sh submit') -> $id: $text"

@@ -31,4 +31,8 @@ for a in "$@"; do
 done
 
 printf '%s' "$payload" | "$AGT" session type --stdin --target "$target"
+
+# If this keystroke batch included an Enter, it answered a prompt — clear a stale "blocked" glyph.
+case "$payload" in *$'\r'*) "$(dirname "$0")/agterm-clear-status.sh" "$target" 2>/dev/null || true ;; esac
+
 echo "sent to orchestrator: $*"
