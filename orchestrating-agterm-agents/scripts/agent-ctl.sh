@@ -8,8 +8,15 @@
 #   agent-ctl.sh key    <session> <key>      # send one key: enter | down | up | ctrl-c | esc
 #   agent-ctl.sh type   <session> <text...>  # clear input box, type <text>, do NOT submit
 #   agent-ctl.sh say    <session> <text...>  # clear input box, type <text>, then submit
-#   agent-ctl.sh spawn  <workspace> <name> <cwd> [command...]   # new session, prints its id
+#   agent-ctl.sh id     <name>               # resolve a session name -> id (kills the ad-hoc tree|jq)
+#   agent-ctl.sh select <session>            # bring a session to the foreground (steals focus; rare)
+#   agent-ctl.sh ready  <session> [secs]     # block until the worker's Claude box is up (dismisses the
+#                                            #   first-run "trust folder" prompt); default 15s. So the
+#                                            #   orchestrator never hand-rolls raw `session text` polling.
+#   agent-ctl.sh spawn  [--create-workspace] <workspace> <name> <cwd> [command...]  # new session, prints id
 #          workspace = id | exact name | name-prefix (e.g. "ops" → "ops ⎇ main")
+#          --create-workspace : reuse the workspace NAMED <workspace> if it exists, else create it
+#                 (idempotent) — so you never drop to a raw `agtermctl workspace new` (which re-prompts).
 #          command defaults to `zsh -ic claude`. Encapsulated so orchestrator spawns stay
 #          allow-listable (no ad-hoc `$(agtermctl … | jq …)` pipeline that re-prompts).
 #
@@ -30,11 +37,20 @@ cmd="${1:?usage: agent-ctl.sh read|submit|key|type|say|spawn <target> [args]}"
 
 # spawn is workspace-targeted — handle before the session-resolution below.
 if [ "$cmd" = spawn ] || [ "$cmd" = new ]; then
+  create_ws=0
+  if [ "${2:-}" = --create-workspace ]; then create_ws=1; shift; fi
   ws="${2:?spawn: missing <workspace> (id | name | name-prefix)}"
   name="${3:?spawn: missing <name>}"
   cwd="${4:?spawn: missing <cwd>}"
   shift 4
   run="${*:-zsh -ic claude}"
+  if [ "$create_ws" = 1 ]; then
+    # Idempotent: agterm reuses the workspace NAMED "$ws" if present, creates it if absent. Keeps the
+    # whole spawn (incl. workspace creation) inside this one allow-listed path — no raw `workspace new`.
+    "$AGT" session new --workspace-name "$ws" --create-workspace \
+        --name "$name" --cwd "$cwd" --command "$run" --json | jq -r '.result.id'
+    exit "${PIPESTATUS[0]:-$?}"
+  fi
   wsid=$("$AGT" tree --json | jq -r --arg w "$ws" \
       '.result.tree.workspaces[] | select(.id==$w or .name==$w or (.name|startswith($w))) | .id' | head -1)
   [ -n "$wsid" ] || wsid="$ws"
@@ -48,6 +64,33 @@ id=$(resolve "$targ")
 shift 2
 
 case "$cmd" in
+  id)
+    # Resolve a session name -> id and print it. resolve() already prints the id (or passes the input
+    # through unchanged if no name matched) — so this just surfaces it without the ad-hoc tree|jq.
+    printf '%s\n' "$id" ;;
+  ready)
+    # Block until the target's freshly-spawned Claude is ready to receive a task: poll the screen,
+    # auto-dismiss the first-run "trust this folder" prompt, and return once the input box footer is up.
+    # Keeps the raw `session text` polling INSIDE this allow-listed path (the orchestrator never runs it).
+    secs="${1:-15}"; iters=$(( secs * 2 )); trusted=0
+    i=0
+    while [ "$i" -lt "$iters" ]; do
+      i=$(( i + 1 )); sleep 0.5
+      txt="$("$AGT" session text --target "$id" --json 2>/dev/null | jq -r '.result.text // ""')"
+      if [ "$trusted" = 0 ] && printf '%s' "$txt" | grep -qi 'trust this folder'; then
+        printf '\r' | "$AGT" session type --stdin --target "$id" >/dev/null 2>&1
+        trusted=1; continue
+      fi
+      # Idle/ready markers: the shortcuts hint, or the input box footer ("for agents" / a token counter).
+      if printf '%s' "$txt" | grep -qE '\? for shortcuts|for agents|[0-9]+ tokens'; then
+        echo "ready -> $id"; exit 0
+      fi
+    done
+    echo "ready: timed out after ${secs}s waiting for $id"; exit 1 ;;
+  select|view)
+    # Bring a session to the foreground (steals focus). Rarely needed — read/status populate the buffer
+    # without it — but wrapping it keeps even this allow-listed instead of a raw prompting agtermctl call.
+    "$AGT" session select --target "$id" >/dev/null && echo "selected -> $id" ;;
   read)
     "$AGT" session text --target "$id" --json | jq -r '.result.text' | tail -n "${1:-20}" ;;
   submit)

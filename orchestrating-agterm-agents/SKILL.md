@@ -27,21 +27,24 @@ model, and hard-won gotchas (TTY shell-wrap, bare-PATH, id-not-name).
 non-macOS / non-agterm environments.
 
 ## Quick reference
+**Drive through the allow-listed `agent-ctl.sh` verbs, not raw `agtermctl`** — every raw call (or
+`…|jq` pipeline) is a novel command that re-prompts for permission (and bumps the session's red
+notification badge). The verbs below keep the whole loop allow-listed.
+
 | Goal | Command |
 |---|---|
-| find a session id by name | `agtermctl tree --json \| jq -r '.result.tree.workspaces[].sessions[]\|select(.name=="agent").id'` |
-| find a workspace id | `agtermctl tree --json \| jq -r '.result.tree.workspaces[]\|select(.name\|startswith("ops")).id'` |
-| spawn a worker agent | `scripts/agent-ctl.sh spawn <ws-id\|name-prefix> <name> <cwd> [command]` → prints new id (allow-listed; avoids the ad-hoc `$(agtermctl…\|jq)` pipeline that re-prompts) |
-| view it | `agtermctl session select --target <id>` |
-| read its screen | `agtermctl session text --target <id> [--lines N \| --all] [--pane left\|right]` |
-| classify a session's state | `scripts/agent-ctl.sh status <id>` → `idle\|busy\|waiting` + screen tail (reads agterm **native** session status first; screen-scrapes only for SSH agents) |
-| answer a prompt / menu | `printf '\r' \| agtermctl session type --stdin --target <id>` |
-| navigation keys | `\r`=Enter, `\x1b[B`=↓, `\x1b[A`=↑, `\x03`=Ctrl-C, `\x7f`=Backspace |
-| send a full instruction | clear input (backspaces) → type → **verify via `session text`** → `\r` |
+| resolve a session name → id | `scripts/agent-ctl.sh id <name>` (replaces the ad-hoc `tree\|jq`) |
+| spawn a worker agent | `scripts/agent-ctl.sh spawn [--create-workspace] <ws-id\|name> <name> <cwd> [command]` → prints new id. `--create-workspace` makes/reuses the workspace **by name** (idempotent) so you never touch raw `workspace new` |
+| wait until a fresh worker is ready | `scripts/agent-ctl.sh ready <id> [secs]` — dismisses the first-run "trust folder" prompt, returns when the input box is up (no hand-rolled `session text` polling) |
+| read its screen | `scripts/agent-ctl.sh read <id> [N]` (replaces raw `session text`) |
+| classify a session's state | `scripts/agent-ctl.sh status <id>` → `idle\|busy\|waiting` + screen tail (reads agterm **native** status first; screen-scrapes only for SSH agents) |
+| send a full instruction | `scripts/agent-ctl.sh say <id> <text>` (clear box → type → submit), or `type` → **verify via `read`** → `submit` |
+| answer a prompt / menu | `scripts/agent-ctl.sh submit <id>` (Enter) · `key <id> down\|up\|esc\|enter` for a multi-choice menu |
 | wait for the worker to stop | `scripts/agent-wait.sh <session-id>` (returns `STATE=waiting\|idle` + tail) |
 | ping the human on Telegram | `scripts/notify.sh --level done\|attention\|info <message>` |
 | register THIS session as `/o` target (**only when the user explicitly asks**) | `scripts/register.sh` |
 | (inbound) Telegram `/o <msg>` injects `[tg] <msg>` here | handled by pako-telegram → `scripts/inject.sh` |
+| (rare) bring a session to the foreground | `scripts/agent-ctl.sh select <id>` — steals focus; `read`/`status` populate the buffer without it, so you rarely need this |
 
 Always target by the quoted `--target <id>`, and call `agtermctl` by absolute path in scripts.
 
@@ -49,11 +52,11 @@ Always target by the quoted `--target <id>`, and call `agtermctl` by absolute pa
 Compound one-liners (`printf … | agtermctl … | jq …`) are a *novel* command each time, so a permission
 allow-list can't match them — they re-prompt. The fix is stable script paths. Several are bundled in
 `scripts/`; allow-list them once as `Bash(/abs/path/scripts/<name>:*)`:
-- **`agent-ctl.sh <read|submit|key|type|say> <session> [args]`** — the driving verbs:
-  `read <s> [N]` (tail screen), `submit <s>` (Enter), `key <s> enter|down|up|ctrl-c|esc`,
-  `type <s> <text>` (clear box + type, no submit), `say <s> <text>` (type + submit). Prefer these over
-  raw `agtermctl session type/text` so the calls stay allow-listable. After an *answering* verb
-  (`submit`, `say`, `key enter|esc`) it auto-clears a stale **blocked** glyph on the target (below).
+- **`agent-ctl.sh <spawn|ready|id|read|status|type|say|submit|key> <session> [args]`** — the driving
+  verbs (usage in the Quick reference above). Two behaviours worth knowing: after an *answering* verb
+  (`submit`, `say`, `key enter|esc`) it auto-clears a stale **blocked** glyph on the target (see
+  `agterm-clear-status.sh` below); and `id` prints the input unchanged when no name matched, so a caller
+  can tell resolve-miss from hit.
 - **`agterm-clear-status.sh <session-id>`** — smart-clear a stale agterm agent-status. Answering a
   permission prompt is just a keystroke, so no Claude lifecycle hook fires and the session's sidebar
   glyph stays **blocked** (blinking "needs you") even though the agent already resumed. This flips a
@@ -130,18 +133,21 @@ notify.sh --level done      "worker X finished: <result>"       # idle → task 
   receive means you were idle — a clean new turn, never a mid-render keystroke.
 
 ## The orchestration loop
-1. **Spawn** — `session new --workspace <ws-ID> … --command "zsh -ic claude"` (shell-wrapped for a TTY),
-   capture `.result.id`. `--workspace` needs the workspace **id** (or its full name incl. any ` ⎇ branch`
-   suffix) — a bare base name like `ops` fails; resolve the id from `tree --json` first.
-2. **Prompt** — clear the worker's input box with backspaces, type the task, **read it back with
-   `session text` to confirm it rendered**, then a *separate* `\r` to submit. (Verify before firing.)
+1. **Spawn** — `agent-ctl.sh spawn [--create-workspace] <ws> <name> <cwd>` (defaults the command to the
+   TTY-wrapped `zsh -ic claude`), which prints the new id. Give the worker a **unique name** and then
+   **drive it by that name** — every verb resolves name→id internally, so you never hand-retype a 36-char
+   UUID (a real source of typos that fire keystrokes into a nonexistent session). Use `--create-workspace`
+   when the workspace may not exist yet (idempotent, by name) instead of a raw `workspace new`.
+2. **Wait until ready, then prompt** — `agent-ctl.sh ready <name>` (returns once the box is up, trust
+   prompt dismissed), then `agent-ctl.sh say <name> <task>` (clear box → type → submit). If you want to
+   eyeball the task before it fires, `type` then `read` to confirm it rendered, then `submit`. (Verify
+   before firing.)
 3. **Supervise (wake-on-quiescence).** Run `agent-wait.sh <id>` in the background; it returns when the
-   worker's screen goes quiet, with `STATE=waiting|idle` + the new lines + tail. Read it and act:
-   `waiting` → inject `\r` (or `↓`×N + `\r` for a real multi-choice); `idle` → the task is done. Relaunch
-   `agent-wait.sh` after each action, until done. **No prompt-wording match needed** — it keys on the
-   screen going static, so it works across Claude, Codex, etc. unchanged. (Proven: slept through 20s of
-   Codex streaming, `POLLS=13`, then returned idle; woke as `waiting` on Codex's approval prompt.)
-4. **Collect** — the `idle` payload's tail is the result; `session text --all` for the full transcript.
+   worker's screen goes quiet, with `STATE=waiting|idle` + new lines + tail. Read it and act: `waiting`
+   → `submit` (or `key down`×N then `submit` for a real multi-choice); `idle` → task done. Relaunch
+   `agent-wait.sh` after each action, until done. It keys on the screen going static — no prompt-wording
+   match — so it works across Claude, Codex, etc. unchanged.
+4. **Collect** — the `idle` payload's tail is the result; `read <id> 200` for more of the transcript.
 
 Why not blind auto-approve? A loop that just presses Enter on any confirmation is cheaper but only safe
 for trusted yes/no, and it has to match each harness's prompt wording. Wake-on-quiescence puts *your*
@@ -157,21 +163,18 @@ payload first and decide** — don't reflexively press Enter. Target a specific 
 ## Common mistakes
 | Mistake | Fix |
 |---|---|
+| Dropping to raw `agtermctl` / `…\|jq` for a spawn-lifecycle step (create a workspace, wait for readiness, resolve a name→id, read the screen) | Each raw call re-prompts (and bumps the target's notification badge). The verbs cover the whole loop — `spawn --create-workspace`, `ready`, `id`, `read`, `status`; only `session select` has no wrapper (rare). |
+| Hand-retyping a worker's 36-char UUID (typo → keystrokes fire into a nonexistent session) | Give the worker a **unique name** at spawn and drive it **by name** — every verb resolves name→id internally. Only materialize the id (`agent-ctl.sh id <name>`) when a script genuinely needs the raw value. |
 | `agtermctl`/`jq` silently "not found" | agterm & the allow-list run scripts with a **bare PATH** (`/usr/bin:/bin`). Use the absolute `/opt/homebrew/bin/agtermctl`, or `export PATH="/opt/homebrew/bin:$PATH"` at the top of scripts. |
 | Wrong session driven | Several sessions are named `agent` — resolve and target by **id**, not name. |
 | `no such workspace` on spawn | Workspace names carry a ` ⎇ <branch>` suffix (e.g. `ops ⎇ main`), so `--workspace ops` fails. Pass the workspace **id** from `tree --json`, or the exact full name. |
 | Expecting a `waiting` that never comes | Read-only/allow-listed commands (e.g. `git log`) run with no confirmation, so `agent-wait` returns `idle`, not `waiting` — correct, nothing to approve. |
 | `agent-wait` wakes early / mid-run | A tool that runs without ticking output can look static. `agent-wait` guards with spinner markers (`to run in background\|esc to interrupt\|↓ [0-9]`) and needs `--stable` consecutive identical polls (default 3) — keep it ≥3 so a momentary lull isn't read as done. |
 | `agent-wait` **never** returns while a prompt is up (loops to timeout) | When the worker runs **parallel** sub-agent tasks, the "❯ 1. Yes" approval prompt shows *alongside* a still-running task's `(ctrl+b to run in background)` marker. That marker matches the busy-guard, resetting stability forever so the pending prompt is masked. Fixed in `agent-wait.sh`: a choice/permission prompt (`wait_re`, incl. "Do you want to proceed"/"requires approval") now **wins over** the busy-guard and returns immediately as `STATE=waiting ENDED=prompt`. If you see an old copy hang, update the script. |
-| Heavy read-only investigation = **many** approval prompts | A worker that fans out to a research sub-agent generates a distinct compound `Bash(...)` per probe, each needing approval (~18 in one backup-enumeration run). This is the wake-on-quiescence loop working as designed — approve each `waiting` (read the payload, it's read-only) until `idle`. Don't pick the blanket "don't ask again for `docker system`/`docker image`/`docker volume` *" option: those globs also cover destructive `prune`/`rm`. |
+| Heavy read-only investigation = **many** approval prompts | A worker fanning out to sub-agents makes a distinct `Bash(...)` per probe, each needing approval (~18 in one run) — the loop working as designed; approve each read-only `waiting` until `idle`. Don't pick a blanket "don't ask again for `docker system/image/volume *`": those globs also cover destructive `prune`/`rm`. |
 | Clearing input eats queued text | The worker's box may hold text the user typed — `session text` FIRST, don't blind-clear. |
 | `Enter` does nothing / text won't submit | The box text may be a greyed **prompt suggestion** (ghost), not real input — the box is actually EMPTY, so `\r` submits nothing. `session text` can't tell ghost from real. Don't rely on `submit`; **type the text for real** (`say`) or accept the suggestion first (`key <s> right`, i.e. `\x1b[C`) then `submit`. |
 | Keystrokes dropped | Injecting mid-render/mid-init loses keys — small `sleep` after spawn and between steps. |
 | Worker vanishes on exit | Run workers in real **sessions** (persistent), not overlays (auto-close when the program exits). |
-| `status`/`inject` misread the **orchestrator** as "waiting on a prompt" | Don't classify a Claude session by scraping its screen — its transcript quotes worker prompt strings (`Do you want to proceed`, `❯ 1. Yes`) that a scraper reads as a *live* prompt, wrongly blocking real `/o` injects. **First-class fix:** `agent-ctl.sh status` reads agterm's **native** session status (`idle\|active\|blocked\|completed`, published by the Stop/UserPromptSubmit/Notification hooks in `~/.config/agterm/agent-status/agterm-agent-status.sh` → mapped `idle/completed→idle`, `active→busy`, `blocked→waiting`). |
-| SSH worker always screen-scraped, never native | An **SSH** agent (session `foreground=ssh`) runs Claude on a *remote* host with no `AGTERM_SESSION_ID` and no local socket, so it can't publish native status. `status` detects `foreground=ssh` and falls back to the screen heuristic (anchored on the bottom footer: idle=`? for shortcuts`, busy=`esc to interrupt`, prompt=`Esc to cancel`). Local agents get native; only SSH needs the scrape. |
-
-## Real-world impact
-Drove a worker agent through a full bug-fix → PR merge → remote Docker deploy → healthcheck: 6 permission
-prompts auto-approved unattended, container recreated **healthy**, result read back over the socket — the
-orchestrator never touched the worker's keyboard by hand.
+| `status`/`inject` misread the **orchestrator** as "waiting on a prompt" | Screen-scraping a Claude session false-positives on prompt strings it quoted in its own transcript (`Do you want to proceed`, `❯ 1. Yes`), wrongly blocking real `/o` injects. `agent-ctl.sh status` instead reads agterm's **native** session status (published by the Stop/UserPromptSubmit/Notification hooks → `idle/completed→idle`, `active→busy`, `blocked→waiting`). |
+| SSH worker always screen-scraped, never native | An **SSH** agent (`foreground=ssh`) runs Claude on a remote host with no `AGTERM_SESSION_ID`/local socket, so it can't publish native status. `status` detects `foreground=ssh` and falls back to the footer heuristic (idle=`? for shortcuts`, busy=`esc to interrupt`, prompt=`Esc to cancel`). Local agents get native; only SSH needs the scrape. |
