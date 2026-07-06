@@ -40,7 +40,7 @@ non-macOS / non-agterm environments.
 | send a full instruction | clear input (backspaces) → type → **verify via `session text`** → `\r` |
 | wait for the worker to stop | `scripts/agent-wait.sh <session-id>` (returns `STATE=waiting\|idle` + tail) |
 | ping the human on Telegram | `scripts/notify.sh --level done\|attention\|info <message>` |
-| register THIS session as the Telegram `/o` target | `scripts/register.sh` |
+| register THIS session as `/o` target (**only when the user explicitly asks**) | `scripts/register.sh` |
 | (inbound) Telegram `/o <msg>` injects `[tg] <msg>` here | handled by pako-telegram → `scripts/inject.sh` |
 
 Always target by the quoted `--target <id>`, and call `agtermctl` by absolute path in scripts.
@@ -74,8 +74,11 @@ allow-list can't match them — they re-prompt. The fix is stable script paths. 
   don't retry.
 - **`register.sh`** — records this session's `$AGTERM_SESSION_ID` in
   `~/.config/orchestrating-agterm-agents/orchestrator_session` so the Telegram `/o` command can inject
-  into you. Run once on activation. Allow-listed, so it runs without a prompt. `inject.sh` (the inbound
-  half) is invoked by pako-telegram, not by you.
+  into you. **Run ONLY when the user explicitly asks to make THIS session the Telegram target** — never
+  automatically on skill load. The `/ostart` command already registers the orchestrator it bootstraps,
+  so the normal path needs no manual call. "Newer wins": the latest registration is the live target.
+  Allow-listed, so it runs without a prompt. `inject.sh` (the inbound half) is invoked by pako-telegram,
+  not by you.
 
 ## Notifying the user
 The orchestrator runs unattended, so **surface anything a human must see** instead of silently waiting.
@@ -90,9 +93,12 @@ notify.sh --level done      "worker X finished: <result>"       # idle → task 
 
 ## Remote control via Telegram (inbound)
 `notify.sh` is outbound; this is the return path so the user can drive you from their phone.
-- **On activation, register yourself:** run `scripts/register.sh` once. It records this session's
-  `$AGTERM_SESSION_ID` so the Telegram `/o` command knows which session to inject into. "Newer wins" —
-  if you re-run it (or a new orchestrator starts), the latest registration is the live target.
+- **Registration is opt-in — do NOT auto-register on activation.** The Telegram `/o` target is set by
+  `register.sh`, but only run it when the user **explicitly** asks to make this session the target (e.g.
+  "register this session for Telegram" / "make this the orchestrator"). The `/ostart` command already
+  registers the session it bootstraps, so the standard flow needs no manual registration. Auto-
+  registering on every skill load would silently steal `/o` from the session the user actually meant.
+  "Newer wins" — the latest registration is the live target.
 - **Messages prefixed `[tg] ` came from Telegram**, not the local keyboard. The user is remote, so
   **reply via `notify.sh`** (not just terminal output), and keep replies short for phone reading:
   `notify.sh --level info "<answer>"`. A message with no prefix is a local turn — behave as today.

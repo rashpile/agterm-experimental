@@ -58,7 +58,7 @@ done
 # 5. Kick it into orchestrator + Telegram mode. The [tg] prefix also trips the auto-load hook, and
 #    `say` clears the box, types, then submits.
 "$here/agent-ctl.sh" say "$id" \
-  "[tg] Run the orchestrating-agterm-agents skill — we are in Telegram mode. Register this session as the orchestrator and reply to me via notify.sh." \
+  "[tg] Run the orchestrating-agterm-agents skill — we are in Telegram mode. This session is already registered as the Telegram /o target (ostart did it); reply to me via notify.sh." \
   >/dev/null 2>&1
 
 # 6. Confirm to Telegram.
