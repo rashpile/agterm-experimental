@@ -15,6 +15,7 @@ remotely from Telegram.
 | Path | What it is |
 |------|-----------|
 | [`orchestrating-agterm-agents/`](orchestrating-agterm-agents/) | A Claude Code **skill**: one orchestrator agent spawns, reads, and drives worker agents in separate agterm sessions — plus a Telegram remote-control loop. |
+| [`commands/`](commands/) | Small standalone **agterm commands** — shell scripts bound to keymap chords via `agtermctl`. See [Commands](#commands). |
 
 The remote-control side is transport-agnostic — the skill just needs *something* on the Mac that can run
 a shell command. I use **[pako-telegram](https://github.com/rashpile/pako-telegram)** (a bot that runs
@@ -27,6 +28,34 @@ session's screen, and **type** into it. That's the entire loop needed to run a *
 in its own session — and supervise it to completion. A real multi-agent system, on one Mac, in visible
 terminals you can watch and take over at any time. Layer a Telegram bridge on top and you can drive it
 from your phone.
+
+## Commands
+
+Standalone shell scripts under [`commands/`](commands/), each a small self-contained agterm tool driven
+through `agtermctl`. Every command lives in its own folder with its script and setup.
+
+### quickloc — quick session locations
+
+Harpoon-style session marks: pin up to 5 sessions to slots `1`–`5` and jump between them with two
+keystrokes. Files: [`commands/quickloc/`](commands/quickloc/).
+
+**Usage**
+
+| Chord | Action |
+|-------|--------|
+| `ctrl+b` `m` `N` | Mark the current session as slot **N** (1–5) |
+| `ctrl+b` `N` | Jump to the session marked slot **N** |
+
+**How it works.** The mark *is* the session name — slot N shows as a `[N]` tag prefixed to the name
+(e.g. `top` → `[1] top`), so marks are visible in the sidebar, survive restarts, and need no state
+file. Marking uses a nested leader (`ctrl+b` → `m` → digit); jumping uses the plain two-key
+`ctrl+b` → digit.
+
+- **Re-marking moves the tag.** Marking slot N on a new session strips `[N]` from the previous holder
+  and adds it to the current one — each slot points at exactly one session.
+- **Multi-slot is allowed.** A session pinned to two slots merges and sorts its tags (`[1][2] top`).
+- **Names are the source of truth.** Renaming a session to include `[3]` makes it slot 3; removing the
+  tag unmarks it. Non-slot brackets (e.g. `[On]`) are left untouched.
 
 ## Requirements
 
