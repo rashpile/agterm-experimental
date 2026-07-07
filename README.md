@@ -57,11 +57,37 @@ file. Marking uses a nested leader (`ctrl+b` → `m` → digit); jumping uses th
 - **Names are the source of truth.** Renaming a session to include `[3]` makes it slot 3; removing the
   tag unmarks it. Non-slot brackets (e.g. `[On]`) are left untouched.
 
+### scratch — quick scratch files
+
+Create and reopen throwaway files (`txt` / `json` / `html` / `markdown`) without leaving the keyboard.
+Each opens in a full-coverage agterm overlay, edited with `nvim`. Files:
+[`commands/scratch/`](commands/scratch/).
+
+**Usage**
+
+| Chord | Action |
+|-------|--------|
+| `cmd+shift+n` `n` | **New** — pick a type, create `scratch_<N>.<ext>`, open in `nvim` (INSERT mode) |
+| `cmd+shift+n` `o` | **Open** — fzf-pick an existing scratch (newest first, `bat` preview) |
+| `cmd+shift+n` `l` | **Last** — reopen the most recently opened scratch, no picker |
+| `cmd+shift+n` `w` | **New workspace** |
+
+Scratches live in `~/.config/agterm-projects/scratches/`; `scratch_<N>` uses the next free number across
+all types.
+
+- **Last-opened is tracked, not guessed.** Every open writes the path to a hidden `.last` pointer, so
+  `>l` reopens the file you actually last touched (a file's mtime doesn't change on open). If there's no
+  valid last file, `>l` falls back to the picker.
+- **Plain editor.** `nvim` launches with the nvim-tree plugin guard set, so a scratch is always a bare
+  editor even if your config auto-opens a file tree.
+
 ## Requirements
 
 - macOS with [agterm](https://agterm.com) **≥ 0.5.0** (needed for `session text`)
 - `agtermctl` (bundled with the agterm Homebrew cask)
 - [Claude Code](https://claude.ai/code) — for the skill
+- `nvim` and [`fzf`](https://github.com/junegunn/fzf) — for the **scratch** command
+  (`bat` optional, for the open-picker preview)
 - *(optional)* any transport that can run a shell command on the Mac — e.g.
   [pako-telegram](https://github.com/rashpile/pako-telegram) — for remote control
 
