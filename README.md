@@ -81,6 +81,27 @@ all types.
 - **Plain editor.** `nvim` launches with the nvim-tree plugin guard set, so a scratch is always a bare
   editor even if your config auto-opens a file tree.
 
+### update-agterm — check for a new release
+
+Check whether a newer agterm release is out before upgrading. Compares the installed version against
+the latest GitHub release; if you're behind, it renders the changelog for **every** release in the gap
+(via `glow`) and asks before touching Homebrew. Files: [`commands/update-agterm/`](commands/update-agterm/).
+
+**Usage**
+
+| Chord | Action |
+|-------|--------|
+| `ctrl+b` `u` | Check for an update — show release notes, then ask before upgrading |
+
+- **Check-first, never surprises you.** If already on the latest it just says so and exits; only when
+  behind does it prompt `Update to X now? [y/N]`, running `brew update && brew upgrade --cask agterm`
+  only on `y`.
+- **Full gap changelog.** Uses `sort -V` to select every release newer than what's installed, so several
+  versions behind still shows all the notes, not just the newest.
+- **Runs in the "processes" workspace, not an overlay** — an overlay auto-closes when its program exits,
+  and the y/N prompt needs a persistent TTY. Depends on the `run-in-processes` helper and `glow` +
+  `jq`.
+
 ## Requirements
 
 - macOS with [agterm](https://agterm.com) **≥ 0.5.0** (needed for `session text`)
