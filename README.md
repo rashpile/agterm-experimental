@@ -16,6 +16,7 @@ remotely from Telegram.
 |------|-----------|
 | [`orchestrating-agterm-agents/`](orchestrating-agterm-agents/) | A Claude Code **skill**: one orchestrator agent spawns, reads, and drives worker agents in separate agterm sessions — plus a Telegram remote-control loop. |
 | [`commands/`](commands/) | Small standalone **agterm commands** — shell scripts bound to keymap chords via `agtermctl`. See [Commands](#commands). |
+| [`config/agterm-tree/`](config/agterm-tree/) | A **file tree panel** for agterm — nvim-tree in the right split, files opening into overlays. Built entirely on the control API; no app changes. |
 
 The remote-control side is transport-agnostic — the skill just needs *something* on the Mac that can run
 a shell command. I use **[pako-telegram](https://github.com/rashpile/pako-telegram)** (a bot that runs
