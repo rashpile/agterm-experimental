@@ -99,6 +99,19 @@ require("lazy").setup({
                         return { desc = "NvimTree: " .. desc, buffer = bufnr, noremap = true, silent = true, nowait = true }
                     end
 
+                    -- Treat a node as a directory if it IS one, or is a symlink that resolves to one.
+                    -- nvim-tree gives a symlinked directory type == "link" (with link_to set), NOT
+                    -- "directory" — so a bare `node.type == "directory"` check skips it, and every
+                    -- open/expand path below misroutes a symlinked folder into the FILE branch (it
+                    -- gets previewed instead of expanding). api.node.open.edit() expands a
+                    -- link-to-dir fine; only the guards were wrong. A symlink to a FILE stays a file.
+                    local function is_dir(node)
+                        if not node then return false end
+                        if node.type == "directory" then return true end
+                        return node.type == "link" and node.link_to ~= nil
+                            and vim.fn.isdirectory(node.link_to) == 1
+                    end
+
                     -- Default mappings
                     api.config.mappings.default_on_attach(bufnr)
 
@@ -124,7 +137,7 @@ require("lazy").setup({
                     vim.keymap.set("n", "<LeftRelease>", function()
                         local node = api.tree.get_node_under_cursor()
                         if not node then return end
-                        if node.type == "directory" then
+                        if is_dir(node) then
                             api.node.open.edit()          -- expand / collapse
                         else
                             api.node.open.preview()       -- ephemeral preview, keeps tree focus
@@ -133,7 +146,7 @@ require("lazy").setup({
                     vim.keymap.set("n", "<2-LeftMouse>", function()
                         local node = api.tree.get_node_under_cursor()
                         if not node then return end
-                        if node.type == "directory" then api.node.open.edit() else pin_open() end
+                        if is_dir(node) then api.node.open.edit() else pin_open() end
                     end, opts("Double click: open & pin file as a tab"))
                     vim.keymap.set("n", "h", api.node.navigate.parent_close, opts("Close Directory"))
                     vim.keymap.set("n", "v", api.node.open.vertical, opts("Open: Vertical Split"))
@@ -179,7 +192,7 @@ require("lazy").setup({
                         if not dir or dir == "" then dir = vim.fn.getcwd() end
                         local arg = ""
                         local node = api.tree.get_node_under_cursor()
-                        if node and node.type ~= "directory" and node.absolute_path then
+                        if node and not is_dir(node) and node.absolute_path then
                             local tf = vim.fn.tempname()
                             vim.fn.writefile({ node.absolute_path }, tf)
                             arg = " " .. tf   -- tempname is space/quote-free → safe inside the quotes
@@ -200,7 +213,7 @@ require("lazy").setup({
                     -- root as cwd, not vim.fn.getcwd() (same idiom as gc above).
                     vim.keymap.set("n", "gd", function()
                         local node = api.tree.get_node_under_cursor()
-                        if not node or node.type == "directory" or not node.absolute_path then
+                        if not node or is_dir(node) or not node.absolute_path then
                             vim.notify("gd: put the cursor on a file", vim.log.levels.WARN)
                             return
                         end
@@ -252,7 +265,7 @@ require("lazy").setup({
                         local function quicklook()
                             local node = api.tree.get_node_under_cursor()
                             if not node then return end
-                            if node.type == "directory" then
+                            if is_dir(node) then
                                 api.node.open.edit()   -- expand / collapse
                             elseif node.absolute_path then
                                 vim.fn.jobstart(
@@ -268,7 +281,7 @@ require("lazy").setup({
                         local function open_persistent()
                             local node = api.tree.get_node_under_cursor()
                             if not node then return end
-                            if node.type == "directory" then
+                            if is_dir(node) then
                                 api.node.open.edit()   -- expand / collapse
                             elseif node.absolute_path then
                                 -- tree root, not vim.fn.getcwd() (same idiom as gc/gY above)
@@ -288,7 +301,7 @@ require("lazy").setup({
                         vim.keymap.set("n", "o", open_persistent, opts("Open in persistent nvim-ide"))
                         vim.keymap.set("n", "<LeftRelease>", function()
                             local node = api.tree.get_node_under_cursor()
-                            if node and node.type == "directory" then api.node.open.edit() end
+                            if node and is_dir(node) then api.node.open.edit() end
                         end, opts("Single click: expand directory"))
                         -- gm: git-changed only. Toggle git_clean AND gitignore together — ignored
                         -- files have git status "!!" (non-empty), so git_clean alone keeps showing them.
@@ -302,7 +315,7 @@ require("lazy").setup({
                         -- an `mp`/`pm` sequence could ever complete.
                         vim.keymap.set("n", "gp", function()
                             local node = api.tree.get_node_under_cursor()
-                            if not node or node.type == "directory" or not node.absolute_path then return end
+                            if not node or is_dir(node) or not node.absolute_path then return end
                             local path = node.absolute_path
                             local ext = path:lower():match("%.(%w+)$")
                             if ext ~= "md" and ext ~= "markdown" and ext ~= "mdx" then
@@ -333,7 +346,7 @@ require("lazy").setup({
                         -- gc does). Uses glow-style.json when present.
                         vim.keymap.set("n", "gl", function()
                             local node = api.tree.get_node_under_cursor()
-                            if not node or node.type == "directory" or not node.absolute_path then return end
+                            if not node or is_dir(node) or not node.absolute_path then return end
                             local path = node.absolute_path
                             local ext = path:lower():match("%.(%w+)$")
                             if ext ~= "md" and ext ~= "markdown" and ext ~= "mdx" then

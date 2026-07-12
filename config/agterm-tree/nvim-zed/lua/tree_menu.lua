@@ -59,7 +59,11 @@ end
 local function node_ctx(node)
     local api = require("nvim-tree.api")
     local abs = node.absolute_path
+    -- A symlinked directory is type == "link" (with link_to set), NOT "directory" — so a bare check
+    -- would hand it the FILE menu (Open / Review File) instead of the directory one (Shell here,
+    -- Set as tree root). A symlink to a file stays a file.
     local is_dir = node.type == "directory"
+        or (node.type == "link" and node.link_to ~= nil and vim.fn.isdirectory(node.link_to) == 1)
 
     -- tree ROOT, not vim.fn.getcwd() — the tree can be re-rooted (C/u) and the cwd doesn't follow.
     local root
