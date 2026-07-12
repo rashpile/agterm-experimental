@@ -353,6 +353,41 @@ require("lazy").setup({
                                 "--size-percent", "85",
                             }, { detach = true })
                         end, opts("Glow markdown in overlay (gl)"))
+
+                        -- Context menu for the node under the cursor, defined in
+                        -- ~/.config/agterm-projects/tree-menu.yaml (see lua/tree_menu.lua).
+                        -- nvim's built-in PopUp is a BUFFER menu (Paste / Select All / Inspect) —
+                        -- nothing in it acts on the file you're pointing at. This is the file menu.
+                        local function context_menu()
+                            require("tree_menu").open({
+                                quicklook = quicklook, persistent = open_persistent,
+                            })
+                        end
+                        vim.keymap.set("n", "<leader>m", context_menu, opts("Context menu"))
+
+                        -- Right-click. nvim's default mousemodel=popup_setpos CONSUMES <RightMouse>
+                        -- to raise its own PopUp, so a mapping never sees the click. `extend` frees
+                        -- it — buffer-local, so nvim's PopUp still works everywhere else.
+                        vim.opt_local.mousemodel = "extend"
+                        -- Open the menu on RELEASE, not press. fzf-lua renders vim.ui.select as a
+                        -- TERMINAL float that must be in terminal-mode to take keys. Opening it on
+                        -- <RightMouse> leaves the <RightRelease> still queued: it lands in the
+                        -- newly-focused float, drops it out of terminal-mode into normal mode, and
+                        -- then nothing navigates (nvim owns the keys, fzf never sees them). Binding
+                        -- the release means no mouse event survives the click. Swallow the press so
+                        -- it does nothing on its own.
+                        vim.keymap.set("n", "<RightMouse>", "<Nop>", opts("(right-click press)"))
+                        vim.keymap.set("n", "<RightRelease>", function()
+                            -- Cursor to the row that was CLICKED, not wherever it already was.
+                            -- getmousepos() reads the click position directly — a <LeftMouse>
+                            -- keycode can't be spelled in a Lua string for :normal.
+                            local m = vim.fn.getmousepos()
+                            if m.winid ~= 0 and m.line > 0 then
+                                pcall(vim.api.nvim_set_current_win, m.winid)
+                                pcall(vim.api.nvim_win_set_cursor, m.winid, { m.line, 0 })
+                            end
+                            vim.schedule(context_menu)
+                        end, opts("Context menu (right-click)"))
                     end
                 end,
             })
@@ -567,6 +602,10 @@ require("lazy").setup({
         dependencies = { "nvim-tree/nvim-web-devicons" },
         config = function()
             require("fzf-lua").setup({})
+            -- Render every vim.ui.select through fzf (a floating picker). Without it the default
+            -- renderer draws a numbered list in the command line — which cmdheight=0 leaves almost
+            -- no room for. The tree's context menu is a vim.ui.select, so it needs this.
+            require("fzf-lua").register_ui_select()
             -- Switch between currently OPEN files (most-recent first)
             vim.keymap.set("n", "<leader><leader>", "<cmd>FzfLua buffers<cr>", { desc = "Switch open file" })
             -- History of files opened previously (persists across sessions)

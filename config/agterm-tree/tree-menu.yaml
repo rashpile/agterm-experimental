@@ -1,0 +1,150 @@
+# tree-menu.yaml — context menu for the nvim-zed file tree (<leader>m, or right-click).
+# Edit and re-open the menu; no restart (the tree re-reads this when its mtime changes).
+#
+# Each entry:
+#   name:    label (required)
+#   cmd:     shell command. $VARS below are substituted SHELL-ESCAPED — do NOT quote them yourself,
+#            paths with spaces already work. Runs with cwd = tree root.
+#   action:  instead of cmd — a built-in nvim-tree action:
+#              quicklook persistent expand set_root create rename delete
+#              cut copy paste copy_name copy_rel copy_abs
+#   run:     exec     — detached, no terminal (default). GUI apps, `open -a …`.
+#            overlay  — agterm overlay over THIS session. Anything with a TUI. `size:` = percent (90).
+#            session  — a new agterm session, cwd at the tree root.
+#
+#   A command that EXITS takes its overlay/session down with it — so anything that just prints
+#   (echo, git log) disappears before you can read it. Two ways to keep the pty alive (overlay and
+#   session only; both also fire when the command fails, so errors stay on screen):
+#   hold:  true  — wait for a keypress, then close. For one-shot output you just want to read.
+#   shell: true  — drop into an interactive shell afterwards, cwd intact. For carrying on working.
+#   continue: true — only with shell: true. Read the output first, THEN choose: Enter drops into the
+#                    shell, Esc (or any other key) closes. Without it, shell: true hides the output
+#                    behind a prompt straight away.
+#   type: submenu + nested `menu:` — a sub-list.
+#
+# Filters (optional, ANDed): isDir: false → hide on directories. isFile: false → hide on files.
+#                            ext: [md] → only these extensions (implies files only).
+#
+# Variables:
+#   $ABS     /Users/me/ops/docs/a.md      absolute path of the node
+#   $REL     docs/a.md                    path relative to the tree root
+#   $DIR     /Users/me/ops                tree root (also the cwd every cmd runs in)
+#   $PARENT  /Users/me/ops/docs           the node's parent directory
+#   $NAME    a.md                         basename
+#   $STEM    a                            basename without extension
+#   $EXT     md                           extension
+
+menu:
+  - name: Open
+    isDir: false
+    action: quicklook                 # 90% overlay, replaces the previous one
+
+  - name: Open in nvim-ide
+    isDir: false
+    action: persistent                # tmux-backed editor, keeps tabs
+
+  - name: Open in
+    type: submenu
+    menu:
+      - name: Finder
+        cmd: open -R $ABS
+      - name: Typora
+        ext: [md, markdown, mdx]
+        cmd: open -a Typora $ABS
+      - name: Glow
+        ext: [md, markdown, mdx]
+        run: overlay
+        size: 85
+        cmd: glow -p $ABS
+      - name: Default app
+        isDir: false
+        cmd: open $ABS
+
+  # The DIFF of this file (uncommitted changes), as against "Review File" below, which reviews the
+  # whole thing. --only takes a REPO-RELATIVE path — $REL, not $ABS: an absolute path never matches
+  # git's own paths, which is why it silently falls back to whole-file. Annotations → clipboard, as
+  # in Review File. Guards first, because revdiff on an unchanged file just shows an empty diff.
+  - name: Review changes
+    isDir: false
+    run: overlay
+    hold: true
+    cmd: >-
+      if ! git -C $DIR rev-parse --git-dir >/dev/null 2>&1; then
+      echo "not a git repo — use Review File for a whole-file review";
+      elif [ -z "$(git -C $DIR status --porcelain -- $ABS)" ]; then
+      echo "no uncommitted changes in "$NAME" — use Review File for a whole-file review";
+      else
+      out=$(mktemp -t revdiff-annotations);
+      revdiff --only $REL --output=$out;
+      if [ -s $out ]; then
+      pbcopy < $out;
+      n=$(grep -c '^' < $out);
+      agtermctl notify "$n lines copied — paste to your agent" --title "revdiff: "$NAME;
+      echo "✓ $n annotation lines copied to clipboard";
+      else echo "no annotations — clipboard untouched"; fi;
+      rm -f $out;
+      fi
+
+  - name: Compare dir
+    isFile: false
+    run: session
+    # NB: ide-compare.sh / ide-revdiff-file.sh take a TEMP FILE whose *contents* are the path — and
+    # they `rm -f` that argument once read. Handing either one a real path DELETES IT. The arg is
+    # optional, so cd into the directory and call it bare instead.
+    cmd: cd $ABS && $HOME/.config/agterm-projects/ide-compare.sh
+
+  - name: Shell here
+    isFile: false
+    run: session
+    cmd: cd $ABS && exec zsh
+
+  - name: New file / folder
+    action: create
+
+  - name: Rename
+    action: rename
+
+  - name: Delete (to Trash)
+    action: delete
+
+  - name: Copy
+    type: submenu
+    menu:
+      - { name: Name,          action: copy_name }
+      - { name: Relative path, action: copy_rel }
+      - { name: Absolute path, action: copy_abs }
+
+  - name: Clipboard
+    type: submenu
+    menu:
+      - { name: Cut,   action: cut }
+      - { name: Copy,  action: copy }
+      - { name: Paste, action: paste }
+
+  - name: Set as tree root
+    isFile: false
+    action: set_root
+
+  # Review the file in revdiff; on quit its annotations land on the clipboard, ready to paste to an
+  # agent. Two things this has to get right (both learned the hard way in ide-revdiff-file.sh):
+  #   * annotations go to a FILE via -o, never stdout — stdout is the overlay's TTY.
+  #   * --stdin reviews the WHOLE file. `--only=<abs path>` does not do what it looks like: an
+  #     absolute path never matches git's repo-relative paths, so it just falls back to whole-file
+  #     anyway — and on a clean file a real --only diff would be empty. --stdin touches git not at
+  #     all, so this works on clean, dirty, untracked and non-repo files alike.
+  # Quitting without annotating leaves the clipboard alone, so a stray Review can't wipe it.
+  - name: Review File
+    isDir: false
+    run: overlay
+    hold: true
+    cmd: >-
+      out=$(mktemp -t revdiff-annotations);
+      revdiff --stdin --stdin-name=$ABS --output=$out < $ABS;
+      if [ -s $out ]; then
+      pbcopy < $out;
+      n=$(grep -c '^' < $out);
+      agtermctl notify "$n lines copied — paste to your agent" --title "revdiff: "$NAME;
+      echo "✓ $n annotation lines copied to clipboard";
+      else echo "no annotations — clipboard untouched"; fi;
+      rm -f $out
+
