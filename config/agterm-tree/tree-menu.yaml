@@ -3,6 +3,9 @@
 #
 # Each entry:
 #   name:    label (required)
+#   key:     optional "[key] " hint prefix naming the tree keybinding that does the same thing —
+#            e.g. `key: gd` renders as "[gd] Review File". COSMETIC: it binds nothing. If you rebind
+#            a key in init.lua's on_attach, update it here by hand; a stale hint is worse than none.
 #   cmd:     shell command. $VARS below are substituted SHELL-ESCAPED — do NOT quote them yourself,
 #            paths with spaces already work. Runs with cwd = tree root.
 #   action:  instead of cmd — a built-in nvim-tree action:
@@ -36,10 +39,12 @@
 
 menu:
   - name: Open
+    key: l
     isDir: false
     action: quicklook                 # 90% overlay, replaces the previous one
 
   - name: Open in nvim-ide
+    key: o
     isDir: false
     action: persistent                # tmux-backed editor, keeps tabs
 
@@ -49,9 +54,11 @@ menu:
       - name: Finder
         cmd: open -R $ABS
       - name: Typora
+        key: gp
         ext: [md, markdown, mdx]
         cmd: open -a Typora $ABS
       - name: Glow
+        key: gl
         ext: [md, markdown, mdx]
         run: overlay
         size: 85
@@ -86,6 +93,7 @@ menu:
       fi
 
   - name: Compare dir
+    key: gc
     isFile: false
     run: session
     # NB: ide-compare.sh / ide-revdiff-file.sh take a TEMP FILE whose *contents* are the path — and
@@ -99,29 +107,33 @@ menu:
     cmd: cd $ABS && exec zsh
 
   - name: New file / folder
+    key: a
     action: create
 
   - name: Rename
+    key: r
     action: rename
 
   - name: Delete (to Trash)
+    key: d
     action: delete
 
   - name: Copy
     type: submenu
     menu:
-      - { name: Name,          action: copy_name }
-      - { name: Relative path, action: copy_rel }
-      - { name: Absolute path, action: copy_abs }
+      - { name: Name,          action: copy_name, key: yy }
+      - { name: Relative path, action: copy_rel,  key: yr }
+      - { name: Absolute path, action: copy_abs, key: ya }
 
   - name: Clipboard
     type: submenu
     menu:
-      - { name: Cut,   action: cut }
-      - { name: Copy,  action: copy }
-      - { name: Paste, action: paste }
+      - { name: Cut,   action: cut,   key: x }
+      - { name: Copy,  action: copy,  key: c }
+      - { name: Paste, action: paste, key: p }
 
   - name: Set as tree root
+    key: C
     isFile: false
     action: set_root
 
@@ -134,6 +146,7 @@ menu:
   #     all, so this works on clean, dirty, untracked and non-repo files alike.
   # Quitting without annotating leaves the clipboard alone, so a stray Review can't wipe it.
   - name: Review File
+    key: gd
     isDir: false
     run: overlay
     hold: true

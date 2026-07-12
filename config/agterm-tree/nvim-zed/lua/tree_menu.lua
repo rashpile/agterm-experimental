@@ -10,6 +10,8 @@
 --
 -- Entry format (see the yaml for a worked example):
 --   name:    label in the menu (required)
+--   key:     optional "[key] " hint prefix naming the tree keybinding that does the same thing.
+--            COSMETIC — it binds nothing. Rebind a key in on_attach and you must update this by hand.
 --   cmd:     shell command; $ABS/$REL/$DIR/$PARENT/$NAME/$STEM/$EXT are substituted SHELL-ESCAPED,
 --            so paths with spaces need no quoting in the yaml
 --   action:  instead of cmd — a built-in nvim-tree action (see ACTIONS below)
@@ -180,7 +182,11 @@ local function run_action(item, ctx, handlers)
         set_root   = api.tree.change_root_to_node,
         create     = api.fs.create,
         rename     = api.fs.rename,
-        delete     = api.fs.remove,       -- config routes this to macOS Trash, not rm
+        -- macOS Trash (recoverable). NOT api.fs.remove: nvim-tree's `trash = { cmd = … }` setup opt
+        -- only routes api.fs.trash — api.fs.remove deletes unconditionally, whatever trash is set to
+        -- (separate code paths: trash.lua reads config.g.trash.cmd, remove-file.lua never looks).
+        -- This entry is labelled "to Trash" and was calling remove, i.e. permanently deleting.
+        delete     = api.fs.trash,
         cut        = api.fs.cut,
         copy       = api.fs.copy.node,
         paste      = api.fs.paste,
@@ -198,9 +204,13 @@ end
 
 -- ── menu ─────────────────────────────────────────────────────────────────────
 
-local function pick(entries, ctx, handlers, title)
+-- `parent` (optional) is a thunk that re-opens the menu we descended FROM. When present, a ".."
+-- entry is offered first and selecting it backs up — otherwise a submenu is a one-way trip whose
+-- only exit is Esc, which cancels the whole menu. The top-level menu has no parent, so no "..".
+local function pick(entries, ctx, handlers, title, parent)
     -- keep only what applies to this node; a submenu whose children all filtered out is dropped
     local items = {}
+    if parent then items[#items + 1] = { back = true } end
     for _, e in ipairs(entries) do
         if type(e) == "table" and e.name and visible(e, ctx) then
             if e.type == "submenu" then
@@ -214,7 +224,8 @@ local function pick(entries, ctx, handlers, title)
             end
         end
     end
-    if #items == 0 then
+    -- a lone ".." means nothing in this submenu applied — treat it as empty
+    if #items == 0 or (parent and #items == 1) then
         vim.notify("tree-menu: nothing applies to this node", vim.log.levels.INFO)
         return
     end
@@ -222,12 +233,19 @@ local function pick(entries, ctx, handlers, title)
     vim.ui.select(items, {
         prompt = title,
         format_item = function(it)
-            return it.entry.name .. (it.kids and " ▸" or "")
+            if it.back then return ".." end
+            -- `key` is a COSMETIC hint at the tree keybinding that does the same thing. It binds
+            -- nothing; it is kept in sync with on_attach by hand.
+            local key = it.entry.key and ("[" .. it.entry.key .. "] ") or ""
+            return key .. it.entry.name .. (it.kids and " ▸" or "")
         end,
     }, function(choice)
         if not choice then return end
+        if choice.back then return parent() end                          -- ".." → back up
         if choice.kids then
-            return pick(choice.kids, ctx, handlers, choice.entry.name)   -- descend
+            -- descend; the child's ".." re-opens THIS menu, parent chain intact
+            local reopen = function() pick(entries, ctx, handlers, title, parent) end
+            return pick(choice.kids, ctx, handlers, choice.entry.name, reopen)
         end
         local e = choice.entry
         if e.cmd then

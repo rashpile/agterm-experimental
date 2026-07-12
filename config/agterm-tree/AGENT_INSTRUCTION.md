@@ -185,7 +185,26 @@ filter out is hidden.
 
 **`action:`** — instead of `cmd:`, for what isn't a shell command: `quicklook` `persistent` `expand`
 `set_root` `create` `rename` `delete` `cut` `copy` `paste` `copy_name` `copy_rel` `copy_abs`.
-(`delete` goes to macOS Trash, not `rm`.)
+
+⚠️ **`delete` maps to `api.fs.trash`, and must stay that way.** nvim-tree's `trash = { cmd = … }` setup
+option routes **only** `api.fs.trash` — `api.fs.remove` deletes unconditionally, whatever `trash` is set
+to (separate code paths: `trash.lua` reads `config.g.trash.cmd`, `remove-file.lua` never looks at it).
+This shipped as `api.fs.remove` under a menu item labelled "Delete (to Trash)", i.e. permanently deleting
+files while promising they were recoverable. Requires the `trash` binary on macOS (`brew install trash`);
+without it nvim-tree warns and deletes nothing, which is the correct way to fail.
+
+**`key:`** — an optional `[key] ` hint prefix naming the tree keybinding that does the same thing, e.g.
+`key: gd` renders as `[gd] Review File`. It is **cosmetic and binds nothing**. The shipped values match
+the origin machine's `on_attach` — **re-derive them for this machine** by reading its keymaps, and match
+on what each key *does*, not the letter. A stale hint is worse than no hint. Entries with no equivalent
+keybinding (Finder, Shell here, submenu parents) simply omit it.
+
+Note the origin swaps nvim-tree's defaults (`d` = trash, `D` = permanent), so `[d]` is right *there* — on
+a stock config `d` is the permanent one. Check before copying that hint.
+
+**Submenus get a `..` back-entry** as their first row, injected by the module (not in the yaml).
+Selecting it returns to the parent menu — without it, descending is one-way and the only exit is Esc,
+which cancels the whole menu.
 
 A broken yaml fails **loudly** with the parser's error, rather than silently producing an empty menu.
 

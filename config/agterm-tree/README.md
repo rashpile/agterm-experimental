@@ -50,6 +50,10 @@ Entries can be filtered per node (`isDir`, `isFile`, `ext: [md]`), nested into s
 a built-in tree action (rename, delete-to-Trash, copy path) or any shell command — detached, in an
 overlay, or in a whole new agterm session. Edit the YAML, re-open the menu; no restart.
 
+Add `key: gd` to an entry and the menu label becomes `[gd] Review File` — a cosmetic hint at the tree
+keybinding that does the same thing, so the menu doubles as a cheatsheet. Submenus open with a `..` row
+that takes you back.
+
 The menu in the screenshot has entries for reviewing a file in [revdiff](https://github.com/umputun/revdiff)
 (annotations land on the clipboard, ready to paste to an agent), opening in Finder/Typora/glow, and
 shelling into a directory.
