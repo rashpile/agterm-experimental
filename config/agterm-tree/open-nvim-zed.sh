@@ -51,7 +51,45 @@ is_orphan() {
   [ "$(ps -o ppid= -p "$1" 2>/dev/null | tr -d ' ')" = "1" ]
 }
 
+# Does the session have only ONE pane? Since agterm 0.12 the session JSON carries a `surfaces` array;
+# a split session lists two (kind left + right) whether or not both are visible, so a length of 1 means
+# the split is GONE, not merely hidden. `split` alone cannot say this — it reports visibility, and is
+# false for both "hidden" and "promoted".
+single_pane() {
+  [ -n "$JQ" ] || return 1
+  [ "$("$AGT" tree --json 2>/dev/null | "$JQ" -r --arg id "$sid" \
+      'first(.. | objects | select(.id? == $id)) | ((.surfaces | length) == 1)')" = "true" ]
+}
+
+# Kill this session's tree (both procs — main + embed) and drop its marker, so nothing restores it.
+# A tree pane is a file browser with no unsaved edits, so a hard kill is safe.
+kill_tree() {
+  kill "$1" 2>/dev/null
+  for _ in $(seq 1 20); do
+    local p; p="$(zed_pid || true)"
+    [ -z "$p" ] && break
+    kill -9 "$p" 2>/dev/null
+    sleep 0.05
+  done
+  rm -f "$STATE/tree-$sid"
+}
+
 pid="$(zed_pid || true)"
+
+# ── agterm 0.12: the tree got PROMOTED into the main slot ─────────────────────
+# When the primary pane's shell exits, 0.12 promotes the surviving pane into the main slot (#121)
+# instead of leaving a dead half-session. If that survivor is our tree, the session is now a lone file
+# browser with no shell — and every signal the branches below rely on still says "hidden tree": the
+# process is untouched (same pid, same parent, so is_orphan() is false) and its env still reads
+# AGTERM_PANE=right. The "reveal it" branch would then `split on` a FRESH pane beside the tree, whose
+# right-pane shell finds the marker and launches a SECOND tree. Two trees, no shell, dead session.
+#
+# So: recognise it and finish the job the exiting shell started — kill the tree and let the session
+# close. That is what `exit` meant; the tree was only keeping the corpse alive.
+if [ -n "$pid" ] && single_pane; then
+  kill_tree "$pid"
+  exit 0
+fi
 
 # ── Self-heal: reap a stale ghost ─────────────────────────────────────────────
 # zed_pid matches by process env, so an nvim that outlived its pane still "counts" as an open
@@ -60,13 +98,7 @@ pid="$(zed_pid || true)"
 # kill it, and fall through to a fresh launch. A tree pane is a file browser with no unsaved
 # edits, so a hard kill is safe. Cheap ps gate first, so the agterm call only runs for a ghost.
 if [ -n "$pid" ] && is_orphan "$pid" && ! split_visible; then
-  kill "$pid" 2>/dev/null
-  for _ in $(seq 1 20); do
-    pid="$(zed_pid || true)"
-    [ -z "$pid" ] && break
-    kill -9 "$pid" 2>/dev/null   # any lingering match (tree spawns main + embed)
-    sleep 0.05
-  done
+  kill_tree "$pid"   # the marker it drops is rewritten by the fresh launch below
   pid=""
 fi
 
