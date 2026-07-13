@@ -172,6 +172,25 @@ end
 
 -- ── execution ────────────────────────────────────────────────────────────────
 
+-- Does session `sid` already have an overlay open? (Its single overlay slot is occupied.)
+local function overlay_busy(sid)
+    local out = vim.fn.system({ AGT, "tree", "--json" })
+    if vim.v.shell_error ~= 0 then return false end
+    local ok, tree = pcall(vim.json.decode, out)
+    if not ok then return false end
+    local found = false
+    local function walk(t)
+        if found or type(t) ~= "table" then return end
+        if t.id == sid then
+            found = t.overlay == true
+            return
+        end
+        for _, v in pairs(t) do walk(v) end
+    end
+    walk(tree)
+    return found
+end
+
 local function run_cmd(item, ctx)
     local cmd = expand(item.cmd, ctx.vars)
     local mode = item.run or "exec"
@@ -209,6 +228,16 @@ local function run_cmd(item, ctx)
         -- detached, no terminal: GUI apps (`open -a …`), one-shot shell work
         vim.fn.jobstart({ "zsh", "-lc", inner }, { detach = true })
     elseif mode == "overlay" then
+        -- A session has exactly ONE overlay slot, and asking for a second is a hard error:
+        --     error: overlay already open   (exit 1)
+        -- That bites in nvim-ide, where the editor may itself BE the session's overlay (the cmd+shift+o
+        -- popup) — so "Review File" was silently doing nothing: a detached job, an error nobody sees.
+        -- Reclaim the slot first. Closing an overlay only tears down its view; the popup editor lives in
+        -- tmux, so its buffers and undo survive and cmd+shift+o brings it straight back. This is the same
+        -- bargain the quick-look tree already makes ("opening one dismisses the other, nothing is lost").
+        if sid ~= "active" and overlay_busy(sid) then
+            vim.fn.system({ AGT, "session", "overlay", "close", "--target", sid })
+        end
         -- a real pty on THIS session (the tree's own), not the user's active one
         vim.fn.jobstart({
             AGT, "session", "overlay", "open",
