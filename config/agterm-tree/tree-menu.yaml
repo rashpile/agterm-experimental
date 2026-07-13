@@ -11,6 +11,10 @@
 #   action:  instead of cmd — a built-in nvim-tree action:
 #              quicklook persistent expand set_root create rename delete
 #              cut copy paste copy_name copy_rel copy_abs
+#            …or an fzf-lua search (opens the picker; the file you choose opens the way this tree
+#            normally opens files — an overlay in the tree pane, a buffer in nvim-ide):
+#              find_files grep            — scoped to the TREE ROOT (whole project)
+#              find_files_here grep_here  — scoped to the folder under the cursor
 #   run:     exec     — detached, no terminal (default). GUI apps, `open -a …`.
 #            overlay  — agterm overlay over THIS session. Anything with a TUI. `size:` = percent (90).
 #            session  — a new agterm session, cwd at the tree root.
@@ -58,6 +62,20 @@ menu:
     isDir: false
     role: [zed]
     action: persistent                # tmux-backed editor, keeps tabs
+
+  # fzf pickers. The project-wide two mirror the tree's own <leader>ff / <leader>fg; the "here" two have
+  # no keybinding — scoping a search to the folder you're pointing at is the thing the menu adds.
+  - name: Search
+    type: submenu
+    menu:
+      - { name: Find file (project), key: SPC ff, action: find_files }
+      - { name: Grep (project),      key: SPC fg, action: grep }
+      - name: Find file in this folder
+        isFile: false
+        action: find_files_here
+      - name: Grep in this folder
+        isFile: false
+        action: grep_here
 
   - name: Open in
     type: submenu

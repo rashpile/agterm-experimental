@@ -38,6 +38,25 @@ vim.opt.splitbelow = true
 local NVIM_ZED_TREE = vim.env.NVIM_ZED_ROLE == "tree"
 local NVIM_ZED_PREVIEW = vim.env.NVIM_ZED_ROLE == "preview"
 
+-- The tree pane has NO editor window, so "open this file" always means "hand it to a 90% agterm
+-- overlay" — never `:edit`, which would load the file into the tree window and the tree would be gone.
+-- File-scope because three separate things need it: the tree's own keymaps, the context menu, and the
+-- fzf pickers further down.
+local function zed_open_path(path)
+    vim.fn.jobstart(
+        { vim.fn.expand("~/.config/agterm-projects/open-nvim-zed-preview.sh"), path },
+        { detach = true }
+    )
+end
+
+-- The directory the tree is rooted at — NOT vim.fn.getcwd(), which drifts once you `C` into a subdir.
+local function zed_tree_root()
+    local ok, core = pcall(require, "nvim-tree.core")
+    local dir = ok and core.get_cwd and core.get_cwd() or nil
+    if not dir or dir == "" then dir = vim.fn.getcwd() end
+    return dir
+end
+
 -- Quick-look overlay: `q` (normal mode) closes it. If the file was changed, ask Save / Discard /
 -- Cancel first so a stray `q` can't discard edits silently. Set in a VimEnter autocmd so it wins
 -- over any plugin-set global `q` map. (This shadows macro-record `q`, which quick-look doesn't need.)
@@ -380,16 +399,22 @@ require("lazy").setup({
                         -- ~/.config/agterm-projects/tree-menu.yaml (see lua/tree_menu.lua).
                         -- nvim's built-in PopUp is a BUFFER menu (Paste / Select All / Inspect) —
                         -- nothing in it acts on the file you're pointing at. This is the file menu.
+                        -- quicklook() reads the node under the cursor; fzf hands over a PATH instead, so
+                        -- the menu's search entries need the path-based door into the same overlay.
                         local function context_menu()
                             require("tree_menu").open({
                                 quicklook = quicklook, persistent = open_persistent,
+                                open_path = zed_open_path,
                             }, "zed")
                         end
                         vim.keymap.set("n", "<leader>m", context_menu, opts("Context menu"))
 
                         -- Right-click. nvim's default mousemodel=popup_setpos CONSUMES <RightMouse>
-                        -- to raise its own PopUp, so a mapping never sees the click. `extend` frees
-                        -- it — buffer-local, so nvim's PopUp still works everywhere else.
+                        -- to raise its own PopUp, so a mapping never sees the click. `extend` frees it.
+                        -- NOTE: mousemodel is a GLOBAL option — despite `opt_local`, this is NOT scoped
+                        -- to the buffer. Harmless here (this pane is a tree and nothing else), but it's
+                        -- exactly why nvim-ide, which has editor windows to protect, swaps it per-window
+                        -- from an autocmd instead of setting it once.
                         vim.opt_local.mousemodel = "extend"
                         -- Open the menu on RELEASE, not press. fzf-lua renders vim.ui.select as a
                         -- TERMINAL float that must be in terminal-mode to take keys. Opening it on
@@ -630,11 +655,33 @@ require("lazy").setup({
             require("fzf-lua").register_ui_select()
             -- Switch between currently OPEN files (most-recent first)
             vim.keymap.set("n", "<leader><leader>", "<cmd>FzfLua buffers<cr>", { desc = "Switch open file" })
-            -- History of files opened previously (persists across sessions)
-            vim.keymap.set("n", "<leader>fr", "<cmd>FzfLua oldfiles<cr>", { desc = "Recent files (history)" })
-            -- Bonus: find/grep in the project
-            vim.keymap.set("n", "<leader>ff", "<cmd>FzfLua files<cr>", { desc = "Find files" })
-            vim.keymap.set("n", "<leader>fg", "<cmd>FzfLua live_grep<cr>", { desc = "Grep project" })
+
+            if NVIM_ZED_TREE then
+                -- TREE PANE ONLY. Plain `FzfLua files` ends in `:edit` in the current window — and the
+                -- only window here IS the tree, so picking a file would replace the tree with the file
+                -- and leave no way back. Route the pick to the overlay instead, the same door the tree's
+                -- own <CR>/l use. Search from the TREE ROOT, not getcwd(), which drifts after a `C`.
+                --
+                -- Deliberately NOT applied to the preview role: that overlay is a real editor window, so
+                -- fzf's own :edit is exactly right there.
+                local function search(kind)
+                    return function()
+                        require("tree_menu").search(kind, zed_tree_root(), { open_path = zed_open_path })
+                    end
+                end
+                vim.keymap.set("n", "<leader>ff", search("files"), { desc = "Find files → overlay" })
+                vim.keymap.set("n", "<leader>fg", search("grep"), { desc = "Grep project → overlay" })
+                -- oldfiles has no cwd to scope, but its pick must still land in the overlay.
+                vim.keymap.set("n", "<leader>fr", function()
+                    require("fzf-lua").oldfiles({
+                        actions = { ["default"] = require("tree_menu").fzf_sink({ open_path = zed_open_path }) },
+                    })
+                end, { desc = "Recent files → overlay" })
+            else
+                vim.keymap.set("n", "<leader>fr", "<cmd>FzfLua oldfiles<cr>", { desc = "Recent files (history)" })
+                vim.keymap.set("n", "<leader>ff", "<cmd>FzfLua files<cr>", { desc = "Find files" })
+                vim.keymap.set("n", "<leader>fg", "<cmd>FzfLua live_grep<cr>", { desc = "Grep project" })
+            end
         end,
     },
 }, {

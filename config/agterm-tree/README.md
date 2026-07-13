@@ -50,6 +50,10 @@ Entries can be filtered per node (`isDir`, `isFile`, `ext: [md]`), nested into s
 a built-in tree action (rename, delete-to-Trash, copy path) or any shell command — detached, in an
 overlay, or in a whole new agterm session. Edit the YAML, re-open the menu; no restart.
 
+A **Search** submenu runs fzf-lua from the menu — find-file and grep, either across the project or
+scoped to the folder you right-clicked (that second one has no keybinding; it's the thing the menu adds).
+Picks open the way this tree opens everything else: in an overlay, never in the tree window.
+
 Entries also hide themselves where they *can't* work: `needs: [glow]` drops an entry when the binary
 isn't on PATH, and anything using `run: overlay`/`session` disappears where there's no `agtermctl`. So
 the same YAML can ride along to a Linux box (over ssh, say) and simply shrink to the subset that runs

@@ -20,7 +20,8 @@
 --            COSMETIC — it binds nothing. Rebind a key in on_attach and you must update this by hand.
 --   cmd:     shell command; $ABS/$REL/$DIR/$PARENT/$NAME/$STEM/$EXT are substituted SHELL-ESCAPED,
 --            so paths with spaces need no quoting in the yaml
---   action:  instead of cmd — a built-in nvim-tree action (see ACTIONS below)
+--   action:  instead of cmd — a built-in nvim-tree action, an fzf search, or one of the caller's own
+--            (quicklook / persistent). See ACTIONS below.
 --   run:     exec (default, detached, no terminal) | overlay (agterm overlay on THIS session)
 --            | session (new agterm session)
 --   size:    overlay size percent (default 90)
@@ -227,13 +228,62 @@ local function run_cmd(item, ctx)
     end
 end
 
+-- ── fzf search ───────────────────────────────────────────────────────────────
+
+-- Where a picked result should OPEN. fzf-lua's own default is `:edit` in the current window — which in
+-- the zed tree pane means the file replaces the TREE, since that pane has no editor window. So the pick
+-- is routed back through the caller's `open_path` handler (overlay in the tree pane; a buffer in the
+-- editor), the same trick `quicklook`/`persistent` use. No handler = fall back to fzf's default.
+local function fzf_sink(handlers)
+    return function(selected, o)
+        if not selected or not selected[1] then return end
+        local ok, fzf_path = pcall(require, "fzf-lua.path")
+        if not ok then return end
+        local e = fzf_path.entry_to_file(selected[1], o)   -- strips devicons/ansi, splits line:col
+        local p = e and e.path
+        if not p or p == "" then return end
+        -- entry_to_file yields a path relative to the picker's cwd; make it absolute before handing it
+        -- to a handler that shells out (the overlay script gets an argv, not a shell cwd).
+        if not p:match("^/") then p = (o.cwd or vim.fn.getcwd()) .. "/" .. p end
+        if handlers.open_path then
+            handlers.open_path(p, e.line)
+        else
+            vim.cmd.edit(vim.fn.fnameescape(p))
+            if e.line and e.line > 0 then pcall(vim.api.nvim_win_set_cursor, 0, { e.line, 0 }) end
+        end
+    end
+end
+
+-- files / grep, scoped to a directory. `dir` decides the scope: the tree root for the project-wide
+-- entries, the node itself for the "…in this folder" ones.
+local function fzf_search(kind, dir, handlers)
+    local ok, fzf = pcall(require, "fzf-lua")
+    if not ok then
+        vim.notify("tree-menu: fzf-lua not available", vim.log.levels.ERROR)
+        return
+    end
+    local opts = {
+        cwd = dir,
+        prompt = vim.fn.fnamemodify(dir, ":t") .. (kind == "grep" and " grep❯ " or " files❯ "),
+        actions = { ["default"] = fzf_sink(handlers) },
+    }
+    if kind == "grep" then fzf.live_grep(opts) else fzf.files(opts) end
+end
+
 -- Built-in nvim-tree actions — the things that aren't shell commands. `handlers` carries the
--- pane's own actions (quicklook / persistent), which live in init.lua's on_attach.
+-- pane's own actions (quicklook / persistent / open_path), which live in init.lua's on_attach.
 local function run_action(item, ctx, handlers)
     local api = ctx._api
+    -- "here" = the folder you right-clicked; on a file node, the folder holding it. The yaml restricts
+    -- these to directories anyway, but the fallback keeps the action sane if that filter is dropped.
+    local here = ctx.is_dir and ctx.vars.ABS or ctx.vars.PARENT
     local ACTIONS = {
         quicklook  = handlers.quicklook,
         persistent = handlers.persistent,
+        find_files      = function() fzf_search("files", ctx.vars.DIR, handlers) end,
+        grep            = function() fzf_search("grep",  ctx.vars.DIR, handlers) end,
+        find_files_here = function() fzf_search("files", here, handlers) end,
+        grep_here       = function() fzf_search("grep",  here, handlers) end,
         expand     = api.node.open.edit,
         set_root   = api.tree.change_root_to_node,
         create     = api.fs.create,
@@ -312,6 +362,25 @@ local function pick(entries, ctx, handlers, title, parent)
             vim.notify("tree-menu: entry has neither cmd nor action: " .. e.name, vim.log.levels.ERROR)
         end
     end)
+end
+
+--- The pick-handler on its own, for fzf pickers this module doesn't wrap (oldfiles, buffers…): pass it
+--- as a picker's `actions.default` to make its result open through `handlers.open_path`.
+--- @param handlers table  { open_path = fn(path, line) }
+--- @return function       fzf-lua action(selected, opts)
+function M.fzf_sink(handlers)
+    return fzf_sink(handlers or {})
+end
+
+--- fzf files/live_grep whose PICK is routed through `handlers.open_path` instead of fzf's default
+--- `:edit`. Exposed so a config can bind it to a key directly, not only reach it through the menu —
+--- the tree pane needs that, because a plain `<leader>ff` there would `:edit` the chosen file into the
+--- tree window and the tree would vanish.
+--- @param kind string     "files" | "grep"
+--- @param dir string      directory to search in
+--- @param handlers table  { open_path = fn(path, line) } — nil falls back to fzf's own :edit
+function M.search(kind, dir, handlers)
+    fzf_search(kind, dir, handlers or {})
 end
 
 --- Open the context menu for the node under the cursor.
