@@ -35,6 +35,12 @@ if ! "$AGT" tree --json | "$JQ" -e --arg id "$target" \
   exit 4
 fi
 
+# Keep the orchestrator's own unread-notification badge from climbing: it fires its own permission
+# notifications while unfocused, and driving it purely over Telegram never "visits" the session to
+# clear them. Ack on each inbound /o (session.seen, agterm 0.8.3+ — idempotent, focus-free,
+# best-effort; skipped silently on older agterm).
+"$AGT" session seen --target "$target" >/dev/null 2>&1 || true
+
 # Status-aware injection: never blindly push into a busy session or a live prompt. Pushing text +
 # Enter into an AskUserQuestion / permission menu makes the message become the menu's answer (that
 # exact bug corrupted a real reply). So read the orchestrator's state first and give the user honest

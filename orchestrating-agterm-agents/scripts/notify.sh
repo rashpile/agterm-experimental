@@ -53,6 +53,17 @@ resp="$(curl -sS -m 15 -X POST "https://api.telegram.org/bot${token}/sendMessage
   --data-urlencode "text=${icon} ${msg}" 2>&1)"
 
 case "$resp" in
-  *'"ok":true'*) echo "notify: sent"; exit 0 ;;
+  *'"ok":true'*)
+    echo "notify: sent"
+    # Best-effort: clear the orchestrator's own unread-notification badge (session.seen, agterm
+    # 0.8.3+). It just pinged the user via Telegram, so the desktop badge is redundant — keep it from
+    # climbing while the session sits unfocused. Reads the same regfile inject.sh writes; never
+    # affects notify's exit status.
+    reg="$cfgdir/orchestrator_session"
+    if [ -r "$reg" ]; then
+      oid="$(tr -d '[:space:]' < "$reg")"
+      [ -n "$oid" ] && /opt/homebrew/bin/agtermctl session seen --target "$oid" >/dev/null 2>&1 || true
+    fi
+    exit 0 ;;
   *) echo "notify: FAILED: $resp" >&2; exit 1 ;;
 esac

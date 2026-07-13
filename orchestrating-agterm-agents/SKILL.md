@@ -42,6 +42,7 @@ notification badge). The verbs below keep the whole loop allow-listed.
 | answer a prompt / menu | `scripts/agent-ctl.sh submit <id>` (Enter) · `key <id> down\|up\|esc\|enter` for a multi-choice menu |
 | wait for the worker to stop | `scripts/agent-wait.sh <session-id>` (returns `STATE=waiting\|idle` + tail) |
 | ping the human on Telegram | `scripts/notify.sh --level done\|attention\|info <message>` |
+| ask the human to approve a **worker** (Telegram buttons) | `scripts/wask.sh <worker-id> [note]` — posts adaptive ✅ Yes / ♾️ Always / 🚫 No buttons that approve **that** worker via the `wapprove` bot command (needs a one-time `/reload`) |
 | register THIS session as `/o` target (**only when the user explicitly asks**) | `scripts/register.sh` |
 | (inbound) Telegram `/o <msg>` injects `[tg] <msg>` here | handled by pako-telegram → `scripts/inject.sh` |
 | (rare) bring a session to the foreground | `scripts/agent-ctl.sh select <id>` — steals focus; `read`/`status` populate the buffer without it, so you rarely need this |
@@ -78,6 +79,22 @@ allow-list can't match them — they re-prompt. The fix is stable script paths. 
   the target). Allow-listed, so it sends without a prompt. **If those files are missing it exits 3 with
   a setup hint** (it can't Telegram its own failure) — relay that hint to the user in chat and stop,
   don't retry.
+- **`wask.sh <worker-session-id> [note...]`** — the **buttoned** counterpart to `notify.sh` for
+  *worker* approvals. Reads the worker's live prompt screen and posts a Telegram message with **✅ Yes /
+  ♾️ Always / 🚫 No** buttons (Always shown only on a real 3-option prompt). The buttons ride
+  pako-telegram's generic `act:<command>:<arg>` protocol with the worker's id in the arg
+  (`act:wapprove:<id>:<choice>`), so a tap runs the **`wapprove`** bot command → **`wapprove.sh`**
+  injects the keystroke into *that* worker (Enter / Down+Enter / Esc) and clears its blocked glyph. It is
+  the worker analog of the orchestrator's own `tg-agterm.sh` → `oapprove.sh` flow (which only ever
+  targets the *registered* session). Use it in the supervise loop when a worker hits a prompt you won't
+  silently auto-approve but the user can decide with one tap from their phone. **Caveat:** the bot loads
+  new commands only on **`/reload`** (no file watcher) — after adding `wapprove.yaml`, have the user send
+  `/reload` once or taps show an "Unknown command" toast. Falls back to a plain `notify.sh` alert if the
+  buttoned send fails (e.g. Telegram misconfig).
+- **`wapprove.sh <session-id>:<choice>`** — the callback handler the `wapprove` bot command runs when a
+  `wask.sh` button is tapped: parses the worker id + `yes|always|no` from the single callback arg, maps
+  it to a keystroke, injects into that worker id, and clears its stale blocked glyph. Worker analog of
+  `oapprove.sh`. Not called by you directly — the bot invokes it via the button.
 - **`register.sh`** — records this session's `$AGTERM_SESSION_ID` in
   `~/.config/orchestrating-agterm-agents/orchestrator_session` so the Telegram `/o` command can inject
   into you. **Run ONLY when the user explicitly asks to make THIS session the Telegram target** — never
@@ -93,9 +110,13 @@ Pair it with the supervise loop: after `agent-wait.sh` returns, decide, and if t
 routine progress.
 ```
 agent-wait.sh <id>                                              # blocks until the worker stops
-notify.sh --level attention "worker X needs approval: <tail>"   # waiting on something you won't auto-approve
+wask.sh   <id> "worker X"                                       # waiting → one-tap ✅/♾️/🚫 buttons approve THAT worker
+notify.sh --level attention "worker X needs approval: <tail>"   # (plain-text fallback, no buttons)
 notify.sh --level done      "worker X finished: <result>"       # idle → task complete
 ```
+Prefer `wask.sh` over a plain `attention` note when the stop is a *permission prompt* — it lets the user
+approve from their phone with one tap instead of texting back a `/o` instruction. Keep `notify.sh` for
+decisions that aren't a yes/always/no menu (open questions, blocked-on-info, done).
 
 ## Remote control via Telegram (inbound)
 `notify.sh` is outbound; this is the return path so the user can drive you from their phone.
@@ -175,6 +196,16 @@ judgment at each stop instead, and needs no per-harness strings.
 destructive/outward-facing prompts (service restart, `rm`, `git push`, deploy) **read the `waiting`
 payload first and decide** — don't reflexively press Enter. Target a specific session **id**, never
 `active`. Only drive tasks you would approve yourself; you are accountable for the worker's actions.
+
+## agterm ≥0.10 read-back
+`tree --json` gained fields that matter here:
+- **`splitFocused`** (per session) — which pane has focus. Check it before `session type` into a split
+  worker; previously this was unknowable and text could land in the wrong pane.
+- **`quick type` / `quick text`** (0.10.1) — the quick terminal is now drivable like a session: a scratch
+  channel that doesn't touch a worker's screen or its notification badge.
+- **`idleMs`** (tree-level) is **not** an agent-done signal — it counts ms since the last *user* input in
+  the window, so a worker grinding for 10 min still shows a large, growing `idleMs`. Keep `agent-wait.sh`
+  on screen-quiet polling.
 
 ## Common mistakes
 | Mistake | Fix |
