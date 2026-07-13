@@ -27,6 +27,15 @@
 #
 # Filters (optional, ANDed): isDir: false → hide on directories. isFile: false → hide on files.
 #                            ext: [md] → only these extensions (implies files only).
+#                            role: [zed] → only in that tree. zed = the tree pane (files open in an
+#                              overlay), ide = nvim-ide's own tree (files open in a buffer). Omit = both.
+#                            needs: [open] → hide unless every listed executable is on PATH.
+#
+# This one YAML is shared by BOTH trees, and rides along to the Linux remote IDE — where agtermctl,
+# `open`, Typora and pbcopy do not exist. `needs:` is how an entry opts out of a box that can't run it;
+# run: overlay/session entries are hidden automatically wherever agtermctl is absent, so they need no
+# `needs:` of their own. The result is a menu that shrinks to what actually works, instead of offering
+# things that fail when clicked.
 #
 # Variables:
 #   $ABS     /Users/me/ops/docs/a.md      absolute path of the node
@@ -43,19 +52,23 @@ menu:
     isDir: false
     action: quicklook                 # 90% overlay, replaces the previous one
 
+  # zed only: from inside nvim-ide, "open in nvim-ide" is where you already are.
   - name: Open in nvim-ide
     key: o
     isDir: false
+    role: [zed]
     action: persistent                # tmux-backed editor, keeps tabs
 
   - name: Open in
     type: submenu
     menu:
       - name: Finder
+        needs: [open]
         cmd: open -R $ABS
       - name: Typora
         key: gp
         ext: [md, markdown, mdx]
+        needs: [open]
         cmd: open -a Typora $ABS
       - name: Glow
         key: gl
@@ -65,6 +78,7 @@ menu:
         cmd: glow -p $ABS
       - name: Default app
         isDir: false
+        needs: [open]
         cmd: open $ABS
 
   # The DIFF of this file (uncommitted changes), as against "Review File" below, which reviews the

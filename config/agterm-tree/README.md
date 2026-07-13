@@ -50,6 +50,11 @@ Entries can be filtered per node (`isDir`, `isFile`, `ext: [md]`), nested into s
 a built-in tree action (rename, delete-to-Trash, copy path) or any shell command — detached, in an
 overlay, or in a whole new agterm session. Edit the YAML, re-open the menu; no restart.
 
+Entries also hide themselves where they *can't* work: `needs: [glow]` drops an entry when the binary
+isn't on PATH, and anything using `run: overlay`/`session` disappears where there's no `agtermctl`. So
+the same YAML can ride along to a Linux box (over ssh, say) and simply shrink to the subset that runs
+there, rather than offering things that fail when clicked.
+
 Add `key: gd` to an entry and the menu label becomes `[gd] Review File` — a cosmetic hint at the tree
 keybinding that does the same thing, so the menu doubles as a cheatsheet. Submenus open with a `..` row
 that takes you back.
@@ -74,8 +79,8 @@ You can of course do it by hand — the same file works as a checklist.
 
 ## Requirements
 
-agterm with `agtermctl` on PATH · neovim ≥ 0.9 · `jq` · `ruby` (macOS system ruby is fine — nothing to
-install; it parses the menu YAML).
+agterm with `agtermctl` on PATH · neovim ≥ 0.9 · `jq` · and **either** `ruby` (macOS system ruby is
+fine — nothing to install) **or** `python3` + PyYAML, to parse the menu YAML.
 
 Optional, per menu entry: `revdiff`, `glow`, Typora. Anything you don't have, delete that entry.
 

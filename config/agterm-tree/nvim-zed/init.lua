@@ -8,6 +8,15 @@ if not vim.loop.fs_stat(lazypath) then
 end
 vim.opt.rtp:prepend(lazypath)
 
+-- ── shared modules ───────────────────────────────────────────────────────────
+-- ~/.config/nvim-shared/lua is on the runtimepath of BOTH nvim-zed and nvim-ide, so `require` finds
+-- the same module from either. tree_menu lives there: one context menu, one YAML, no drift between
+-- the tree pane and the editor's own tree. (NVIM_APPNAME isolates the two configs — this is the seam
+-- that lets them still share code.)
+--
+-- The path is registered via lazy's performance.rtp.paths at the BOTTOM of this file, not here — see
+-- the comment there for why appending to rtp by hand does not survive.
+
 -- ── basics ───────────────────────────────────────────────────────────────────
 vim.g.mapleader = " "
 vim.opt.number = true
@@ -199,7 +208,7 @@ require("lazy").setup({
                         end
                         vim.fn.jobstart({
                             "/opt/homebrew/bin/agtermctl", "session", "overlay", "open",
-                            "zsh -ic '" .. os.getenv("HOME") .. "/.config/agterm-projects/ide-compare.sh" .. arg .. "'",
+                            "zsh -ic '$HOME/.config/agterm-projects/ide-compare.sh" .. arg .. "'",
                             "--cwd", dir, "--size-percent", "95",
                         }, { detach = true })
                     end, opts("Git compare (revdiff): repo/file, base or branch"))
@@ -226,7 +235,7 @@ require("lazy").setup({
                         local argv = {
                             "/opt/homebrew/bin/agtermctl", "session", "new",
                             "--cwd", dir,
-                            "--command", os.getenv("HOME") .. "/.config/agterm-projects/ide-revdiff-file.sh " .. tf,
+                            "--command", "$HOME/.config/agterm-projects/ide-revdiff-file.sh " .. tf,
                             "--name", "revdiff:" .. vim.fn.fnamemodify(node.absolute_path, ":t"),
                         }
                         -- Sit next to the session we were launched from, when we know which that is.
@@ -269,7 +278,7 @@ require("lazy").setup({
                                 api.node.open.edit()   -- expand / collapse
                             elseif node.absolute_path then
                                 vim.fn.jobstart(
-                                    { (os.getenv("HOME") .. "/.config/agterm-projects/open-nvim-zed-preview.sh"), node.absolute_path },
+                                    { "$HOME/.config/agterm-projects/open-nvim-zed-preview.sh", node.absolute_path },
                                     { detach = true }
                                 )
                             end
@@ -374,7 +383,7 @@ require("lazy").setup({
                         local function context_menu()
                             require("tree_menu").open({
                                 quicklook = quicklook, persistent = open_persistent,
-                            })
+                            }, "zed")
                         end
                         vim.keymap.set("n", "<leader>m", context_menu, opts("Context menu"))
 
@@ -628,6 +637,12 @@ require("lazy").setup({
             vim.keymap.set("n", "<leader>fg", "<cmd>FzfLua live_grep<cr>", { desc = "Grep project" })
         end,
     },
+}, {
+    -- Shared modules (see the note at the top). This MUST go through lazy rather than a plain
+    -- `vim.opt.rtp:append` — lazy's performance.rtp.reset (on by default) rebuilds the runtimepath
+    -- during setup and throws away anything appended beforehand, so `require("tree_menu")` would
+    -- fail with "module not found" even though the path was added. `paths` survives that reset.
+    performance = { rtp = { paths = { vim.fn.expand("~/.config/nvim-shared") } } },
 })
 
 

@@ -4,9 +4,15 @@
 -- which act on the node under the cursor. This is the file menu: node-aware, and defined in
 -- ~/.config/agterm-projects/tree-menu.yaml so adding an entry needs no Lua.
 --
--- YAML has no parser in nvim and there's no yq/PyYAML on this machine, so we convert with system
--- ruby (psych + json are stdlib — zero installs). ~120ms, so the result is cached and only re-read
--- when the file's mtime changes: edit the YAML, next open picks it up. No restart.
+-- SHARED between nvim-zed (the tree pane) and nvim-ide (the editor). It lives in ~/.config/nvim-shared,
+-- which both configs put on their runtimepath — one menu, one YAML, no drift. `role` (below) is how a
+-- single YAML serves two trees that mean different things by "open".
+--
+-- YAML has no parser in nvim, so we shell out to convert it to JSON. Which converter exists depends on
+-- the box: macOS ships ruby (psych + json are stdlib), and the Linux remote this config is rsynced to
+-- does NOT — but has PyYAML. So try them in order rather than hardcoding one. ~120ms either way, so the
+-- result is cached and only re-read when the file's mtime changes: edit the YAML, next open picks it up.
+-- No restart.
 --
 -- Entry format (see the yaml for a worked example):
 --   name:    label in the menu (required)
@@ -19,11 +25,20 @@
 --            | session (new agterm session)
 --   size:    overlay size percent (default 90)
 --   type:    submenu — with a nested `menu:` list
---   isDir/isFile/ext: visibility filters, ANDed
+--   isDir/isFile/ext/role/needs: visibility filters, ANDed
 local M = {}
 
 local CONFIG = vim.fn.expand("~/.config/agterm-projects/tree-menu.yaml")
 local AGT = "/opt/homebrew/bin/agtermctl"
+
+-- Memoized `is this on PATH?`. Drives the `needs:` filter and the agtermctl check, so an entry that
+-- CANNOT work here is never offered — which is what makes one YAML safe to ship to the Linux remote,
+-- where agtermctl, `open`, Typora and pbcopy all simply do not exist.
+local exe_cache = {}
+local function have(bin)
+    if exe_cache[bin] == nil then exe_cache[bin] = vim.fn.executable(bin) == 1 end
+    return exe_cache[bin]
+end
 
 local cache = { mtime = -1, menu = nil }
 
@@ -37,12 +52,25 @@ local function load_config()
     local mtime = vim.fn.getftime(CONFIG)
     if cache.menu and mtime == cache.mtime then return cache.menu end
 
-    -- system ruby: psych + json are stdlib, so no install. Fails loudly — a broken yaml should
-    -- say so, not silently produce an empty menu.
-    local out = vim.fn.system({ "ruby", "-ryaml", "-rjson", "-e",
-        "puts YAML.load_file(ARGV[0]).to_json", CONFIG })
+    -- YAML → JSON via whatever this box has. macOS: system ruby (psych + json are stdlib, no install).
+    -- Linux remote: no ruby, but PyYAML is there. First converter that EXISTS is the one we use — and
+    -- if it then fails, that's a broken YAML and we say so, rather than falling through to the next
+    -- one and reporting a confusing "no parser" at the end.
+    local converters = {
+        { bin = "ruby",    argv = { "ruby", "-ryaml", "-rjson", "-e", "puts YAML.load_file(ARGV[0]).to_json", CONFIG } },
+        { bin = "python3", argv = { "python3", "-c",
+            "import sys,yaml,json; json.dump(yaml.safe_load(open(sys.argv[1])), sys.stdout)", CONFIG } },
+    }
+    local out, used
+    for _, c in ipairs(converters) do
+        if have(c.bin) then used = c.bin; out = vim.fn.system(c.argv); break end
+    end
+    if not used then
+        vim.notify("tree-menu: need `ruby` or `python3`+PyYAML to read the menu YAML", vim.log.levels.ERROR)
+        return nil
+    end
     if vim.v.shell_error ~= 0 then
-        vim.notify("tree-menu: YAML parse failed\n" .. out, vim.log.levels.ERROR)
+        vim.notify("tree-menu: YAML parse failed (" .. used .. ")\n" .. out, vim.log.levels.ERROR)
         return nil
     end
     local ok, data = pcall(vim.json.decode, out)
@@ -114,6 +142,30 @@ local function visible(item, ctx)
         end
         if not want then return false end
     end
+
+    -- role: which tree this entry belongs in. One YAML, two trees — "Open in nvim-ide" is meaningful
+    -- from the zed tree pane and absurd from inside nvim-ide itself. No `role:` = show in both.
+    if item.role and ctx.role then
+        local want = false
+        for _, r in ipairs(item.role) do
+            if r == ctx.role then want = true break end
+        end
+        if not want then return false end
+    end
+
+    -- needs: executables this entry cannot work without. Hide rather than offer something that will
+    -- fail — this is what lets the same YAML ride along to the Linux remote, where `open`, Typora and
+    -- pbcopy don't exist.
+    if item.needs then
+        for _, bin in ipairs(item.needs) do
+            if not have(bin) then return false end
+        end
+    end
+
+    -- overlay/session are agterm control-API modes; without agtermctl (i.e. off the Mac) they cannot
+    -- run at all, so they're filtered implicitly rather than needing `needs: [agtermctl]` on each one.
+    if (item.run == "overlay" or item.run == "session") and not have(AGT) then return false end
+
     return true
 end
 
@@ -263,13 +315,18 @@ local function pick(entries, ctx, handlers, title, parent)
 end
 
 --- Open the context menu for the node under the cursor.
---- @param handlers table  { quicklook = fn, persistent = fn } — the tree pane's own open actions
-function M.open(handlers)
+--- @param handlers table   { quicklook = fn, persistent = fn } — the tree's own open actions. Both
+---                         trees define these, but they MEAN different things: in the zed tree pane
+---                         `quicklook` is a 90% overlay (there is no editor to open into); in nvim-ide
+---                         it just opens the buffer. Injecting them is what keeps the YAML shared.
+--- @param role string|nil  "zed" | "ide" — matched against an entry's `role:` filter. nil = no filter.
+function M.open(handlers, role)
     local menu = load_config()
     if not menu then return end
     local node = require("nvim-tree.api").tree.get_node_under_cursor()
     if not node or not node.absolute_path then return end
     local ctx = node_ctx(node)
+    ctx.role = role
     pick(menu, ctx, handlers or {}, ctx.vars.NAME)
 end
 

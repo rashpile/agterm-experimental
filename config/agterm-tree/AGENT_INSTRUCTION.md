@@ -14,8 +14,15 @@ at each ⚠️ — those are the points where a wrong guess overwrites something
 | `open-nvim-zed-preview.sh` | `~/.config/agterm-projects/` | Opens one file in a 90% overlay (respawn-per-open = quick-look). |
 | `tree-menu.yaml` | `~/.config/agterm-projects/` | The context menu. User-editable; no restart. |
 | `nvim-zed/init.lua` | `~/.config/nvim-zed/` | The tree config. Role-aware (`NVIM_ZED_ROLE=tree`/`preview`). |
-| `nvim-zed/lua/tree_menu.lua` | `~/.config/nvim-zed/lua/` | Reads the yaml, filters by node, runs the entry. |
+| `nvim-shared/lua/tree_menu.lua` | `~/.config/nvim-shared/lua/` | Reads the yaml, filters by node, runs the entry. |
 | `nvim-zed/lazy-lock.json` | `~/.config/nvim-zed/` | Plugin pins (known-good set). |
+
+`nvim-shared/` is a **separate directory on purpose**, not part of the nvim-zed config: it holds modules
+meant to be shared with a second nvim config (the author also runs an `nvim-ide`), so the same menu and
+the same yaml serve both. init.lua puts it on the runtimepath — via **lazy's `performance.rtp.paths`**,
+because lazy's `performance.rtp.reset` (on by default) rebuilds the runtimepath during setup and would
+discard a plain `vim.opt.rtp:append`. If you install only the tree, the directory is still required —
+`require("tree_menu")` fails without it.
 | `keymap.conf` | **append** to `~/.config/agterm/keymap.conf` | The `ctrl+b>z` binding. |
 | `zshrc-snippet.sh` | **append** to the end of `~/.zshrc` | Brings the tree back after an agterm restart. |
 
@@ -24,16 +31,17 @@ All paths are `$HOME`-relative. Nothing to rewrite.
 ## 1. Prerequisites
 
 ```sh
-command -v agtermctl nvim jq ruby   # all four must resolve
+command -v agtermctl nvim jq   # all three must resolve
+command -v ruby || python3 -c 'import yaml'   # need ONE of these (menu yaml → json)
 [ -n "$AGTERM_ENABLED" ] && echo "inside agterm"
 ```
 
 - **`jq`** is not optional — the toggle reads `agtermctl tree --json` to decide whether the split is
   visible. Without it, toggling gets unreliable. `brew install jq`.
-- **`ruby`** parses the menu yaml (`ruby -ryaml -rjson`). psych and json are stdlib, so **macOS system
-  ruby is enough — install nothing.** It was chosen for exactly that reason: nvim has no yaml parser,
-  and neither `yq` nor PyYAML is a safe assumption. It runs once per yaml edit (cached against mtime),
-  not once per menu open.
+- **A yaml→json converter** for the menu: nvim has no yaml parser, so `tree_menu.lua` shells out. It
+  tries **`ruby`** first (`-ryaml -rjson`; psych and json are stdlib, so **macOS system ruby is enough —
+  install nothing**), then falls back to **`python3` + PyYAML**. Either is fine; you only need one. It
+  runs once per yaml edit (cached against mtime), not once per menu open.
 
 ## 2. ⚠️ Ask the user before you touch these
 
@@ -53,11 +61,11 @@ Ask all of these **up front**, in one go — don't discover them halfway through
 ## 3. Install the files
 
 ```sh
-mkdir -p ~/.config/agterm-projects ~/.config/nvim-zed/lua
+mkdir -p ~/.config/agterm-projects ~/.config/nvim-zed ~/.config/nvim-shared/lua
 cp open-nvim-zed.sh nvim-zed-tree-run.sh open-nvim-zed-preview.sh tree-menu.yaml ~/.config/agterm-projects/
 chmod +x ~/.config/agterm-projects/{open-nvim-zed,nvim-zed-tree-run,open-nvim-zed-preview}.sh
 cp nvim-zed/init.lua nvim-zed/lazy-lock.json ~/.config/nvim-zed/
-cp nvim-zed/lua/tree_menu.lua ~/.config/nvim-zed/lua/
+cp nvim-shared/lua/tree_menu.lua ~/.config/nvim-shared/lua/
 ```
 
 ## 4. Bootstrap the plugins
