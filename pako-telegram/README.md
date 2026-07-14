@@ -1,7 +1,7 @@
 # pako-telegram commands — orchestrator transport
 
 [pako-telegram](https://github.com/rashpile/pako-telegram) command definitions that expose the
-[`orchestrating-agterm-agents`](../orchestrating-agterm-agents/) skill over Telegram. pako-telegram is a
+[`orchestrating-agterm-agents`](../skills/orchestrating-agterm-agents/) skill over Telegram. pako-telegram is a
 small bot that runs allow-listed shell commands on your Mac; these YAML files add the orchestrator
 control commands so you can drive and watch the orchestrator from your phone.
 

@@ -14,7 +14,8 @@ remotely from Telegram.
 
 | Path | What it is |
 |------|-----------|
-| [`orchestrating-agterm-agents/`](orchestrating-agterm-agents/) | A Claude Code **skill**: one orchestrator agent spawns, reads, and drives worker agents in separate agterm sessions — plus a Telegram remote-control loop. |
+| [`skills/orchestrating-agterm-agents/`](skills/orchestrating-agterm-agents/) | A Claude Code **skill**: one orchestrator agent spawns, reads, and drives worker agents in separate agterm sessions — plus a Telegram remote-control loop. |
+| [`skills/agterm-check-update/`](skills/agterm-check-update/) | A Claude Code **skill**: after an agterm upgrade, diff the upstream changelog for the delta since the configs were last reviewed, then audit whether custom configs/scripts should adopt new built-ins or can be simplified. Tracks the last-validated version so each run covers only the delta. |
 | [`commands/`](commands/) | Small standalone **agterm commands** — shell scripts bound to keymap chords via `agtermctl`. See [Commands](#commands). |
 | [`config/agterm-tree/`](config/agterm-tree/) | A **file tree panel** for agterm — nvim-tree in the right split, files opening into overlays. Built entirely on the control API; no app changes. |
 
