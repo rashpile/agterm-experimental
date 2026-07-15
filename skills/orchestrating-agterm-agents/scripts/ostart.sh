@@ -14,8 +14,6 @@ JQ="$(command -v jq || true)"   # resolves /usr/bin/jq or /opt/homebrew/bin/jq �
 [ -n "$JQ" ] || { echo "ostart: jq not found on PATH."; exit 1; }
 
 here="$(cd "$(dirname "$0")" && pwd)"
-cfgdir="$HOME/.config/orchestrating-agterm-agents"
-regfile="$cfgdir/orchestrator_session"
 DIR="${1:-$HOME/workspace/ops}"
 [ -d "$DIR" ] || DIR="$HOME"
 
@@ -29,10 +27,10 @@ if [ -z "$id" ] || [ "$id" = null ]; then
   exit 1
 fi
 
-# 2. Register it as the Telegram (/o /os /oa) target — "newer wins", plain overwrite.
-mkdir -p "$cfgdir"
-printf '%s\n' "$id" > "$regfile"
-chmod 600 "$regfile"
+# 2. Register it as the Telegram (/o /os /oa) target — "newer wins", plain overwrite. Via register.sh
+#    rather than writing the file here, so binding stays ONE code path: it also badges this session and
+#    un-badges the previous holder, which a direct write would silently skip.
+"$here/register.sh" "$id" >/dev/null
 
 # 2b. Move the "orchestrator" workspace to the top of the sidebar so it's always the first tab.
 wsid="$("$AGT" tree --json 2>/dev/null | "$JQ" -r '.result.tree.workspaces[] | select(.name=="orchestrator") | .id' | head -1)"
