@@ -28,8 +28,8 @@ if [ -z "$id" ] || [ "$id" = null ]; then
 fi
 
 # 2. Register it as the Telegram (/o /os /oa) target — "newer wins", plain overwrite. Via register.sh
-#    rather than writing the file here, so binding stays ONE code path: it also badges this session and
-#    un-badges the previous holder, which a direct write would silently skip.
+#    rather than writing the file here, so binding stays ONE code path: the same bind the cmd+shift+r
+#    chord performs, badge included.
 "$here/register.sh" "$id" >/dev/null
 
 # 2b. Move the "orchestrator" workspace to the top of the sidebar so it's always the first tab.
