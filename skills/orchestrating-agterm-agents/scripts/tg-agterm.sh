@@ -63,37 +63,25 @@ if [ "$event" = Stop ]; then
   : > "$smark" 2>/dev/null || true   # close the turn whether or not we post
   [ "$reported" = 1 ] && exit 0
 
-  transcript="$(printf '%s' "$input" | "$JQ" -r '.transcript_path // ""')"
-  [ -r "$transcript" ] || exit 0
+  # The turn's final answer, handed to us directly by the harness. Do NOT read transcript_path for
+  # this — the hooks docs are explicit:
+  #   "The transcript file is written asynchronously and may lag the in-memory conversation, so it may
+  #    not yet include the current turn's most recent messages when a hook fires. Hooks that need the
+  #    final assistant text of the current turn should use last_assistant_message on Stop and
+  #    SubagentStop instead of reading the transcript"
+  # Measured here: the transcript lags ~250ms, so reading it posted the PREVIOUS text block — the
+  # narration written before the last tool call — on every single turn, while looking like it worked.
+  # No polling, no race, no heuristics: the field IS the turn's final message by definition.
+  result="$(printf '%s' "$input" | "$JQ" -r '.last_assistant_message // ""')"
+  [ -n "$result" ] || exit 0   # empty on an interrupted/abort turn — silence beats posting the wrong text
 
-  # The turn's final assistant text — the actual answer, free of the footer/token-counter chrome a
-  # screen scrape drags in. ~0.03s on a 3MB transcript, well inside the hook timeout.
-  #
-  # RACE: when Stop fires, Claude Code has NOT yet appended the turn's final text block — measured at
-  # <250ms behind, consistently. Read naively and you post the PREVIOUS block: a mid-turn narration
-  # line instead of the answer, every time, while looking like it works.
-  #
-  # So poll for a block we have not already sent, rather than for "it changed since this hook started".
-  # The difference matters: keying on change would mean betting on the race ALWAYS happening — the one
-  # turn it doesn't, the loop times out and posts the stale block. Keying on last-sent asks the real
-  # question ("is there anything new to report?"), so it is correct whether the race happens or not,
-  # returns instantly when the text is already final, and stays silent when a turn added no new text.
-  last_block() { "$JQ" -rs '[.[] | select(.type=="assistant") | .message.content[]?
-                             | select(.type=="text") | .text] | last // ""' "$transcript" 2>/dev/null; }
+  # Guard against posting the same text twice if Stop fires more than once for one turn. A GUARD, not a
+  # trigger: an earlier version keyed the whole decision on "is this text new?", which fired happily on
+  # a mid-turn narration line because that is new too.
   sentmark="$cfgdir/last_sent-$sid"
-  prev_hash="$([ -r "$sentmark" ] && cat "$sentmark")"
-  result=""
-  for _ in $(seq 1 12); do            # up to ~3s; the hook's timeout is 20s
-    cand="$(last_block)"
-    hash="$(printf '%s' "$cand" | shasum | cut -d' ' -f1)"
-    if [ -n "$cand" ] && [ "$hash" != "$prev_hash" ]; then
-      result="$cand"
-      printf '%s' "$hash" > "$sentmark" 2>/dev/null || true
-      break
-    fi
-    sleep 0.25
-  done
-  [ -n "$result" ] || exit 0   # nothing new this turn — say nothing
+  hash="$(printf '%s' "$result" | shasum | cut -d' ' -f1)"
+  [ -r "$sentmark" ] && [ "$(cat "$sentmark")" = "$hash" ] && exit 0
+  printf '%s' "$hash" > "$sentmark" 2>/dev/null || true
 
   # The prose is written for a terminal, so Telegram shows its markdown raw: asterisks, backticks, and
   # pipe-tables that are unreadable on a phone. Strip it to plain text.

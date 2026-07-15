@@ -130,12 +130,17 @@ allow-list can't match them — they re-prompt. The fix is stable script paths. 
     it here does, because this hook runs last in the Stop chain and the session then sits idle. Verified
     to persist on an unfocused session until it is visited (`--auto-reset`). Stop only — on the approval
     path it would overwrite `blocked` and hide that a session needs a decision.
+  - The final text comes from **`last_assistant_message` in the Stop hook's stdin JSON** — never from
+    `transcript_path`. The docs: *"The transcript file is written asynchronously and may lag the
+    in-memory conversation... Hooks that need the final assistant text of the current turn should use
+    `last_assistant_message` on Stop and SubagentStop instead of reading the transcript."* Measured
+    here at ~250ms of lag, which made a transcript read post the previous block — the narration written
+    before the last tool call — every turn, while looking like it worked. If you are tempted to poll the
+    transcript, don't: that bug was found and fixed the expensive way.
   - Per-session state in `~/.config/orchestrating-agterm-agents/`: `last_notify-<id>` (notify.sh
     reported this turn — written by `notify.sh`), `last_stop-<id>` (previous turn boundary),
-    `last_sent-<id>` (hash of the last text posted). The hash exists because the turn's final text
-    block reaches the transcript ~250ms AFTER Stop fires, so reading it naively posts the PREVIOUS
-    block. The hook polls for text it has not already sent — asking "is anything new?" rather than
-    "did it change?", which stays correct even if that write race disappears.
+    `last_sent-<id>` (hash of the last text posted — a GUARD against Stop firing twice for one turn,
+    never a trigger; keying the decision on "is this text new?" fires on narration, which is new too).
 
 ## Notifying the user
 The orchestrator runs unattended, so **surface anything a human must see** instead of silently waiting.
