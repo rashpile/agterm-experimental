@@ -18,6 +18,7 @@ remotely from Telegram.
 | [`skills/agterm-check-update/`](skills/agterm-check-update/) | A Claude Code **skill**: after an agterm upgrade, diff the upstream changelog for the delta since the configs were last reviewed, then audit whether custom configs/scripts should adopt new built-ins or can be simplified. Tracks the last-validated version so each run covers only the delta. |
 | [`commands/`](commands/) | Small standalone **agterm commands** — shell scripts bound to keymap chords via `agtermctl`. See [Commands](#commands). |
 | [`config/agterm-tree/`](config/agterm-tree/) | A **file tree panel** for agterm — nvim-tree in the right split, files opening into overlays. Built entirely on the control API; no app changes. |
+| [`shell/zsh/`](shell/zsh/) | A **zsh status-badge hook** — turns each tab's sidebar glyph into a traffic light for *any* command: dim while running, green on success, yellow on failure. agterm does this for agents; this does it for everything. |
 
 The remote-control side is transport-agnostic — the skill just needs *something* on the Mac that can run
 a shell command. I use **[pako-telegram](https://github.com/rashpile/pako-telegram)** (a bot that runs
