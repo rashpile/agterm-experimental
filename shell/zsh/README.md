@@ -77,6 +77,33 @@ The three `*_COLOR` knobs default to **light** shades so a command's badge is di
 *agent's* (agents use agterm's default active/completed/blocked colours). Set any of them empty to match
 agents exactly. All knobs are read per command, so you can tweak them live in a running shell.
 
+## Which commands get badged
+
+Out of the box: everything **except** agents (`claude`, `codex`, …, whose own status hooks own the
+glyph) and interactive TUIs (`vim`, `ssh`, `man`, `yazi`, …). Skipped commands are left completely
+alone — no badge is set, and none is cleared.
+
+Two optional files tune that. One bare command name per line; blanks and `#` comments ignored; matched
+on the command's **first word** (`bookokrat --foo` → `bookokrat`); read live, so edits apply
+immediately with no re-source:
+
+- **`~/.config/agterm-projects/.badgeignore`** — extra commands to never badge:
+  ```
+  # my long-running TUIs
+  bookokrat
+  gitui
+  ```
+- **`~/.config/agterm-projects/.badgeallow`** — an **allowlist**. If it has *any* entry, only the
+  commands named in it get badges and everything else is skipped. It's authoritative: the ignore lists
+  above no longer apply.
+  ```
+  make
+  npm
+  cargo
+  ```
+
+Paths are overridable with `AGTERM_BADGE_IGNORE_FILE` / `AGTERM_BADGE_ALLOW_FILE`.
+
 ## How it works (the short version)
 
 Two zsh hooks. `preexec` (before a command runs) sets the glyph to agterm's `active` state; `precmd`

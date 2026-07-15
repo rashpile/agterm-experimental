@@ -23,7 +23,16 @@
 #   AGTERM_BADGE_FAIL_COLOR  (#e6b800)    FAILURE glyph tint (amber)
 #         ^ all three default to LIGHT shades so a command is distinct from an AGENT (which uses
 #           agterm's default active/completed/blocked colours); set any of them empty to match agents.
-#   AGTERM_BADGE_IGNORE_RE   (see below)  commands that only get the running glyph (no finish colour)
+#   AGTERM_BADGE_IGNORE_RE   (see below)  commands this hook never touches (agents + interactive TUIs)
+#   AGTERM_BADGE_IGNORE_FILE (~/.config/agterm-projects/.badgeignore)
+#                                         extra commands to never badge — one bare command name per
+#                                         line, e.g. `bookokrat`. Blanks and #comments ignored.
+#   AGTERM_BADGE_ALLOW_FILE  (~/.config/agterm-projects/.badgeallow)
+#                                         ALLOWLIST. If this file has ANY entry, badge ONLY the commands
+#                                         named in it and skip everything else — the ignore lists then
+#                                         don't apply. One bare command name per line. Empty/absent =
+#                                         normal (ignore-list) behaviour.
+#         ^ both files are read live per command, so edits apply immediately — no re-source needed.
 #   AGTERM_BADGE_CTL         (agtermctl)  path to agtermctl
 #   AGTERM_AGENT_RE          (shipped default) agent commands: running glyph only, no finish colour
 
@@ -41,7 +50,57 @@ autoload -Uz add-zsh-hook
 : "${AGTERM_BADGE_MIN_SECS:=10}"
 : "${AGTERM_BADGE_CTL:=/opt/homebrew/bin/agtermctl}"
 : "${AGTERM_AGENT_RE:=^(codex|gemini|cursor-agent|aider|opencode|crush|goose)([[:space:]]|$)}"
-: "${AGTERM_BADGE_IGNORE_RE:=^(vim|nvim|less|more|man|htop|top|ssh|tmux|watch|fzf)([[:space:]]|$)}"
+: "${AGTERM_BADGE_IGNORE_RE:=^(claude|nclaude|vim|nvim|less|more|man|htop|top|ssh|tmux|watch|fzf|yazi)([[:space:]]|$)}"
+: "${AGTERM_BADGE_IGNORE_FILE:=$HOME/.config/agterm-projects/.badgeignore}"
+: "${AGTERM_BADGE_ALLOW_FILE:=$HOME/.config/agterm-projects/.badgeallow}"
+
+# _fb_list <file> — print the file's usable entries (one per line; blanks and #comments dropped).
+# Read live per command, so editing a list file takes effect immediately. Forkless ($(<) / read builtins).
+_fb_list() {
+  [[ -r $1 ]] || return
+  local line
+  while IFS= read -r line || [[ -n $line ]]; do
+    line=${line%%#*}                # strip trailing comment
+    line=${line//[[:space:]]/}      # entries are bare command names
+    [[ -n $line ]] && print -r -- $line
+  done < $1
+}
+
+# _fb_skip <cmdline> — true for commands whose glyph we do NOT own.
+#
+# MUST be the single source of truth for BOTH hooks. Badging in preexec but only skipping in precmd is
+# what put a stuck glyph on every session after an agterm restart: agterm re-runs each session's restored
+# foreground command, that fires preexec, and a long-running one (claude/ssh/yazi) never returns to a
+# prompt — so precmd never ran and nothing ever cleared it. If we would not colour a command on finish,
+# we must not badge it on start.
+#
+# Order:
+#   1. $AGTERM_BADGE_ALLOW_FILE has any entry → ALLOWLIST MODE: badge ONLY those commands, skip all else.
+#      Authoritative — the regex/ignore lists below do not apply (listing `claude` there means you get a
+#      badge on claude, overwriting Claude Code's own status; that's your call).
+#   2. otherwise skip: agents ($AGTERM_AGENT_RE) · interactive ($AGTERM_BADGE_IGNORE_RE) ·
+#      anything named in $AGTERM_BADGE_IGNORE_FILE.
+# Lists match the command's FIRST WORD (`bookokrat --foo` → `bookokrat`), same as the regexes.
+_fb_skip() {
+  # First word of the command line. NOTE: assign to an array first — `${${(z)1}[1]}` silently subscripts
+  # the *string* (giving "b" for "bookokrat") when the split yields a single word, and only behaves as an
+  # array when there are 2+ words.
+  local -a words allow ignore
+  words=(${(z)1})
+  local w=${words[1]}
+
+  allow=(${(f)"$(_fb_list $AGTERM_BADGE_ALLOW_FILE)"})
+  if (( $#allow )); then
+    (( ${allow[(Ie)$w]} )) && return 1        # on the allowlist → ours, badge it
+    return 0                                  # allowlist mode: everything else is skipped
+  fi
+
+  [[ $1 =~ $AGTERM_AGENT_RE ]]        && return 0
+  [[ $1 =~ $AGTERM_BADGE_IGNORE_RE ]] && return 0
+  ignore=(${(f)"$(_fb_list $AGTERM_BADGE_IGNORE_FILE)"})
+  (( ${ignore[(Ie)$w]} )) && return 0
+  return 1
+}
 
 _fb_status() {  # _fb_status <state> [extra flags...] — always tags this shell's pane + session
   "$AGTERM_BADGE_CTL" session status "$@" \
@@ -60,6 +119,10 @@ _fb_tinted() {
 # preexec: a command is about to run → show the dim running glyph immediately (blinking; agterm dims it).
 _fb_preexec() {
   [ -z "${AGTERM_BADGE_DISABLE:-}" ] || return   # live off-switch
+  # Not our command → touch nothing (no active here, and the unset makes precmd a no-op too, so we can
+  # never clobber a glyph another integration owns). Also covers agterm's restart, which re-runs each
+  # session's restored foreground command.
+  if _fb_skip "$1"; then unset __fb_start; return; fi
   __fb_start=$EPOCHSECONDS
   __fb_cmd=$1
   _fb_tinted "${AGTERM_BADGE_RUN_COLOR-#a9c1d4}" active --blink   # running: light blue-grey
@@ -69,13 +132,13 @@ _fb_preexec() {
 _fb_precmd() {
   local st=$?                                     # exit code — capture FIRST
   [ -z "${AGTERM_BADGE_DISABLE:-}" ] || return    # live off-switch
-  [ -n "${__fb_start:-}" ] || return              # no command ran this prompt (bare Enter): leave it
+  # unset unless preexec claimed this command — a bare Enter, or one _fb_skip rejected. Either way the
+  # glyph isn't ours, so we leave it entirely alone (setting `idle` here would wipe Claude's own status).
+  [ -n "${__fb_start:-}" ] || return
   local dur=$(( EPOCHSECONDS - __fb_start )); unset __fb_start
 
-  if (( dur < AGTERM_BADGE_MIN_SECS )) \
-     || [[ ${__fb_cmd:-} =~ $AGTERM_AGENT_RE ]] \
-     || [[ ${__fb_cmd:-} =~ $AGTERM_BADGE_IGNORE_RE ]]; then
-    _fb_status idle                               # too short / agent / interactive: clear running glyph
+  if (( dur < AGTERM_BADGE_MIN_SECS )); then
+    _fb_status idle                               # too short to colour: just clear our running glyph
   elif (( st == 0 )); then
     _fb_tinted "${AGTERM_BADGE_OK_COLOR-#8fce9b}" completed --auto-reset          # success: light green
   else
