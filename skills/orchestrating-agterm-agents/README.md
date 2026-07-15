@@ -40,7 +40,8 @@ supervises Claude, Codex, and other agent CLIs unchanged.
 |--------|---------|
 | `agent-ctl.sh` | The driving verbs — `read`, `submit`, `key`, `type`, `say`, `spawn`, `status`. One stable, allow-listable entry point so the orchestrator's actions don't re-prompt. |
 | `agent-wait.sh` | Block until a session goes quiet; return `waiting`/`idle` + new output. The harness-agnostic supervise primitive. |
-| `register.sh` | Record *this* session as the orchestrator so Telegram knows where to inject. |
+| `register.sh` | Record a session as the orchestrator so Telegram knows where to inject. `cmd+shift+r` binds whichever session you're in — press it again there to unbind — so notifications follow you between agents. |
+| `tg-agterm.sh` | The outbound hook for the registered session: permission prompts go out as Yes/Always/No buttons, and a finished turn reports its result. Wired in `settings.json`, never called by hand. |
 | `inject.sh` | Route an inbound Telegram message into the orchestrator's input — **status-aware**: won't fire into a busy session or corrupt a live menu, and reports back why if it can't. |
 | `oa.sh` | Send exact keystrokes (to answer a prompt) with **no** automatic Enter; the bare word `ENTER` sends an Enter keypress. |
 | `notify.sh` | Send a message *out* to Telegram (job done / needs a decision). |

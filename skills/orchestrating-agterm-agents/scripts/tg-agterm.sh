@@ -5,13 +5,16 @@
 # (callback_data "act:<command>[:<arg>]"): clicking runs the `oapprove` command, which calls
 # oapprove.sh to inject the keystroke back into the session. No agterm logic lives in the bot.
 #
-# Phase 1: approvals only (Notification event). Stop-based flows are a documented future seam below.
+# It also reports turn completion: on Stop, it posts the turn's final answer so an unattended job says
+# when it is done. Wire it up under BOTH events in settings.json (Notification matcher
+# "permission_prompt", and Stop).
 #
 # Reads the hook JSON on stdin. Fail-open: exits 0 (does nothing) unless ALL hold:
-#   - hook_event_name == Notification
+#   - hook_event_name == Notification or Stop
 #   - this session IS the registered orchestrator (AGTERM_SESSION_ID == orchestrator_session)
-#   - the notification is a permission request (not the 60s idle nudge)
 #   - Telegram is configured (token + chat_id)
+#   - Notification only: it is a permission request (not the 60s idle nudge)
+#   - Stop only: not a stop-hook continuation, and the agent did not already report via notify.sh
 set -uo pipefail
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 AGT=/opt/homebrew/bin/agtermctl
@@ -25,10 +28,9 @@ input="$(cat)"
 event="$(printf '%s' "$input" | "$JQ" -r '.hook_event_name // ""')"
 message="$(printf '%s' "$input" | "$JQ" -r '.message // ""')"
 
-# --- event routing. Phase 1 = Notification/approvals only. ---
+# --- event routing: Notification = approvals, Stop = turn finished. ---
 case "$event" in
-  Notification) : ;;
-  # Stop) ... ;;   # FUTURE SEAM: turn-complete / idle flows attach here in a later phase.
+  Notification|Stop) : ;;
   *) exit 0 ;;
 esac
 
@@ -38,24 +40,115 @@ reg="$([ -r "$regfile" ] && tr -d '[:space:]' < "$regfile")"
 [ -n "$sid" ] && [ -n "$reg" ] || exit 0
 [ "$(printf '%s' "$sid" | tr 'A-Z' 'a-z')" = "$(printf '%s' "$reg" | tr 'A-Z' 'a-z')" ] || exit 0
 
-# Only permission/approval notifications — skip the "waiting for your input" idle nudge.
-printf '%s' "$message" | grep -qiE 'permission|needs your|approv' || exit 0
-
 # Telegram configured?
 token="$([ -r "$cfgdir/token" ] && tr -d '[:space:]' < "$cfgdir/token")"
 chat="${TG_CHAT_ID:-$([ -r "$cfgdir/chat_id" ] && tr -d '[:space:]' < "$cfgdir/chat_id")}"
 [ -n "$token" ] && [ -n "$chat" ] || exit 0
 
+# --- Stop: the registered session finished a turn → report the result, so an unattended job doesn't
+# just go quiet. Every turn fires this, which is why binding is a toggle: unbind (cmd+shift+r) when you
+# are sitting at the keyboard and don't want the running commentary. ---
+if [ "$event" = Stop ]; then
+  # A Stop hook that CONTINUES the turn re-enters Stop; don't post twice for one turn.
+  [ "$(printf '%s' "$input" | "$JQ" -r '.stop_hook_active // false')" = true ] && exit 0
+
+  # Dedup: if the agent already reported via notify.sh during THIS turn, stay quiet — its curated
+  # message beats an automatic dump of the same thing. "This turn" = since the previous Stop, which is
+  # exactly what comparing the two markers' mtimes asks. Per-session, so a worker's notify.sh can't
+  # silence the orchestrator's ping. First ever Stop has no smark → posts, then the pairing is armed.
+  nmark="$cfgdir/last_notify-$sid"
+  smark="$cfgdir/last_stop-$sid"
+  reported=0
+  [ -f "$nmark" ] && [ -f "$smark" ] && [ "$nmark" -nt "$smark" ] && reported=1
+  : > "$smark" 2>/dev/null || true   # close the turn whether or not we post
+  [ "$reported" = 1 ] && exit 0
+
+  transcript="$(printf '%s' "$input" | "$JQ" -r '.transcript_path // ""')"
+  [ -r "$transcript" ] || exit 0
+
+  # The turn's final assistant text — the actual answer, free of the footer/token-counter chrome a
+  # screen scrape drags in. ~0.03s on a 3MB transcript, well inside the hook timeout.
+  #
+  # RACE: when Stop fires, Claude Code has NOT yet appended the turn's final text block — measured at
+  # <250ms behind, consistently. Read naively and you post the PREVIOUS block: a mid-turn narration
+  # line instead of the answer, every time, while looking like it works.
+  #
+  # So poll for a block we have not already sent, rather than for "it changed since this hook started".
+  # The difference matters: keying on change would mean betting on the race ALWAYS happening — the one
+  # turn it doesn't, the loop times out and posts the stale block. Keying on last-sent asks the real
+  # question ("is there anything new to report?"), so it is correct whether the race happens or not,
+  # returns instantly when the text is already final, and stays silent when a turn added no new text.
+  last_block() { "$JQ" -rs '[.[] | select(.type=="assistant") | .message.content[]?
+                             | select(.type=="text") | .text] | last // ""' "$transcript" 2>/dev/null; }
+  sentmark="$cfgdir/last_sent-$sid"
+  prev_hash="$([ -r "$sentmark" ] && cat "$sentmark")"
+  result=""
+  for _ in $(seq 1 12); do            # up to ~3s; the hook's timeout is 20s
+    cand="$(last_block)"
+    hash="$(printf '%s' "$cand" | shasum | cut -d' ' -f1)"
+    if [ -n "$cand" ] && [ "$hash" != "$prev_hash" ]; then
+      result="$cand"
+      printf '%s' "$hash" > "$sentmark" 2>/dev/null || true
+      break
+    fi
+    sleep 0.25
+  done
+  [ -n "$result" ] || exit 0   # nothing new this turn — say nothing
+
+  # The prose is written for a terminal, so Telegram shows its markdown raw: asterisks, backticks, and
+  # pipe-tables that are unreadable on a phone. Strip it to plain text.
+  #
+  # NOT parse_mode: Telegram's parser is strict and this text reliably breaks it — identifiers like
+  # last_notify-* read as italics, and any unbalanced marker returns a 400 that would lose the message
+  # entirely. Stripping is lossy; a 400 is silent data loss. Prefer lossy.
+  plain="$(printf '%s' "$result" | sed -E \
+    -e '/^[[:space:]]*```/d' \
+    -e '/^[[:space:]]*\|[-|: [:space:]]*\|[[:space:]]*$/d' \
+    -e 's/^#{1,6}[[:space:]]+//' \
+    -e 's/\[([^]]*)\]\([^)]*\)/\1/g' \
+    -e 's/\*\*([^*]+)\*\*/\1/g' \
+    -e 's/\*([^*]+)\*/\1/g' \
+    -e 's/`([^`]+)`/\1/g' \
+    -e 's/^[[:space:]]*\|[[:space:]]*//' \
+    -e 's/[[:space:]]*\|[[:space:]]*$//')"
+
+  # Keep the HEAD here, unlike the approval snippet below: an answer leads with its conclusion, so an
+  # overrun should lose trailing detail, not the verdict. `head -c` can slice a UTF-8 char in half and
+  # Telegram rejects invalid UTF-8 — `iconv -c` drops any such partial tail.
+  body="$(printf '%s' "$plain" | head -c 3000 | iconv -c -f utf-8 -t utf-8 2>/dev/null)"
+  [ "${#plain}" -gt "${#body}" ] && body="${body}…"
+
+  curl -sS -m 15 -X POST "https://api.telegram.org/bot${token}/sendMessage" \
+    --data-urlencode "chat_id=${chat}" \
+    --data-urlencode "text=✅ ${body}" >/dev/null 2>&1
+
+  # Restore the cyan "this session owns Telegram" badge. register.sh sets it at bind time, but the glyph
+  # is shared state that Claude's own lifecycle hooks overwrite every turn, so it never survives on its
+  # own. Re-asserting it HERE is what makes it effectively persistent: this hook is last in the Stop
+  # chain, so it runs after agterm-agent-status.sh's `completed`, and the badge then sits there through
+  # the idle gap — exactly when someone glances at the sidebar to ask "where is Telegram pointed?".
+  # --auto-reset keeps it honest: visiting the session clears it.
+  # Stop only, deliberately: doing this on the approval path too would overwrite the `blocked` glyph and
+  # hide that a session needs a decision — the one signal worth more than this one.
+  "$AGT" session status active --color '#00d7d7' --auto-reset --target "$sid" >/dev/null 2>&1
+  exit 0
+fi
+
+# --- Notification: only permission/approval prompts — skip the "waiting for your input" idle nudge. ---
+printf '%s' "$message" | grep -qiE 'permission|needs your|approv' || exit 0
+
 # Read the pending-prompt screen once — used both to detect the menu shape and to build the snippet.
 screen="$("$AGT" session text --target "$sid" --json 2>/dev/null | "$JQ" -r '.result.text // ""')"
 
-# A short, sanitized snippet of what's being approved. ASCII-only and capped so the Telegram send
-# can't be broken by multi-byte box-drawing (same reasoning as os.yaml).
+# A sanitized snippet of what's being approved. ASCII-only so the Telegram send can't be broken by
+# multi-byte box-drawing (same reasoning as os.yaml), then bounded to fit one message. Bounds match
+# wask.sh — see the rationale there; in short, `tail -c` (not `head -c`) so an overrun drops the oldest
+# lines rather than the "Do you want to..." question and menu at the bottom.
 snippet="$(printf '%s' "$screen" \
   | LC_ALL=C tr -cd '\11\12\15\40-\176' \
   | grep -vE '^[[:space:]]*$' \
   | grep -viE 'for shortcuts|to interrupt|for agents|session /|/hr|tokens' \
-  | tail -10 | cut -c1-90 | head -c 800)"
+  | tail -30 | cut -c1-160 | tail -c 3000)"
 
 text="⚠️ Orchestrator needs approval
 ${message}"

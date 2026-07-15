@@ -34,13 +34,18 @@ if [ -n "$JQ" ]; then
   [ -n "$t" ] && title="$t"
 fi
 
-# Short, sanitized snippet of what's being approved — ASCII-only and capped so a Telegram send can't
-# be broken by multi-byte box-drawing (same reasoning as tg-agterm.sh / os.yaml).
+# Sanitized snippet of what's being approved — ASCII-only so a Telegram send can't be broken by
+# multi-byte box-drawing (same reasoning as tg-agterm.sh / os.yaml), then bounded to fit one message.
+# You have to be able to DECIDE from this text alone, so the bounds are generous: 160 cols clears the
+# widest line a full-width pane emits (~130), and 30 lines covers most of a screen.
+# `tail -c`, not `head -c`: when the text still overruns, drop the OLDEST lines. The bottom carries the
+# "Do you want to..." question and the menu — cutting from the top loses scrollback, cutting from the
+# bottom loses the decision. 3000 leaves headroom under Telegram's 4096-char cap for the title + note.
 snippet="$(printf '%s' "$screen" \
   | LC_ALL=C tr -cd '\11\12\15\40-\176' \
   | grep -vE '^[[:space:]]*$' \
   | grep -viE 'for shortcuts|to interrupt|for agents|session /|/hr|tokens' \
-  | tail -10 | cut -c1-90 | head -c 800)"
+  | tail -30 | cut -c1-160 | tail -c 3000)"
 
 text="⚠️ Worker needs approval — ${title}"
 [ -n "$note" ]    && text="${text}

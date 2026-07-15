@@ -43,7 +43,7 @@ notification badge). The verbs below keep the whole loop allow-listed.
 | wait for the worker to stop | `scripts/agent-wait.sh <session-id>` (returns `STATE=waiting\|idle` + tail) |
 | ping the human on Telegram | `scripts/notify.sh --level done\|attention\|info <message>` |
 | ask the human to approve a **worker** (Telegram buttons) | `scripts/wask.sh <worker-id> [note]` — posts adaptive ✅ Yes / ♾️ Always / 🚫 No buttons that approve **that** worker via the `wapprove` bot command (needs a one-time `/reload`) |
-| register THIS session as `/o` target (**only when the user explicitly asks**) | `scripts/register.sh` |
+| register THIS session as `/o` target (**only when the user explicitly asks**) | `scripts/register.sh` — or the user presses **`cmd+shift+r`** in any session (toggles: again in the bound one = unbind) |
 | (inbound) Telegram `/o <msg>` injects `[tg] <msg>` here | handled by pako-telegram → `scripts/inject.sh` |
 | (rare) bring a session to the foreground | `scripts/agent-ctl.sh select <id>` — steals focus; `read`/`status` populate the buffer without it, so you rarely need this |
 
@@ -95,13 +95,47 @@ allow-list can't match them — they re-prompt. The fix is stable script paths. 
   `wask.sh` button is tapped: parses the worker id + `yes|always|no` from the single callback arg, maps
   it to a keystroke, injects into that worker id, and clears its stale blocked glyph. Worker analog of
   `oapprove.sh`. Not called by you directly — the bot invokes it via the button.
-- **`register.sh`** — records this session's `$AGTERM_SESSION_ID` in
+- **`register.sh [--toggle] [session-id]`** — records a session's id in
   `~/.config/orchestrating-agterm-agents/orchestrator_session` so the Telegram `/o` command can inject
-  into you. **Run ONLY when the user explicitly asks to make THIS session the Telegram target** — never
-  automatically on skill load. The `/ostart` command already registers the orchestrator it bootstraps,
-  so the normal path needs no manual call. "Newer wins": the latest registration is the live target.
-  Allow-listed, so it runs without a prompt. `inject.sh` (the inbound half) is invoked by pako-telegram,
-  not by you.
+  into it. Bare, it binds THIS session (`$AGTERM_SESSION_ID`). **Run ONLY when the user explicitly asks
+  to make THIS session the Telegram target** — never automatically on skill load. The `/ostart` command
+  already registers the orchestrator it bootstraps, so the normal path needs no manual call. "Newer
+  wins": the latest registration is the live target. Allow-listed, so it runs without a prompt.
+  `inject.sh` (the inbound half) is invoked by pako-telegram, not by you.
+  - The user can also bind whatever session they are sitting in with **`cmd+shift+r`** (keymap →
+    `register.sh --toggle "$AGT_SESSION_ID"`), which is how notifications follow them between agents.
+    It TOGGLES: pressed in the session that already owns Telegram it UNBINDS, which mutes the bridge
+    globally (`/o` then errors, approval buttons stop posting) rather than falling back to another
+    session. Acks with a one-shot status badge — cyan bound, grey unbound. `--toggle` is opt-in
+    precisely so `ostart.sh` and skill activation can never unbind by accident.
+  - A bound session pings Telegram when its turn ends — see `tg-agterm.sh` below.
+- **`tg-agterm.sh`** — the Claude Code hook that IS the outbound bridge for the REGISTERED session.
+  Wired in `~/.claude/settings.json` under two events; never call it yourself. Fail-open: any gate that
+  does not hold exits 0 silently.
+  - **Notification** (matcher `permission_prompt`) — the bound session hit a permission prompt → posts
+    it with ✅ Yes / ♾️ Always / 🚫 No buttons (`act:oapprove:*` → `oapprove.sh`). `wask.sh` is the
+    worker analog of this.
+  - **Stop** — the bound session finished a turn → posts the turn's final answer, so an unattended job
+    reports itself. This is the real payoff for binding a session that is NOT Telegram-aware (a worker,
+    a plain Claude session): those never call `notify.sh`, so they used to finish in silence.
+  - Skipped when the agent already reported via `notify.sh` that turn — a curated message beats an
+    automatic dump of the same thing.
+  - Markdown is STRIPPED, and `parse_mode` is deliberately not set: the prose routinely contains
+    underscores (`last_notify-*`) and unbalanced markers that make Telegram return 400, which would
+    lose the message outright. Lossy beats silent data loss.
+  - EVERY turn fires Stop — which is what makes the `cmd+shift+r` toggle load-bearing: unbind when
+    sitting at the keyboard, bind when walking away.
+  - After posting, Stop RE-ASSERTS the cyan bound-badge. The glyph is shared state that Claude's own
+    lifecycle hooks overwrite every turn, so `register.sh` setting it once never survives; re-asserting
+    it here does, because this hook runs last in the Stop chain and the session then sits idle. Verified
+    to persist on an unfocused session until it is visited (`--auto-reset`). Stop only — on the approval
+    path it would overwrite `blocked` and hide that a session needs a decision.
+  - Per-session state in `~/.config/orchestrating-agterm-agents/`: `last_notify-<id>` (notify.sh
+    reported this turn — written by `notify.sh`), `last_stop-<id>` (previous turn boundary),
+    `last_sent-<id>` (hash of the last text posted). The hash exists because the turn's final text
+    block reaches the transcript ~250ms AFTER Stop fires, so reading it naively posts the PREVIOUS
+    block. The hook polls for text it has not already sent — asking "is anything new?" rather than
+    "did it change?", which stays correct even if that write race disappears.
 
 ## Notifying the user
 The orchestrator runs unattended, so **surface anything a human must see** instead of silently waiting.

@@ -55,6 +55,11 @@ resp="$(curl -sS -m 15 -X POST "https://api.telegram.org/bot${token}/sendMessage
 case "$resp" in
   *'"ok":true'*)
     echo "notify: sent"
+    # Mark that THIS session reported to the user in this turn, so tg-agterm.sh's Stop hook doesn't
+    # also auto-post the turn's final text — the agent already said it, better. Keyed by session: a
+    # worker calling notify.sh must not silence the orchestrator's turn-done ping (or vice versa).
+    # Best-effort only; never affects notify's exit status.
+    [ -n "${AGTERM_SESSION_ID:-}" ] && : > "$cfgdir/last_notify-${AGTERM_SESSION_ID}" 2>/dev/null || true
     # Best-effort: clear the orchestrator's own unread-notification badge (session.seen, agterm
     # 0.8.3+). It just pinged the user via Telegram, so the desktop badge is redundant — keep it from
     # climbing while the session sits unfocused. Reads the same regfile inject.sh writes; never
