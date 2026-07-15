@@ -70,6 +70,8 @@ It's a clean no-op outside agterm, outside zsh, or when disabled — so sourcing
 | `AGTERM_BADGE_RUN_COLOR` | `#a9c1d4` | Running dot (light blue-grey). |
 | `AGTERM_BADGE_OK_COLOR` | `#8fce9b` | Success dot (light green). |
 | `AGTERM_BADGE_FAIL_COLOR` | `#e6b800` | Failure dot (amber). |
+| `AGTERM_BADGE_RUN_BLINK` | `1` | Pulse the running dot. `0` for a steady dot. |
+| `AGTERM_BADGE_FAIL_BLINK` | `1` | Pulse the failure dot. `0` for a steady dot. |
 | `AGTERM_BADGE_IGNORE_RE` | `vim\|nvim\|less\|man\|ssh\|tmux\|…` | Interactive programs that get the running dot but no finish colour. |
 | `AGTERM_AGENT_RE` | agterm's default | Agent commands to leave to agterm's own integration (running dot only, no finish colour). |
 

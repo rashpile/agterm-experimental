@@ -21,6 +21,9 @@
 #   AGTERM_BADGE_RUN_COLOR   (#a9c1d4)    RUNNING glyph tint (light blue-grey)
 #   AGTERM_BADGE_OK_COLOR    (#8fce9b)    SUCCESS glyph tint (light green)
 #   AGTERM_BADGE_FAIL_COLOR  (#e6b800)    FAILURE glyph tint (amber)
+#   AGTERM_BADGE_RUN_BLINK   (1)          pulse the RUNNING glyph — 0 for a steady dot
+#   AGTERM_BADGE_FAIL_BLINK  (1)          pulse the FAILURE glyph — 0 for a steady dot
+#         ^ 1/y/yes/true/on = blink; anything else (0/no/off) = steady. Success never blinks.
 #         ^ all three default to LIGHT shades so a command is distinct from an AGENT (which uses
 #           agterm's default active/completed/blocked colours); set any of them empty to match agents.
 #   AGTERM_BADGE_IGNORE_RE   (see below)  commands this hook never touches (agents + interactive TUIs)
@@ -121,6 +124,10 @@ _fb_tinted() {
   if [ -n "$c" ]; then _fb_status "$@" --color "$c"; else _fb_status "$@"; fi
 }
 
+# _fb_on <value> — true when the value reads as enabled. Used by the *_BLINK knobs; anything else
+# (0/no/false/off/empty) is off.
+_fb_on() { [[ ${1:l} == (1|y|yes|true|on) ]] }
+
 # ── hooks ────────────────────────────────────────────────────────────────────
 # preexec: a command is about to run → show the dim running glyph immediately (blinking; agterm dims it).
 _fb_preexec() {
@@ -131,7 +138,8 @@ _fb_preexec() {
   if _fb_skip "$1"; then unset __fb_start; return; fi
   __fb_start=$EPOCHSECONDS
   __fb_cmd=$1
-  _fb_tinted "${AGTERM_BADGE_RUN_COLOR-#a9c1d4}" active --blink   # running: light blue-grey
+  local -a bl; _fb_on "${AGTERM_BADGE_RUN_BLINK:-1}" && bl=(--blink)
+  _fb_tinted "${AGTERM_BADGE_RUN_COLOR-#a9c1d4}" active $bl   # running: light blue-grey
 }
 
 # precmd: the command finished → replace the running glyph with the terminal state.
@@ -148,7 +156,8 @@ _fb_precmd() {
   elif (( st == 0 )); then
     _fb_tinted "${AGTERM_BADGE_OK_COLOR-#8fce9b}" completed --auto-reset          # success: light green
   else
-    _fb_tinted "${AGTERM_BADGE_FAIL_COLOR-#e6b800}" blocked --blink --auto-reset  # failure: amber/yellow
+    local -a bl; _fb_on "${AGTERM_BADGE_FAIL_BLINK:-1}" && bl=(--blink)
+    _fb_tinted "${AGTERM_BADGE_FAIL_COLOR-#e6b800}" blocked $bl --auto-reset      # failure: amber/yellow
   fi
 }
 
