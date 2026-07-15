@@ -82,12 +82,16 @@ _fb_list() {
 #      anything named in $AGTERM_BADGE_IGNORE_FILE.
 # Lists match the command's FIRST WORD (`bookokrat --foo` → `bookokrat`), same as the regexes.
 _fb_skip() {
-  # First word of the command line. NOTE: assign to an array first — `${${(z)1}[1]}` silently subscripts
-  # the *string* (giving "b" for "bookokrat") when the split yields a single word, and only behaves as an
-  # array when there are 2+ words.
+  # The command's first word, NORMALISED. Three traps here, all found the hard way:
+  #  1. assign to an array first — `${${(z)1}[1]}` silently subscripts the *string* (giving "b" for
+  #     "bookokrat") when the split yields a single word, and only acts as an array with 2+ words.
+  #  2. (Q) strips one level of shell quoting. agterm's restart re-runs each session's restored
+  #     foreground command SHELL-QUOTED — preexec receives `'claude' '--resume' '…'` — so the raw word is
+  #     `'claude'` (leading quote) and every match fails. That badged every restored session.
+  #  3. :t takes the basename, so a full-path invocation (/opt/homebrew/bin/claude) matches too.
   local -a words allow ignore
   words=(${(z)1})
-  local w=${words[1]}
+  local w=${${(Q)words[1]}:t}
 
   allow=(${(f)"$(_fb_list $AGTERM_BADGE_ALLOW_FILE)"})
   if (( $#allow )); then
@@ -95,8 +99,10 @@ _fb_skip() {
     return 0                                  # allowlist mode: everything else is skipped
   fi
 
-  [[ $1 =~ $AGTERM_AGENT_RE ]]        && return 0
-  [[ $1 =~ $AGTERM_BADGE_IGNORE_RE ]] && return 0
+  # match the normalised word, NOT the raw line — the line may be shell-quoted (see above). The regexes
+  # end with `([[:space:]]|$)`, so they match a bare word fine.
+  [[ $w =~ $AGTERM_AGENT_RE ]]        && return 0
+  [[ $w =~ $AGTERM_BADGE_IGNORE_RE ]] && return 0
   ignore=(${(f)"$(_fb_list $AGTERM_BADGE_IGNORE_FILE)"})
   (( ${ignore[(Ie)$w]} )) && return 0
   return 1
