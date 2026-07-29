@@ -45,17 +45,22 @@ if [ "$cmd" = spawn ] || [ "$cmd" = new ]; then
   cwd="${4:?spawn: missing <cwd>}"
   shift 4
   run="${*:-zsh -ic claude}"
+  # --no-select (agterm ≥0.15.2): create the worker in the BACKGROUND. Delegation is the whole point —
+  # spawning used to yank the user into the worker's workspace, mid-task, once per worker. Safe for the
+  # supervise loop: a never-selected session's buffer is still live, so `ready`/`read`/`status`/
+  # `agent-wait` all work without it ever being focused (verified). Use `agent-ctl.sh select <id>` on
+  # the rare occasion you actually want it foregrounded.
   if [ "$create_ws" = 1 ]; then
     # Idempotent: agterm reuses the workspace NAMED "$ws" if present, creates it if absent. Keeps the
     # whole spawn (incl. workspace creation) inside this one allow-listed path — no raw `workspace new`.
-    "$AGT" session new --workspace-name "$ws" --create-workspace \
+    "$AGT" session new --workspace-name "$ws" --create-workspace --no-select \
         --name "$name" --cwd "$cwd" --command "$run" --json | jq -r '.result.id'
     exit "${PIPESTATUS[0]:-$?}"
   fi
   wsid=$("$AGT" tree --json | jq -r --arg w "$ws" \
       '.result.tree.workspaces[] | select(.id==$w or .name==$w or (.name|startswith($w))) | .id' | head -1)
   [ -n "$wsid" ] || wsid="$ws"
-  "$AGT" session new --workspace "$wsid" --name "$name" --cwd "$cwd" --command "$run" --json \
+  "$AGT" session new --workspace "$wsid" --no-select --name "$name" --cwd "$cwd" --command "$run" --json \
     | jq -r '.result.id'
   exit "${PIPESTATUS[0]:-$?}"
 fi

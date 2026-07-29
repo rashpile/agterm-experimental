@@ -48,9 +48,48 @@ if [ -z "$token" ] || [ -z "$chat" ]; then
   exit 3
 fi
 
-resp="$(curl -sS -m 15 -X POST "https://api.telegram.org/bot${token}/sendMessage" \
-  --data-urlencode "chat_id=${chat}" \
-  --data-urlencode "text=${icon} ${msg}" 2>&1)"
+# Send the WHOLE message, split into ~2000-char parts (Telegram caps one message at 4096 chars, and a
+# long curated note would otherwise 400 and vanish). Split on LINE boundaries so paragraphs stay intact;
+# hard-split any single line that itself overruns. `iconv -c` drops invalid UTF-8 (Telegram rejects it).
+# ${#s} counts CHARACTERS under a UTF-8 locale, so "~2000 symbols" holds for Cyrillic too. Mirrors
+# tg-agterm.sh's Stop-path splitter.
+export LC_ALL=en_US.UTF-8
+msg="$(printf '%s' "$msg" | iconv -c -f utf-8 -t utf-8 2>/dev/null)"
+
+MAX=2000
+chunks=()
+buf=""
+while IFS= read -r line || [ -n "$line" ]; do
+  while [ "${#line}" -gt "$MAX" ]; do
+    [ -n "$buf" ] && { chunks+=("$buf"); buf=""; }
+    chunks+=("${line:0:$MAX}")
+    line="${line:$MAX}"
+  done
+  if [ -z "$buf" ]; then
+    buf="$line"
+  elif [ "$(( ${#buf} + 1 + ${#line} ))" -le "$MAX" ]; then
+    buf="${buf}"$'\n'"${line}"          # +1 for the rejoined newline
+  else
+    chunks+=("$buf"); buf="$line"
+  fi
+done <<< "$msg"
+[ -n "$buf" ] && chunks+=("$buf")
+
+# Send each part. FIRST failure wins for reporting and stops the run — half a broken thread beats a full
+# one. Prefix: bare icon for a single part, icon [i/n] for multi so ordering/completeness is obvious.
+n=${#chunks[@]}
+i=0
+resp=""
+for c in "${chunks[@]}"; do
+  i=$((i + 1))
+  if [ "$n" -gt 1 ]; then prefix="${icon} [$i/$n]
+"; else prefix="${icon} "; fi
+  resp="$(curl -sS -m 15 -X POST "https://api.telegram.org/bot${token}/sendMessage" \
+    --data-urlencode "chat_id=${chat}" \
+    --data-urlencode "text=${prefix}${c}" 2>&1)"
+  case "$resp" in *'"ok":true'*) ;; *) break ;; esac   # $resp holds the failing response for the report
+  [ "$i" -lt "$n" ] && sleep 0.3
+done
 
 case "$resp" in
   *'"ok":true'*)

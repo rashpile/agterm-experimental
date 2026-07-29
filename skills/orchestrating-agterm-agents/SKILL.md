@@ -243,8 +243,42 @@ payload first and decide** — don't reflexively press Enter. Target a specific 
 - **`quick type` / `quick text`** (0.10.1) — the quick terminal is now drivable like a session: a scratch
   channel that doesn't touch a worker's screen or its notification badge.
 - **`idleMs`** (tree-level) is **not** an agent-done signal — it counts ms since the last *user* input in
-  the window, so a worker grinding for 10 min still shows a large, growing `idleMs`. Keep `agent-wait.sh`
-  on screen-quiet polling.
+  the window, so a worker grinding for 10 min still shows a large, growing `idleMs`. `agent-wait.sh`
+  stays on screen-quiet polling — but see the next section for the signal that *would* work.
+
+## Event-driven waiting — investigated, NOT implemented (2026-07-21)
+
+`agent-wait.sh` infers "the worker finished" from 3 identical `session text` reads 1.5 s apart. That
+gives a **4.5 s floor even when the worker replied instantly**, and it is blind to a tool that runs
+without ticking output (see the `agent-wait` row in Common mistakes). `agtermctl events` exposes the
+exact signal instead, and on this machine the producer side is **already fully wired**: the user's
+Claude hooks set `active` on `UserPromptSubmit`/`PostToolUse`, `completed` on `Stop`, and `blocked` on
+`Notification`, via `~/.config/agterm/agent-status/agterm-agent-status.sh`. Nothing consumes them yet —
+`agtermctl events` currently appears only in the `agterm` skill's documentation.
+
+If you pick this up, these were measured, not assumed:
+
+- **`agtermctl events` is a blocking stream, not a signal.** Read its stdout until the wanted line
+  appears. Use process substitution (`while read … < <(agtermctl events …)`) — a pipeline puts the loop
+  in a subshell so its `exit` will not end your script. Closing the fd SIGPIPEs the producer; no `kill`
+  needed, and no orphans were left in testing. Wrap it in `timeout` so an event that never comes ends
+  the read.
+- **The subscribe race is real and sharp.** A no-cursor subscription anchors when its *first read*
+  completes, not at process start. Firing an event immediately after starting the listener missed it
+  **9 times out of 10**; a 0.3 s settle delay missed **0 of 10**. So the order is
+  **subscribe → settle → send → block**, and the awaiter must be backgrounded because the listener has
+  to be up before the prompt goes out.
+- **Skip the `--run`/`--after` cursor.** It removes the race in principle, but the anchor lives in the
+  raw `events.read` envelope (`{"run":…,"next":42}`) which the streaming CLI never prints — you would
+  be talking to the control socket directly — and cursor-run changes and expiry are documented as fatal
+  errors needing explicit handling.
+- **Keep the screen-polling fallback.** Status events depend on the user's hooks being configured in
+  that worker's directory. A worker whose hooks never fire, one that dies before `Stop`, or a plain
+  non-Claude command emits nothing at all. Event-first with polling as backup degrades to today's
+  behaviour; event-only would hang to timeout.
+
+Deferred deliberately — the polling version works today, and the race it would fix has a benign worst
+case (fall back to the slow path).
 
 ## Common mistakes
 | Mistake | Fix |

@@ -100,15 +100,48 @@ if [ "$event" = Stop ]; then
     -e 's/^[[:space:]]*\|[[:space:]]*//' \
     -e 's/[[:space:]]*\|[[:space:]]*$//')"
 
-  # Keep the HEAD here, unlike the approval snippet below: an answer leads with its conclusion, so an
-  # overrun should lose trailing detail, not the verdict. `head -c` can slice a UTF-8 char in half and
-  # Telegram rejects invalid UTF-8 — `iconv -c` drops any such partial tail.
-  body="$(printf '%s' "$plain" | head -c 3000 | iconv -c -f utf-8 -t utf-8 2>/dev/null)"
-  [ "${#plain}" -gt "${#body}" ] && body="${body}…"
+  # Send the WHOLE answer, not a truncated head — a long turn (e.g. a feature write-up) used to lose its
+  # tail to a 3000-char cap. Telegram's hard limit is 4096 chars/message, so split into ~2000-char parts.
+  # Split on LINE boundaries so paragraphs stay intact; hard-split any single line that itself overruns.
+  # `iconv -c` first drops invalid UTF-8 (Telegram rejects it, and it would corrupt the char counting).
+  # ${#s} counts CHARACTERS under a UTF-8 locale — so "~2000 symbols" holds for Cyrillic too, not bytes.
+  export LC_ALL=en_US.UTF-8
+  plain="$(printf '%s' "$plain" | iconv -c -f utf-8 -t utf-8 2>/dev/null)"
 
-  curl -sS -m 15 -X POST "https://api.telegram.org/bot${token}/sendMessage" \
-    --data-urlencode "chat_id=${chat}" \
-    --data-urlencode "text=✅ ${body}" >/dev/null 2>&1
+  MAX=2000
+  chunks=()
+  buf=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    # A single line longer than MAX can't ride in one message: flush what's buffered, then emit
+    # MAX-char slices until the remainder fits. Substring is char-based under the UTF-8 locale.
+    while [ "${#line}" -gt "$MAX" ]; do
+      [ -n "$buf" ] && { chunks+=("$buf"); buf=""; }
+      chunks+=("${line:0:$MAX}")
+      line="${line:$MAX}"
+    done
+    if [ -z "$buf" ]; then
+      buf="$line"
+    elif [ "$(( ${#buf} + 1 + ${#line} ))" -le "$MAX" ]; then
+      buf="${buf}"$'\n'"${line}"          # +1 for the rejoined newline
+    else
+      chunks+=("$buf"); buf="$line"
+    fi
+  done <<< "$plain"
+  [ -n "$buf" ] && chunks+=("$buf")
+
+  # Prefix: bare ✅ for a single part; ✅ [i/n] for multi so ordering/completeness is obvious on a phone.
+  n=${#chunks[@]}
+  i=0
+  for c in "${chunks[@]}"; do
+    i=$((i + 1))
+    if [ "$n" -gt 1 ]; then prefix="✅ [$i/$n]
+"; else prefix="✅ "; fi
+    curl -sS -m 15 -X POST "https://api.telegram.org/bot${token}/sendMessage" \
+      --data-urlencode "chat_id=${chat}" \
+      --data-urlencode "text=${prefix}${c}" >/dev/null 2>&1
+    # Sequential sends usually arrive in order; a short gap makes Telegram's ordering reliable for multi.
+    [ "$i" -lt "$n" ] && sleep 0.3
+  done
 
   # Restore the cyan "this session owns Telegram" badge. register.sh sets it at bind time, but the glyph
   # is shared state that Claude's own lifecycle hooks overwrite every turn, so it never survives on its
@@ -126,17 +159,36 @@ fi
 printf '%s' "$message" | grep -qiE 'permission|needs your|approv' || exit 0
 
 # Read the pending-prompt screen once — used both to detect the menu shape and to build the snippet.
-screen="$("$AGT" session text --target "$sid" --json 2>/dev/null | "$JQ" -r '.result.text // ""')"
+# Read the AGENT's pane, not the on-screen one. In a split session where the OTHER pane (e.g. an nvim
+# file tree) has focus, `session text` defaults to that focused pane, so the snippet AND the button-shape
+# would be built from the wrong pane (the reported bug: the approval message showed a file tree). This
+# hook runs inside the agent process, which exports AGTERM_PANE = the pane the agent lives in —
+# authoritative regardless of focus, and immutable for the process. Only pass --pane when set, so an
+# older agterm without the flag still works (falls back to the on-screen pane, i.e. today's behaviour).
+pane_arg=(); [ -n "${AGTERM_PANE:-}" ] && pane_arg=(--pane "$AGTERM_PANE")
+screen="$("$AGT" session text "${pane_arg[@]}" --target "$sid" --json 2>/dev/null | "$JQ" -r '.result.text // ""')"
 
-# A sanitized snippet of what's being approved. ASCII-only so the Telegram send can't be broken by
-# multi-byte box-drawing (same reasoning as os.yaml), then bounded to fit one message. Bounds match
-# wask.sh — see the rationale there; in short, `tail -c` (not `head -c`) so an overrun drops the oldest
-# lines rather than the "Do you want to..." question and menu at the bottom.
+# A sanitized snippet of what's being approved. Keep letters in ANY language (Cyrillic, CJK, …) — the
+# old `tr -cd '\40-\176'` was ASCII-only and silently deleted every non-Latin character, so a Russian
+# prompt arrived as bare English scaffolding. Instead: drop only the TUI box-drawing/block frame and
+# control chars, and guarantee valid UTF-8 with iconv (Telegram 400s on invalid bytes — the actual
+# hazard the ASCII strip was guarding against). perl -CSDA does the unicode-range work; /usr/bin/perl
+# ships with macOS and is on the PATH set above.
+# Bounds match wask.sh: clamp each line to 160 chars, then `tail` (not `head`) so an overrun drops the
+# OLDEST lines, never the "Do you want to..." question and menu at the bottom. The final iconv -c cleans
+# any partial multi-byte char that `tail -c 3000` may have sliced.
 snippet="$(printf '%s' "$screen" \
-  | LC_ALL=C tr -cd '\11\12\15\40-\176' \
-  | grep -vE '^[[:space:]]*$' \
-  | grep -viE 'for shortcuts|to interrupt|for agents|session /|/hr|tokens' \
-  | tail -30 | cut -c1-160 | tail -c 3000)"
+  | iconv -c -f utf-8 -t utf-8 2>/dev/null \
+  | perl -CSDA -ne '
+      chomp;
+      s/[\x{2500}-\x{259F}]//g;                 # box-drawing + block elements → strip the frame
+      s/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]//g;     # control chars, but keep \t \n \r
+      next if /^\s*$/;
+      next if /for shortcuts|to interrupt|for agents|session \/|\/hr|tokens/i;
+      $_ = substr($_,0,160) if length > 160;
+      print "$_\n";
+    ' \
+  | tail -30 | tail -c 3000 | iconv -c -f utf-8 -t utf-8 2>/dev/null)"
 
 text="⚠️ Orchestrator needs approval
 ${message}"
