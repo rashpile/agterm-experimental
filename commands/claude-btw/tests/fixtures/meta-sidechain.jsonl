@@ -1,0 +1,5 @@
+{"type":"user","isMeta":true,"message":{"role":"user","content":[{"type":"text","text":"Base directory for this skill: /x"}]}}
+{"type":"user","isSidechain":true,"message":{"role":"user","content":"subagent task brief"}}
+{"type":"assistant","isSidechain":true,"message":{"role":"assistant","content":[{"type":"text","text":"subagent answer"}]}}
+{"type":"user","message":{"role":"user","content":"real question"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"real answer"}]}}

@@ -1,0 +1,14 @@
+{"type":"attachment","payload":{"x":1}}
+{"type":"last-prompt","text":"hi"}
+{"type":"mode","mode":"default"}
+{"type":"permission-mode","mode":"acceptEdits"}
+{"type":"ai-title","title":"Some title"}
+{"type":"file-history-snapshot","files":[]}
+{"type":"file-history-delta","files":[]}
+{"type":"queue-operation","op":"add"}
+{"type":"agent-name","name":"x"}
+{"type":"bridge-session","id":"x"}
+{"type":"custom-title","title":"x"}
+{"type":"pr-link","url":"http://x"}
+{"type":"frame-link","url":"http://x"}
+{"type":"user","message":{"role":"user","content":"the only real message"}}

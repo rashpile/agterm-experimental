@@ -1,0 +1,6 @@
+{"type":"user","message":{"role":"user","content":"one"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"two"}]}}
+{"type":"user","message":{"role":"user","content":"three"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"four"}]}}
+{"type":"user","message":{"role":"user","content":"five"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"six"}]}}

@@ -1,0 +1,2 @@
+{"type":"user","message":{"role":"user","content":"before<system-reminder>\nnoise\nmore noise\n</system-reminder>after"}}
+{"type":"user","message":{"role":"user","content":"<local-command-stdout>dropped</local-command-stdout>kept"}}
