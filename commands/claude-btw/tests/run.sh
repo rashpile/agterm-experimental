@@ -60,6 +60,50 @@ report_case report-squeezed squeeze 1 \
 report_case report-empty noise 15 \
   "messages=0 markers=0 mode=verbatim collapsed=0"
 
+# --- verdicts -------------------------------------------------------------
+LIB=$REPO/skills/btw/scripts/lib.sh
+
+verdict_case() {  # name tree-ids registry-keys pane expected
+  local name=$1 ids=$2 keys=$3 pane=$4 expected=$5
+  local root; root=$(mktemp -d)
+  mkdir -p "$root/tabs"
+  local k
+  for k in ${=keys}; do
+    jq -n --arg c "cl-$k" '{claude_session_id: $c}' > "$root/tabs/$k"
+  done
+  local actual
+  actual=$(
+    AGTERM_TABS_DIR=$root/tabs BTW_ROOT=$root/btw \
+    AGTERMCTL=$HERE/fake-agtermctl.sh FAKE_TREE_IDS=$ids \
+    zsh -c "source '$LIB'; btw_verdict 'sid1' '$pane'"
+  )
+  rm -rf "$root"
+  assert_eq "$name" "$expected" "$actual"
+}
+
+print -r -- ""
+print -r -- "verdicts:"
+verdict_case verdict-ok        "sid1 sid2" "sid1.left"            left ok
+verdict_case verdict-moved     "sid1 sid2" "sid1.right"           left moved
+verdict_case verdict-ambiguous "sid1 sid2" "sid1.right sid1.scratch" left ambiguous
+verdict_case verdict-gone-tab  "sid2"      "sid1.left"            left gone
+verdict_case verdict-gone-noclaude "sid1 sid2" ""                 left gone
+
+input_case() {  # name pane-text expected-exit
+  local name=$1 text=$2 expected=$3
+  local actual
+  AGTERMCTL=$HERE/fake-agtermctl.sh FAKE_PANE_TEXT=$text \
+    zsh -c "source '$LIB'; btw_input_empty 'sid1' 'left'"
+  actual=$?
+  assert_eq "$name" "$expected" "$actual"
+}
+
+print -r -- ""
+print -r -- "input box:"
+input_case input-empty     $'│ > │\n' 0
+input_case input-typed     $'│ > half typed │\n' 1
+input_case input-noprompt  $'nothing here\n' 1
+
 print -r -- ""
 print -r -- "$PASS passed, $FAIL failed"
 (( FAIL == 0 ))
