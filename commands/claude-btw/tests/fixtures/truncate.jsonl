@@ -1,0 +1,2 @@
+{"type":"user","message":{"role":"user","content":"this user message is definitely longer than twenty characters and must survive whole"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"0123456789abcdefghijKLMNO"}]}}

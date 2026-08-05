@@ -1,0 +1,4 @@
+{"type":"user","message":{"role":"user","content":"before compaction"}}
+{"type":"system","subtype":"compact_boundary","content":"…"}
+{"type":"user","isCompactSummary":true,"message":{"role":"user","content":"a very long compact summary that must not appear"}}
+{"type":"user","message":{"role":"user","content":"after compaction"}}

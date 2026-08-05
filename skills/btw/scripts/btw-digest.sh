@@ -17,6 +17,9 @@ file=${1:?usage: btw-digest.sh <transcript.jsonl> <from-line>}
 from=${2:-1}
 
 ACHARS=${BTW_ASSISTANT_CHARS:-1200}
+SQUEEZE=${BTW_SQUEEZE_BYTES:-24576}
+TAIL=${BTW_TAIL_MSGS:-20}
+CCHARS=${BTW_COLLAPSE_CHARS:-160}
 
 read -r -d '' NORMALIZE <<'JQ'
 def textof:
@@ -56,20 +59,61 @@ read -r -d '' RENDER <<'JQ'
 def trunc($n):
   if (length > $n) then .[0:$n] + "…[+" + ((length - $n) | tostring) + " chars]" else . end;
 
+def brief($n):
+  ((split("\n") | map(select(length > 0)) | .[0]) // "") as $l
+  | (($l | index(". ")) as $i | if $i == null then $l else $l[0:$i+1] end)
+  | if (length > $n) then .[0:$n] + "…" else . end;
+
+# NOT `def label:` — `label` is a jq reserved keyword (`label $out | …`) and
+# defining it is a hard syntax error.
+def rolename: if . == "user" then "user" else "claude" end;
+
 def full:
   if .kind == "marker" then "--- \(.text) ---"
   elif .role == "user" then "## user\n\(.text)"
   else "## claude\n\(.text | trunc($ac))"
   end;
 
-map(full) | join("\n\n")
+def collapsed:
+  if .kind == "marker" then "- --- \(.text) ---"
+  else "- **\(.role | rolename)** \(.text | brief($cc))"
+  end;
+
+if $mode == "verbatim" then
+  map(full) | join("\n\n")
+else
+  (length - $tail) as $cut
+  | if $cut <= 0 then (map(full) | join("\n\n"))
+    else
+      "## earlier (collapsed)\n\n"
+      + (.[0:$cut] | map(collapsed) | join("\n"))
+      + "\n\n"
+      + (.[$cut:] | map(full) | join("\n\n"))
+    end
+end
 JQ
 
-body=$(print -r -- "$norm" | jq -sr --argjson ac "$ACHARS" "$RENDER")
+render() {  # $1 = verbatim|squeezed
+  print -r -- "$norm" | jq -sr \
+    --arg mode "$1" --argjson ac "$ACHARS" --argjson tail "$TAIL" --argjson cc "$CCHARS" \
+    "$RENDER"
+}
 
-msgs=$(print -r -- "$norm"   | jq -s '[.[] | select(.kind == "msg")]    | length')
-marks=$(print -r -- "$norm"  | jq -s '[.[] | select(.kind == "marker")] | length')
+total=$(print -r -- "$norm" | jq -s 'length')
+mode=verbatim
+collapsed=0
+body=$(render verbatim)
 bytes=$(print -r -- "$body" | wc -c | tr -d ' ')
 
+if (( bytes > SQUEEZE )) && (( total > TAIL )); then
+  mode=squeezed
+  collapsed=$(( total - TAIL ))
+  body=$(render squeezed)
+  bytes=$(print -r -- "$body" | wc -c | tr -d ' ')
+fi
+
+msgs=$(print -r -- "$norm"  | jq -s '[.[] | select(.kind == "msg")]    | length')
+marks=$(print -r -- "$norm" | jq -s '[.[] | select(.kind == "marker")] | length')
+
 print -r -- "$body"
-print -ru2 -- "messages=$msgs markers=$marks mode=verbatim bytes=$bytes collapsed=0"
+print -ru2 -- "messages=$msgs markers=$marks mode=$mode bytes=$bytes collapsed=$collapsed"

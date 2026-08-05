@@ -1,0 +1,6 @@
+{"type":"user","message":{"role":"user","content":"first question. with a second sentence that gets cut"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"first answer\nsecond line dropped"}]}}
+{"type":"user","message":{"role":"user","content":"second question"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"second answer"}]}}
+{"type":"user","message":{"role":"user","content":"third question"}}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"third answer"}]}}
