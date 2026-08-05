@@ -854,8 +854,13 @@ Expected: JSON with `"claude_session_id": "abc-123"`, `"pane": "left"`, `"cwd": 
 Run:
 
 ```bash
-# no agterm -> no file, exit 0
-AGTERM_TABS_DIR=/tmp/btw-test/tabs hooks/agterm-tabs/register-tab.sh start <<<'{"session_id":"x"}'; echo "exit=$?"
+# no agterm -> no file, exit 0.
+# `env -u` is REQUIRED, not optional tidiness: you will be running this from a
+# shell inside agterm, which exports AGTERM_SESSION_ID and AGTERM_PANE. Without
+# unsetting them the hook sees a live agterm session, writes a real record, and
+# the test silently passes while verifying nothing.
+env -u AGTERM_SESSION_ID -u AGTERM_PANE \
+  AGTERM_TABS_DIR=/tmp/btw-test/tabs hooks/agterm-tabs/register-tab.sh start <<<'{"session_id":"x"}'; echo "exit=$?"
 ls /tmp/btw-test/tabs
 
 # empty session_id -> record unchanged
