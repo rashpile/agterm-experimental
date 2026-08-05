@@ -269,9 +269,12 @@ def textof:
   else [ .message.content[]? | select(.type == "text") | .text ] | join("\n\n")
   end;
 
+# jq's dotall flag is "m", NOT "s". jq inverts the PCRE convention: "s" is
+# single-line mode (^ and $ anchor the whole string) and "m" is what makes `.`
+# match a newline. With "s" these two gsubs silently never match.
 def clean:
-    gsub("<system-reminder>.*?</system-reminder>"; ""; "s")
-  | gsub("<local-command-stdout>.*?</local-command-stdout>"; ""; "s")
+    gsub("<system-reminder>.*?</system-reminder>"; ""; "m")
+  | gsub("<local-command-stdout>.*?</local-command-stdout>"; ""; "m")
   | sub("^[[:space:]]+"; "")
   | sub("[[:space:]]+$"; "");
 
@@ -300,8 +303,6 @@ fi
 read -r -d '' RENDER <<'JQ'
 def trunc($n):
   if (length > $n) then .[0:$n] + "…[+" + ((length - $n) | tostring) + " chars]" else . end;
-
-def label: if . == "user" then "user" else "claude" end;
 
 def full:
   if .kind == "marker" then "--- \(.text) ---"
@@ -448,7 +449,7 @@ report_case report-verbatim basic 1 \
 report_case report-squeezed squeeze 1 \
   "messages=6 markers=0 mode=squeezed collapsed=4" \
   BTW_SQUEEZE_BYTES=1 BTW_TAIL_MSGS=2 BTW_COLLAPSE_CHARS=20
-report_case report-empty noise 14 \
+report_case report-empty noise 15 \
   "messages=0 markers=0 mode=verbatim collapsed=0"
 ```
 
@@ -481,7 +482,9 @@ def brief($n):
   | (($l | index(". ")) as $i | if $i == null then $l else $l[0:$i+1] end)
   | if (length > $n) then .[0:$n] + "…" else . end;
 
-def label: if . == "user" then "user" else "claude" end;
+# NOT `def label:` — `label` is a jq reserved keyword (`label $out | …`) and
+# defining it is a hard syntax error.
+def rolename: if . == "user" then "user" else "claude" end;
 
 def full:
   if .kind == "marker" then "--- \(.text) ---"
@@ -491,7 +494,7 @@ def full:
 
 def collapsed:
   if .kind == "marker" then "- --- \(.text) ---"
-  else "- **\(.role | label)** \(.text | brief($cc))"
+  else "- **\(.role | rolename)** \(.text | brief($cc))"
   end;
 
 if $mode == "verbatim" then
