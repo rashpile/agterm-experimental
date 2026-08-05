@@ -1,6 +1,7 @@
 #!/bin/zsh
 # Shared helpers for claude-btw. Sourced by btw-sync.sh, btw-back.sh and
 # claude-btw.sh. Every root is overridable so the test suite can redirect it.
+set -u
 
 AGTERM_TABS_DIR=${AGTERM_TABS_DIR:-$HOME/.claude/agterm/tabs}
 BTW_ROOT=${BTW_ROOT:-$HOME/.claude/btw}
