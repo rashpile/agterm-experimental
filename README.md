@@ -143,8 +143,12 @@ one before it:
    up on base activity and send an answer back without flooding its own context or clobbering the
    base tab's prompt.
 
-Full install steps (in this order) live in
-**[`claude-btw/README.md`](claude-btw/README.md#install)**, kept there and only there so they
+Installed with `claude-btw/install.sh` (`--dry-run` to preview, `--link` to symlink instead of
+copy) and removed with `claude-btw/uninstall.sh` (`--purge` to also drop runtime state). Both
+patch the two live config files these parts need — `~/.claude/settings.json` and
+`~/.config/agterm/keymap.conf` — as a merge, with a timestamped backup before every change. Full
+details, including the manual step-by-step (in this order) for auditing or doing it by hand, live
+in **[`claude-btw/README.md`](claude-btw/README.md#install)**, kept there and only there so they
 can't drift out of sync with this overview.
 
 - **Fork tabs only survive an agterm restart if "Restore running commands on restart" is on**

@@ -287,6 +287,172 @@ assert_eq sync4-count                3                 "$(print -r -- "$m4" | jq
 
 rm -rf "$sync_root"
 
+# --- install.sh / uninstall.sh ----------------------------------------------
+# Both scripts are exercised only against a scratch HOME + AGTERM_CONFIG_DIR +
+# AGTERM_PROJECTS_DIR -- never the real ones (a stray real run would rewrite
+# this machine's live settings.json and keymap.conf). `zsh -f` skips this
+# machine's own zshenv/zprofile so output is deterministic.
+INSTALL=$REPO/claude-btw/install.sh
+UNINSTALL=$REPO/claude-btw/uninstall.sh
+
+run_install() {  # root [args...]
+  local root=$1; shift
+  HOME=$root/home AGTERM_CONFIG_DIR=$root/home/.config/agterm \
+    AGTERM_PROJECTS_DIR=$root/home/.config/agterm-projects \
+    zsh -f "$INSTALL" "$@" 2>&1
+}
+
+run_uninstall() {  # root [args...]
+  local root=$1; shift
+  HOME=$root/home AGTERM_CONFIG_DIR=$root/home/.config/agterm \
+    AGTERM_PROJECTS_DIR=$root/home/.config/agterm-projects \
+    zsh -f "$UNINSTALL" "$@" 2>&1
+}
+
+print -r -- ""
+print -r -- "install.sh / uninstall.sh:"
+
+# --- 1. --dry-run writes nothing at all -------------------------------------
+root=$(mktemp -d); mkdir -p "$root/home"
+before=$(cd "$root" && find . | sort)
+out=$(run_install "$root" --dry-run)
+after=$(cd "$root" && find . | sort)
+assert_eq install-dryrun-tree-untouched "$before" "$after"
+assert_contains install-dryrun-says-would "$out" "would "
+rm -rf "$root"
+
+# --- 2. a clean install lands all five artifacts + valid settings.json -----
+root=$(mktemp -d); mkdir -p "$root/home"
+h=$root/home
+run_install "$root" >/dev/null
+if [[ -f $h/.claude/hooks/agterm-tabs/register-tab.sh ]]; then ok install-hook-file
+else bad install-hook-file "missing $h/.claude/hooks/agterm-tabs/register-tab.sh"; fi
+if [[ -f $h/.config/agterm-projects/claude-btw.sh ]]; then ok install-hotkey-file
+else bad install-hotkey-file "missing $h/.config/agterm-projects/claude-btw.sh"; fi
+if [[ -f $h/.claude/skills/btw/SKILL.md ]]; then ok install-skill-file
+else bad install-skill-file "missing $h/.claude/skills/btw/SKILL.md"; fi
+if [[ -L $h/.claude/commands/btw-sync.md ]]; then ok install-symlink-sync
+else bad install-symlink-sync "missing symlink $h/.claude/commands/btw-sync.md"; fi
+if [[ -L $h/.claude/commands/btw-back.md ]]; then ok install-symlink-back
+else bad install-symlink-back "missing symlink $h/.claude/commands/btw-back.md"; fi
+if jq -e . "$h/.claude/settings.json" >/dev/null 2>&1; then ok install-settings-valid-json
+else bad install-settings-valid-json "$h/.claude/settings.json is not valid JSON"; fi
+assert_eq install-keymap-has-block 1 "$(grep -c '^# >>> claude-btw >>>$' "$h/.config/agterm/keymap.conf")"
+rm -rf "$root"
+
+# --- 3. install into a settings.json / keymap.conf that already carry
+#     unrelated SessionStart/SessionEnd hooks and unrelated keymap lines --
+#     those must survive completely untouched. This is the one that matters
+#     most: a merge bug here means a stray reinstall silently eats someone
+#     else's hooks. ---
+root=$(mktemp -d); mkdir -p "$root/home/.claude" "$root/home/.config/agterm"
+h=$root/home
+cat > "$h/.claude/settings.json" <<'EOF'
+{
+  "hooks": {
+    "SessionStart": [
+      {"matcher": "", "hooks": [{"type": "command", "command": "/opt/homebrew/bin/some-other-tool.sh start", "timeout": 5}]}
+    ],
+    "SessionEnd": [
+      {"matcher": "", "hooks": [{"type": "command", "command": "/opt/homebrew/bin/some-other-tool.sh end", "timeout": 5}]}
+    ],
+    "PreToolUse": [
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "/opt/homebrew/bin/guard.sh", "timeout": 5}]}
+    ]
+  }
+}
+EOF
+unrelated_start_before=$(jq -c '.hooks.SessionStart[0]' "$h/.claude/settings.json")
+unrelated_end_before=$(jq -c '.hooks.SessionEnd[0]' "$h/.claude/settings.json")
+unrelated_pretool_before=$(jq -c '.hooks.PreToolUse' "$h/.claude/settings.json")
+cat > "$h/.config/agterm/keymap.conf" <<'EOF'
+command "Split" cmd+d $HOME/scripts/split.sh
+command "Other thing" cmd+e $HOME/scripts/other.sh
+EOF
+keymap_before=$(< "$h/.config/agterm/keymap.conf")
+
+run_install "$root" >/dev/null
+
+assert_eq install-preserves-unrelated-sessionstart "$unrelated_start_before" "$(jq -c '.hooks.SessionStart[0]' "$h/.claude/settings.json")"
+assert_eq install-preserves-unrelated-sessionend   "$unrelated_end_before"   "$(jq -c '.hooks.SessionEnd[0]'   "$h/.claude/settings.json")"
+assert_eq install-preserves-unrelated-pretooluse   "$unrelated_pretool_before" "$(jq -c '.hooks.PreToolUse' "$h/.claude/settings.json")"
+assert_eq install-adds-one-sessionstart 2 "$(jq '.hooks.SessionStart | length' "$h/.claude/settings.json")"
+assert_eq install-adds-one-sessionend   2 "$(jq '.hooks.SessionEnd | length'   "$h/.claude/settings.json")"
+if grep -qF 'command "Split" cmd+d' "$h/.config/agterm/keymap.conf" \
+   && grep -qF 'command "Other thing" cmd+e' "$h/.config/agterm/keymap.conf"; then
+  ok install-preserves-unrelated-keymap-lines
+else
+  bad install-preserves-unrelated-keymap-lines "unrelated keymap lines missing after install"
+fi
+
+# --- 4. running install twice is idempotent: exactly one keymap block,
+#     exactly one pair of hook entries (continues on the same tree as #3,
+#     which already carries unrelated entries -- so this also proves the
+#     second pass doesn't re-duplicate those). ---
+out2=$(run_install "$root")
+assert_eq install-idempotent-sessionstart-count 2 "$(jq '.hooks.SessionStart | length' "$h/.claude/settings.json")"
+assert_eq install-idempotent-sessionend-count   2 "$(jq '.hooks.SessionEnd | length'   "$h/.claude/settings.json")"
+assert_eq install-idempotent-keymap-block-count 1 "$(grep -c '^# >>> claude-btw >>>$' "$h/.config/agterm/keymap.conf")"
+assert_contains install-idempotent-reports-up-to-date "$out2" "up to date"
+
+# --- 5. uninstall removes our artifacts/entries and leaves the unrelated
+#     hooks and unrelated keymap lines byte-identical to what they were
+#     before install ever ran. ---
+run_uninstall "$root" >/dev/null
+if [[ ! -e $h/.claude/hooks/agterm-tabs ]]; then ok uninstall-removes-hook
+else bad uninstall-removes-hook "still present: $h/.claude/hooks/agterm-tabs"; fi
+if [[ ! -e $h/.config/agterm-projects/claude-btw.sh ]]; then ok uninstall-removes-hotkey
+else bad uninstall-removes-hotkey "still present: $h/.config/agterm-projects/claude-btw.sh"; fi
+if [[ ! -e $h/.claude/skills/btw ]]; then ok uninstall-removes-skill
+else bad uninstall-removes-skill "still present: $h/.claude/skills/btw"; fi
+if [[ ! -e $h/.claude/commands/btw-sync.md && ! -L $h/.claude/commands/btw-sync.md ]]; then ok uninstall-removes-symlink-sync
+else bad uninstall-removes-symlink-sync "still present: $h/.claude/commands/btw-sync.md"; fi
+if [[ ! -e $h/.claude/commands/btw-back.md && ! -L $h/.claude/commands/btw-back.md ]]; then ok uninstall-removes-symlink-back
+else bad uninstall-removes-symlink-back "still present: $h/.claude/commands/btw-back.md"; fi
+
+assert_eq uninstall-preserves-unrelated-sessionstart "$unrelated_start_before" "$(jq -c '.hooks.SessionStart[0]' "$h/.claude/settings.json")"
+assert_eq uninstall-preserves-unrelated-sessionend   "$unrelated_end_before"   "$(jq -c '.hooks.SessionEnd[0]'   "$h/.claude/settings.json")"
+assert_eq uninstall-preserves-unrelated-pretooluse   "$unrelated_pretool_before" "$(jq -c '.hooks.PreToolUse' "$h/.claude/settings.json")"
+assert_eq uninstall-removes-our-sessionstart-count 1 "$(jq '.hooks.SessionStart | length' "$h/.claude/settings.json")"
+assert_eq uninstall-removes-our-sessionend-count   1 "$(jq '.hooks.SessionEnd | length'   "$h/.claude/settings.json")"
+assert_eq uninstall-keymap-byte-identical "$keymap_before" "$(< "$h/.config/agterm/keymap.conf")"
+rm -rf "$root"
+
+# --- 6. uninstall leaves runtime state alone by default; --purge removes it -
+root=$(mktemp -d); mkdir -p "$root/home/.claude/agterm/tabs" "$root/home/.claude/btw"
+h=$root/home
+print -r -- "registry entry" > "$h/.claude/agterm/tabs/dummy.left"
+print -r -- "my own notes"    > "$h/.claude/btw/answer-001.md"
+run_install "$root" >/dev/null
+out_nopurge=$(run_uninstall "$root")
+if [[ -f $h/.claude/btw/answer-001.md ]]; then ok uninstall-no-purge-keeps-btw-state
+else bad uninstall-no-purge-keeps-btw-state "answer-001.md was removed without --purge"; fi
+if [[ -f $h/.claude/agterm/tabs/dummy.left ]]; then ok uninstall-no-purge-keeps-tabs
+else bad uninstall-no-purge-keeps-tabs "tabs registry was removed without --purge"; fi
+assert_contains uninstall-no-purge-mentions-purge "$out_nopurge" "--purge"
+run_uninstall "$root" --purge >/dev/null
+if [[ ! -e $h/.claude/btw ]]; then ok uninstall-purge-removes-btw-state
+else bad uninstall-purge-removes-btw-state "still present: $h/.claude/btw"; fi
+if [[ ! -e $h/.claude/agterm/tabs ]]; then ok uninstall-purge-removes-tabs
+else bad uninstall-purge-removes-tabs "still present: $h/.claude/agterm/tabs"; fi
+rm -rf "$root"
+
+# --- 7. --link installs by symlink, and the installed claude-btw.sh still
+#     resolves lib.sh through it (never run without --dry-run: this touches
+#     no live agterm session, only the registry lookup, which is empty). ---
+root=$(mktemp -d); mkdir -p "$root/home"
+h=$root/home
+run_install "$root" --link >/dev/null
+if [[ -L $h/.claude/skills/btw ]]; then ok link-skill-is-symlink
+else bad link-skill-is-symlink "$h/.claude/skills/btw is not a symlink"; fi
+if [[ -L $h/.config/agterm-projects/claude-btw.sh ]]; then ok link-hotkey-is-symlink
+else bad link-hotkey-is-symlink "$h/.config/agterm-projects/claude-btw.sh is not a symlink"; fi
+btw_out=$(HOME=$h AGTERMCTL=$HERE/fake-agtermctl.sh zsh -f "$h/.config/agterm-projects/claude-btw.sh" --dry-run sid1 left /tmp/proj myproj 2>&1)
+btw_status=$?
+assert_eq link-claude-btw-dry-run-exit-0 0 "$btw_status"
+assert_not_contains link-claude-btw-resolves-lib "$btw_out" "cannot find lib.sh"
+rm -rf "$root"
+
 print -r -- ""
 print -r -- "$PASS passed, $FAIL failed"
 (( FAIL == 0 ))
