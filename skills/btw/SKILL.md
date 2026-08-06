@@ -71,13 +71,17 @@ Compose the answer to the side question as markdown, plus one short sentence tha
 Write the answer body to stdin via a heredoc and pass the sentence as `--line`:
 
 ```bash
-skills/btw/scripts/btw-back.sh --line "Auth validates JWTs in Gin middleware, not per-handler" <<'EOF'
+~/.claude/skills/btw/scripts/btw-back.sh --line "Auth validates JWTs in Gin middleware, not per-handler" <<'EOF'
 ## Where auth happens
 
 `internal/api/middleware.go:41` installs a Gin middleware that validates the
 JWT once per request...
 EOF
 ```
+
+(If running from a checkout of this repo, `skills/btw/scripts/btw-back.sh` also works — but a
+fork inherits the *base tab's* cwd, the user's project, never this repo, so the installed path
+is the general case.)
 
 The script always writes the full answer to `$BTW_ROOT/forks/$AGTERM_SESSION_ID/answer-NNN.md`
 **first** — so the answer is never lost, even on a refusal. It then checks whether the base tab
