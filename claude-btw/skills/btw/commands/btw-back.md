@@ -16,13 +16,18 @@ inherits the *base tab's* cwd — the user's project, never this repo — so the
 is not the general case.)
 
 The script writes the answer to a file, refuses if the base tab is gone or
-ambiguous, and otherwise clears the base tab's prompt (Ctrl+U — `session type`
-appends rather than replacing, and an empty box can't be reliably told apart
-from Claude's dimmed "ghost" suggestion, so it clears unconditionally rather
-than guessing) before typing one line into it without submitting it, and
-raises the base tab's sidebar glyph (it clears itself the next time the user
-visits that tab). Whatever was in the box before clearing is printed too, so
-a half-typed thought is recoverable by copy-paste. Report what it printed. On
-refusal, tell the user where the answer file was kept.
+ambiguous, and otherwise sends the composed line into the base tab's prompt
+without submitting it. Whether it clears the prompt first depends on whether
+the base looks idle: `session type` appends rather than replacing, so typing
+in without clearing risks mangling whatever's already there — but the only
+reliable way to fully clear the box is Ctrl+C (Ctrl+U only kills one visual
+row at a time, so a wrapped line survives it), and Ctrl+C also interrupts a
+running turn. So: Ctrl+C and clear only when the base is idle; append without
+clearing when it's busy — costing about 1.3s to sample the pane twice and
+check for animation. Whatever was in the box beforehand is printed either
+way, so a half-typed thought stays recoverable by copy-paste even on the
+append path. Report which path was taken — if it appended, say so plainly,
+since the user's prompt now has two things in it. On refusal, tell the user
+where the answer file was kept.
 
 $ARGUMENTS

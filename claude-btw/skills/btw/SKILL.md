@@ -85,25 +85,46 @@ is the general case.)
 
 The script always writes the full answer to `$BTW_ROOT/forks/$AGTERM_SESSION_ID/answer-NNN.md`
 **first** — so the answer is never lost, even on a refusal. It then checks whether the base tab can
-be resolved at all (the verdicts below); if it can, it **clears the base tab's prompt** (sends
-Ctrl+U) and then composes the `--line` sentence into a single capped-length line and types just
-that one line into the now-empty box with `agtermctl session type`. It does **not** press Enter —
-the user reviews and submits it — and it does **not** switch you to the base tab; you stay in the
-fork.
+be resolved at all (the verdicts below); if it can, it composes the `--line` sentence into a single
+capped-length line and types just that one line into the base prompt with `agtermctl session type`.
+It does **not** press Enter — the user reviews and submits it — and it does **not** switch you to
+the base tab; you stay in the fork.
 
-The clear-first step is unconditional, not a safety check that can be skipped. `agtermctl session
-type` **appends** to whatever is already in the box, so typing in without clearing would mangle any
-half-typed text that's there. The obvious alternative — read the box first and only clear it if it
-looks occupied — doesn't work: Claude Code renders a dimmed "ghost" suggestion in a genuinely empty
-input box, `agtermctl session text` returns plain text with ANSI (and therefore the dimming)
-already stripped, and a ghost suggestion is textually indistinguishable from something the user
-actually typed. There is no reliable way to read the box and tell "empty" from "occupied," so
-`btw-back` doesn't try — it clears every time. To bound the cost of that: right before clearing, it
-reads whatever was in the box (typed text or ghost, it can't tell which) and prints it, e.g. `btw-
-back: cleared base prompt (was: what does update-agterm do?)`, so a half-typed thought is
-recoverable by copy-paste from `btw-back`'s own output even though the box itself is wiped. On
-success it also raises the base tab's sidebar glyph to a blinking "blocked" indicator, so the user
-notices there's something to look at even if they're not watching the fork; it clears itself
+Whether the box is **cleared first (Ctrl+C) or the line is appended without clearing** depends on
+whether the base looks idle right now. This used to clear unconditionally with Ctrl+U, on the theory
+that `agtermctl session type` **appends** rather than replaces, so clearing first sidesteps ever
+having to tell an empty box from an occupied one — Claude Code renders a dimmed "ghost" suggestion
+in a genuinely empty input box, `agtermctl session text` returns plain text with the ANSI (and
+therefore the dimming) already stripped, and a ghost suggestion is textually indistinguishable from
+something the user actually typed. That reasoning about *why you can't tell empty from occupied* is
+still correct — but live testing against a real Claude session proved Ctrl+U itself doesn't work as
+a clearing mechanism: it only kills one *visual row*, not the whole input, so a line that had
+wrapped to two rows needed two presses, and a three-row line was never fully cleared no matter how
+many spaced presses were tried. Esc does nothing; Ctrl+A then Ctrl+K is worse (kills the first row,
+leaves the rest). Only Ctrl+C reliably clears the box completely — but Ctrl+C also **interrupts a
+running turn**, and this whole feature exists to work while the base is mid-turn (that's why it's a
+keybinding rather than a slash command: it has to work when you can't type into the base at all). So
+clearing can't be unconditional either.
+
+The resolution: **clear with Ctrl+C only when the base is idle; append without clearing when it's
+busy.** `btw_base_is_idle` in `lib.sh` decides which, from two signals, OR'd together — a running
+turn's spinner animates, so two samples of the pane's last lines taken ~1.3s apart differ if busy
+and match if idle (primary signal); and a running turn's spinner line has a distinctive live shape —
+a gerund plus an ellipsis plus a parenthesised elapsed-timer, e.g. `✻ Enchanting… (4s · ↓ 23
+tokens)` — that a finished turn's past-tense line (`✻ Cooked for 11s`) does not have, even though a
+busy pane commonly shows both at once (secondary signal, catches what the first can miss). The
+check fails **toward busy** on anything else — a read failing, no prompt line found, an
+unrecognised pane — because the two outcomes aren't symmetric: a false "busy" only costs an untidy
+appended prompt, but a false "idle" sends Ctrl+C into a live turn and destroys work the user was
+waiting on. This costs ~1.3s of latency (the two samples), accepted for that reason.
+
+Either way, right before acting, `btw-back` reads whatever was in the box (typed text or ghost, it
+can't tell which) and prints it — e.g. `btw-back: base was idle -- cleared prompt (Ctrl+C; was: what
+does update-agterm do?) and sent` — so a half-typed thought is recoverable by copy-paste from
+`btw-back`'s own output regardless of which path was taken. On the busy path it says so plainly
+too — the user's prompt now has two things in it, and they need to know that before they hit enter.
+On success it also raises the base tab's sidebar glyph to a blinking "blocked" indicator, so the
+user notices there's something to look at even if they're not watching the fork; it clears itself
 automatically the next time they visit that tab (`--auto-reset`), so nothing needs to be done to
 dismiss it. On refusal, the answer file is kept — tell the user its path.
 
@@ -114,7 +135,7 @@ dismiss it. On refusal, the answer file is kept — tell the user its path.
 | `gone` | Either the base tab's agterm session no longer exists (closed, or agterm restarted without "Restore running commands on restart"), or the tab is still there but no Claude session is currently registered in *any* of its panes. | Nothing to send to. The answer is saved at the printed path; there is no live tab to receive it. |
 | `ambiguous` | The base agterm session still exists, but more than one pane in it currently has a Claude session registered (e.g. after a re-split), so which pane was the original base pane can't be determined. | The user picks the right pane by hand, or re-forks. |
 
-Anything other than these two verdicts (i.e. `ok`, or `moved` after re-resolving the pane) means: the agterm tab exists and a registry entry names a pane in it — not that a Claude process is actually alive and listening there. A crashed session leaves a stale registry entry behind, and `btw-back` clears and types into it just the same. This is bounded — `btw-back` never presses Enter, so nothing is ever submitted on the user's behalf — and accepted as designed, but don't be surprised if the line (and a Ctrl+U) lands in a dead tab's shell instead of a live Claude prompt.
+Anything other than these two verdicts (i.e. `ok`, or `moved` after re-resolving the pane) means: the agterm tab exists and a registry entry names a pane in it — not that a Claude process is actually alive and listening there. A crashed session leaves a stale registry entry behind, and `btw-back` still acts on it — clearing and typing, or appending, per the idle check above, for whatever reads back from that pane. This is bounded — `btw-back` never presses Enter, so nothing is ever submitted on the user's behalf — and accepted as designed, but don't be surprised if the line (and possibly a Ctrl+C) lands in a dead tab's shell instead of a live Claude prompt.
 
 ## What not to do
 

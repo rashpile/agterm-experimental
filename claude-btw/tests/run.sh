@@ -127,6 +127,38 @@ $'❯'$NBSP$'XYZZY\n'\
 $'────────────────────────────────────────────────\n'\
 $'  Model: Opus 5, high - 46.5k | ⎇ claude-btw-design (+0,-0)'
 
+# Real captures of an idle and a busy base pane, used below for
+# btw_base_is_idle. Verbatim, not hand-written -- per the task that
+# commissioned this check, assumption-written fixtures for exactly this kind
+# of undocumented-string matching are what hid two real bugs (the Ctrl+U
+# partial-clear and the `status` field lying about liveness) behind a green
+# suite the first time around. Note the busy capture contains BOTH the
+# past-tense form (`Cooked for 11s`) and the live form (`Enchanting… (4s
+# ...)`) at once -- that's not a typo, it's the trap the live-timer
+# discriminator exists to handle.
+REAL_CAPTURE_IDLE_PANE=$(cat <<'PANE'
+  recaps in /config)
+                                                        current: 2.1.222 · latest: 2.1.223
+────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────
+  Model: Opus 5, high - 51.4k | ⎇ claude-btw-design (+0,-0)
+  .../agterm-experimental | koptilin@gmail.com | 📡 ○ | v2.1.222
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents
+PANE
+)
+REAL_CAPTURE_BUSY_PANE=$(cat <<'PANE'
+✻ Cooked for 11s
+  some earlier output line
+✻ Enchanting… (4s · ↓ 23 tokens)
+                                                        current: 2.1.222 · latest: 2.1.223
+────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────
+  Model: Opus 5, high - 51.5k | ⎇ claude-btw-design (+0,-0)
+PANE
+)
+
 prompt_text_case() {  # name pane-text expected
   local name=$1 text=$2 expected=$3
   local actual
@@ -164,6 +196,60 @@ actual=$(
   zsh -c "source '$LIB'; btw_prompt_text 'sid1' 'left'"
 )
 assert_eq prompt-text-agtermctl-fails "" "$actual"
+
+# --- btw_base_is_idle -------------------------------------------------------
+# Positive-evidence-only: idle must be justified twice over (samples static
+# AND no live-timer line); everything else -- a difference, a live-timer
+# line, a read failure, an unrecognisable pane -- must come back busy. A
+# false "idle" here is the one way this whole change could be worse than
+# doing nothing (see btw-back.sh's header comment), so this is the
+# safety-critical surface of this round, same as btw_verdict was last round.
+#
+# BTW_IDLE_SAMPLE_DELAY is overridden to keep this suite fast; the fake
+# doesn't care how much real time passed between its two calls.
+idle_case() {  # name expected-exit [env=val ...]
+  local name=$1 expected=$2; shift 2
+  env "$@" AGTERMCTL=$HERE/fake-agtermctl.sh BTW_IDLE_SAMPLE_DELAY=0.05 \
+    zsh -c "source '$LIB'; btw_base_is_idle 'sid1' 'left'"
+  assert_eq "$name" "$expected" "$?"
+}
+
+print -r -- ""
+print -r -- "btw_base_is_idle (real captures):"
+
+# Samples identical, no live-timer line -> idle (0).
+idle_case idle-samples-identical-no-timer 0 \
+  FAKE_PANE_TEXT=$REAL_CAPTURE_IDLE_PANE
+
+# Samples identical (FAKE_PANE_TEXT is static across both calls, so an
+# equality-only check would say "idle") but the busy capture's live-timer
+# line is present -> busy (1). This is signal 2 catching what signal 1, on
+# its own, would have missed -- the exact trap called out in the task: the
+# busy pane contains BOTH the past-tense and the live form at once, so the
+# discriminator has to be the live form's presence, not the past-tense
+# form's absence.
+idle_case idle-samples-identical-with-timer 1 \
+  FAKE_PANE_TEXT=$REAL_CAPTURE_BUSY_PANE
+
+# Two DIFFERENT real captures, neither containing a live-timer line (both
+# are the pre-existing "typed"/"ghost" idle captures from the prompt-text
+# tests above) -> busy (1) purely from signal 1 (the samples differ), with
+# signal 2 not in play at all. Isolates signal 1 from signal 2, the reverse
+# of the case above.
+idle_seq_isolate_s1="${REAL_CAPTURE_TYPED}"$'\x01'"${REAL_CAPTURE_GHOST}"
+idle_seq_state=$(mktemp); rm -f "$idle_seq_state"
+idle_case idle-samples-differ 1 \
+  FAKE_PANE_TEXT_SEQ=$idle_seq_isolate_s1 FAKE_PANE_TEXT_SEQ_STATE=$idle_seq_state
+rm -f "$idle_seq_state"
+
+# `session text` failing -> busy (1). Fail-toward-busy, same contract as
+# btw_verdict failing toward `gone`.
+idle_case idle-agtermctl-fails 1 FAKE_FAIL=1
+
+# No `❯`/`>` anywhere in the sample -> not recognisably a Claude Code prompt
+# box at all -> busy (1).
+idle_case idle-no-prompt-block 1 \
+  FAKE_PANE_TEXT=$'nothing here\nno prompt marker either'
 
 # --- one-liner composition ------------------------------------------------
 BACK=$REPO/claude-btw/skills/btw/scripts/btw-back.sh
@@ -229,15 +315,24 @@ back_meta "$fork_amb"  mid
 print -r -- ""
 print -r -- "btw-back end to end:"
 
-# --- dry-run against a resolvable pane: reports it would clear and send,
-#     instead of refusing on busy-input (which no longer exists at all). ---
+# Every invocation below that reaches the idle check overrides
+# BTW_IDLE_SAMPLE_DELAY -- same reasoning as the btw_base_is_idle section
+# above: the fake doesn't care how much real time passed between its two
+# `session text` calls, so there's no reason to pay the real ~1.3s here.
+
+# --- dry-run against a resolvable, IDLE pane (FAKE_PANE_TEXT is static, so
+#     both of btw_base_is_idle's samples come back identical, and the typed
+#     capture carries no busy markers): reports it would clear with Ctrl+C
+#     and send, instead of refusing on busy-input (which no longer exists at
+#     all). ---
 out_dry=$(
   print -r -- "answer body one" | \
   AGTERM_SESSION_ID=$fork_ok AGTERM_TABS_DIR=$back_root/tabs BTW_ROOT=$back_root/btw \
   AGTERMCTL=$HERE/fake-agtermctl.sh FAKE_TREE_IDS=sid1 FAKE_PANE_TEXT=$REAL_CAPTURE_TYPED \
+  BTW_IDLE_SAMPLE_DELAY=0.05 \
     zsh "$BACK" --line "Answer one" --dry-run 2>&1
 )
-assert_contains back-dryrun-would-clear "$out_dry" "would clear base prompt (was: XYZZY) and send"
+assert_contains back-dryrun-would-clear "$out_dry" "base idle -- would clear prompt (Ctrl+C; was: XYZZY) and send"
 assert_not_contains back-dryrun-not-refused "$out_dry" "refused"
 
 # --- gone: still refuses, answer file still kept. ---
@@ -268,28 +363,86 @@ path_amb=$(print -r -- "$out_amb" | grep '^answer kept at: ' | sed 's/^answer ke
 if [[ -n $path_amb && -f $path_amb ]]; then ok back-ambiguous-keeps-answer
 else bad back-ambiguous-keeps-answer "no answer file kept: $out_amb"; fi
 
-# --- real (non-dry-run) send against the fake agtermctl: Ctrl+U is actually
-#     issued before the composed line, and the previous prompt text is
-#     reported as cleared. Asserted against the fake's own call log, not
-#     just this script's stdout. ---
+# --- real (non-dry-run) send, base IDLE (FAKE_PANE_TEXT static, no busy
+#     markers): Ctrl+C is actually issued before the composed line, and the
+#     previous prompt text is reported as cleared. Asserted against the
+#     fake's own call log, not just this script's stdout -- this is the
+#     "samples identical and no live-timer line -> idle -> Ctrl+C IS issued
+#     before the type" case from the task, exercised end to end rather than
+#     just at the lib.sh level. ---
 call_log=$(mktemp)
 out_real=$(
   print -r -- "answer body four" | \
   AGTERM_SESSION_ID=$fork_ok AGTERM_TABS_DIR=$back_root/tabs BTW_ROOT=$back_root/btw \
   AGTERMCTL=$HERE/fake-agtermctl.sh FAKE_TREE_IDS=sid1 FAKE_PANE_TEXT=$REAL_CAPTURE_TYPED \
-  FAKE_CALL_LOG=$call_log \
+  FAKE_CALL_LOG=$call_log BTW_IDLE_SAMPLE_DELAY=0.05 \
     zsh "$BACK" --line "Answer four" 2>&1
 )
 status_real=$?
 assert_eq       back-real-exit             0 "$status_real"
-assert_contains back-real-cleared-report   "$out_real" "cleared base prompt (was: XYZZY)"
+assert_contains back-real-cleared-report   "$out_real" "base was idle -- cleared prompt (Ctrl+C; was: XYZZY) and sent"
 assert_contains back-real-sent-report      "$out_real" "sent to base tab"
+assert_contains back-real-not-submitted    "$out_real" "not submitted"
 
 call_log_text=$(<"$call_log")
-if [[ $call_log_text == *"session"$'\t'"type"$'\t'$'\x15'* ]]; then ok back-real-ctrlu-issued
-else bad back-real-ctrlu-issued "no Ctrl+U session-type call in log:" "$call_log_text"; fi
+if [[ $call_log_text == *"session"$'\t'"type"$'\t'$'\x03'* ]]; then ok back-real-ctrlc-issued
+else bad back-real-ctrlc-issued "no Ctrl+C session-type call in log:" "$call_log_text"; fi
 if [[ $call_log_text == *"session"$'\t'"type"$'\t'"btw: Answer four"* ]]; then ok back-real-line-issued
 else bad back-real-line-issued "composed line not sent in log:" "$call_log_text"; fi
+
+rm -f "$call_log"
+
+# --- real send, base BUSY via signal 1 (animation): the pane sampled twice
+#     comes back different. Sequenced from three real captures -- the typed
+#     prompt (consumed by the prior-text read), then the idle pane, then the
+#     busy pane (consumed as btw_base_is_idle's two samples) -- so this is
+#     also the "animation differs between samples -> busy -> appends, no
+#     Ctrl+C issued" case, and simultaneously proves the prior prompt text
+#     ("XYZZY") is reported on the busy path too, not just the idle one. ---
+call_log=$(mktemp)
+seq_state=$(mktemp); rm -f "$seq_state"
+busy_seq="${REAL_CAPTURE_TYPED}"$'\x01'"${REAL_CAPTURE_IDLE_PANE}"$'\x01'"${REAL_CAPTURE_BUSY_PANE}"
+out_busy=$(
+  print -r -- "answer body five" | \
+  AGTERM_SESSION_ID=$fork_ok AGTERM_TABS_DIR=$back_root/tabs BTW_ROOT=$back_root/btw \
+  AGTERMCTL=$HERE/fake-agtermctl.sh FAKE_TREE_IDS=sid1 \
+  FAKE_PANE_TEXT_SEQ=$busy_seq FAKE_PANE_TEXT_SEQ_STATE=$seq_state \
+  FAKE_CALL_LOG=$call_log BTW_IDLE_SAMPLE_DELAY=0.05 \
+    zsh "$BACK" --line "Answer five" 2>&1
+)
+status_busy=$?
+assert_eq       back-busy-exit           0 "$status_busy"
+assert_contains back-busy-appended-report "$out_busy" "base was busy -- appended without clearing (prompt already had: XYZZY); it now has two things in it"
+assert_contains back-busy-sent-report    "$out_busy" "sent to base tab"
+assert_contains back-busy-not-submitted  "$out_busy" "not submitted"
+
+call_log_text=$(<"$call_log")
+if [[ $call_log_text != *"session"$'\t'"type"$'\t'$'\x03'* ]]; then ok back-busy-no-ctrlc
+else bad back-busy-no-ctrlc "Ctrl+C session-type call found in log for a BUSY base:" "$call_log_text"; fi
+if [[ $call_log_text == *"session"$'\t'"type"$'\t'"btw: Answer five"* ]]; then ok back-busy-line-issued
+else bad back-busy-line-issued "composed line not sent in log:" "$call_log_text"; fi
+
+rm -f "$call_log" "$seq_state"
+
+# --- real send, base BUSY via signal 2 alone (live-timer line, samples
+#     otherwise identical): the busy capture's own prompt line is empty, so
+#     this also covers "no prior text to report" on the busy path. ---
+call_log=$(mktemp)
+out_busy2=$(
+  print -r -- "answer body six" | \
+  AGTERM_SESSION_ID=$fork_ok AGTERM_TABS_DIR=$back_root/tabs BTW_ROOT=$back_root/btw \
+  AGTERMCTL=$HERE/fake-agtermctl.sh FAKE_TREE_IDS=sid1 FAKE_PANE_TEXT=$REAL_CAPTURE_BUSY_PANE \
+  FAKE_CALL_LOG=$call_log BTW_IDLE_SAMPLE_DELAY=0.05 \
+    zsh "$BACK" --line "Answer six" 2>&1
+)
+status_busy2=$?
+assert_eq       back-busy2-exit          0 "$status_busy2"
+assert_contains back-busy2-appended-report "$out_busy2" "base was busy -- appended without clearing"
+assert_not_contains back-busy2-no-prev-claim "$out_busy2" "prompt already had"
+
+call_log_text=$(<"$call_log")
+if [[ $call_log_text != *"session"$'\t'"type"$'\t'$'\x03'* ]]; then ok back-busy2-no-ctrlc
+else bad back-busy2-no-ctrlc "Ctrl+C session-type call found in log for a BUSY base:" "$call_log_text"; fi
 
 rm -f "$call_log"
 rm -rf "$back_root"
