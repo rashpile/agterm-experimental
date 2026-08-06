@@ -123,6 +123,12 @@ compose_case compose-newlines \
 compose_case compose-trailing-period \
   "Auth uses JWT." "/tmp/a.md" \
   "btw: Auth uses JWT. Full notes: /tmp/a.md"
+compose_case compose-leading-blank \
+  $'\n\nAuth uses JWT' "/tmp/a.md" \
+  "btw: Auth uses JWT. Full notes: /tmp/a.md"
+compose_case compose-trailing-blank \
+  $'Auth uses JWT  \n' "/tmp/a.md" \
+  "btw: Auth uses JWT. Full notes: /tmp/a.md"
 
 long=$(printf 'x%.0s' {1..500})
 composed=$("$BACK" --compose "$long" --answer-path "/tmp/a.md")

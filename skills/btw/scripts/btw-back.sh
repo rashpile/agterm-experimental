@@ -9,6 +9,10 @@
 # multi-line brief would submit itself line by line — single line is a safety
 # constraint, not a style rule.
 set -u
+# REQUIRED for the `[[:space:]]#` trims below — `#` is a zero-or-more
+# quantifier only under extended globbing. Without it both trims are silent
+# no-ops and stray whitespace reaches the user's live prompt.
+setopt extended_glob
 
 source "${0:A:h}/lib.sh"
 
@@ -16,11 +20,14 @@ MAXLINE=${BTW_MAX_LINE:-400}
 
 btw_compose_line() {  # <text> <answer-path>
   local text=$1 path=$2
+  # Trim BEFORE collapsing, not after: a leading or trailing newline would
+  # otherwise already have become a " · " separator, which no whitespace trim
+  # can remove. [[:space:]] covers \n, so this handles both.
+  text=${text##[[:space:]]#}
+  text=${text%%[[:space:]]#}
   # Collapse every newline run; nothing multi-line may reach `session type`.
   text=${text//$'\n'/ · }
   while [[ $text == *' ·  · '* ]]; do text=${text//' ·  · '/' · '}; done
-  text=${text##[[:space:]]#}
-  text=${text%%[[:space:]]#}
   text=${text%.}
 
   local prefix="btw: " suffix=". Full notes: $path"
