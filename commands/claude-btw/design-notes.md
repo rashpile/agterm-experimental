@@ -1,7 +1,9 @@
 # claude-btw — design notes (handoff)
 
 > **Superseded.** The brainstorm is finished. The full design lives in
-> [`docs/superpowers/specs/2026-08-03-claude-btw-design.md`](../../docs/superpowers/specs/2026-08-03-claude-btw-design.md).
+> [`docs/superpowers/specs/2026-08-03-claude-btw-design.md`](../../docs/superpowers/specs/2026-08-03-claude-btw-design.md),
+> and its implementation plan — now executed — lives in
+> [`docs/superpowers/plans/2026-08-05-claude-btw.md`](../../docs/superpowers/plans/2026-08-05-claude-btw.md).
 > These notes are kept only as a record of how the design got there.
 
 Brainstorm started in `~/workspace/ops` on 2026-08-03, continued here.
