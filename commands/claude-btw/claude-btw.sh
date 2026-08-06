@@ -30,7 +30,12 @@ btw_need jq
 [[ -x $AGTERMCTL ]] || { notify "agtermctl not found"; btw_die "agtermctl not found: $AGTERMCTL" }
 
 # 1. Prune registry entries whose agterm session no longer exists.
-tree=$("$AGTERMCTL" tree --json 2>/dev/null)
+#    Skipped under --dry-run: deleting files is a side effect, and --dry-run
+#    means print what you would do instead of doing it. Skipping costs no
+#    fidelity — prune only removes entries for DEAD agterm sessions, while
+#    resolution below looks up the current pane's sid, which is live by
+#    definition, so the two never interact.
+tree=$( (( dry )) || "$AGTERMCTL" tree --json 2>/dev/null )
 if [[ -n $tree ]]; then
   live=( ${(f)"$(print -r -- "$tree" | jq -r '.result.tree.workspaces[].sessions[].id | ascii_downcase')"} )
   for f in $AGTERM_TABS_DIR/*(N); do
