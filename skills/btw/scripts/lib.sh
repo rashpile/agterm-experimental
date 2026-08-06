@@ -10,6 +10,20 @@ CLAUDE_PROJECTS=${CLAUDE_PROJECTS:-$HOME/.claude/projects}
 
 btw_die() { print -ru2 -- "btw: $*"; exit 1 }
 
+# Session ids are UUIDs end to end. Check the shape before any id is
+# interpolated into a string that will itself be run as a shell command
+# (rather than passed as a separate argv element) — defense in depth, since
+# both ids in this codebase come from Claude Code's own hook payload.
+btw_is_uuid() {
+  [[ $1 =~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' ]]
+}
+
+# The fork metadata directory for THIS tab, keyed by AGTERM_SESSION_ID. The
+# case of that env var and the case of `.result.id` from `session new --json`
+# (what claude-btw.sh keys the directory by at fork time) have been observed
+# to differ, so both write and read sides normalize to lowercase here.
+btw_fork_dir() { print -r -- "$BTW_ROOT/forks/${${AGTERM_SESSION_ID:-none}:l}" }
+
 btw_need() {
   local c
   for c in "$@"; do
@@ -29,7 +43,7 @@ btw_registry() {
 }
 
 btw_meta() {
-  local f=$BTW_ROOT/forks/${AGTERM_SESSION_ID:-none}/meta.json
+  local f=$(btw_fork_dir)/meta.json
   [[ -f $f ]] || btw_die "this tab is not a btw fork"
   cat -- "$f"
 }

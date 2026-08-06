@@ -36,12 +36,20 @@ cwd=$(print -r -- "$payload" | jq -r '.cwd // empty' 2>/dev/null)
 [[ -n $cwd ]] || cwd=$PWD
 
 mkdir -p -- "$tabs_dir" || exit 0
-jq -n \
-  --arg cs "$sid" --arg as "$AGTERM_SESSION_ID" --arg p "$pane" \
-  --arg pid "${AGTERM_PANE_ID:-}" --arg cwd "$cwd" \
-  --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  '{claude_session_id: $cs, agterm_session_id: $as, pane: $p,
-    pane_id: $pid, cwd: $cwd, updated_at: $ts}' > "$file"
+# Temp file + rename, matching how btw-sync.sh writes meta.json: a jq failure
+# (e.g. disk full) must not leave a truncated registry entry behind.
+if jq -n \
+     --arg cs "$sid" --arg as "$AGTERM_SESSION_ID" --arg p "$pane" \
+     --arg pid "${AGTERM_PANE_ID:-}" --arg cwd "$cwd" \
+     --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+     '{claude_session_id: $cs, agterm_session_id: $as, pane: $p,
+       pane_id: $pid, cwd: $cwd, updated_at: $ts}' > "$file.new"
+then
+  mv -f -- "$file.new" "$file"
+else
+  rm -f -- "$file.new"
+  exit 0
+fi
 
 # A fork tab must restore to ITSELF. Without this pin, agterm's auto-capture
 # restores the literal `claude --resume <base> --fork-session` line and
@@ -49,16 +57,30 @@ jq -n \
 # fork gets a new session id each time. Inert unless the user has agterm's
 # "Restore running commands on restart" setting on.
 btw_root=${BTW_ROOT:-$HOME/.claude/btw}
-if [[ -f $btw_root/forks/$AGTERM_SESSION_ID/meta.json ]]; then
-  agtermctl=${AGTERMCTL:-/opt/homebrew/bin/agtermctl}
-  if [[ -x $agtermctl ]]; then
-    if [[ -n ${AGTERM_PANE_ID:-} ]]; then
-      "$agtermctl" session restore "claude --resume $sid" \
-        --target "$AGTERM_SESSION_ID" --pane-id "$AGTERM_PANE_ID" >/dev/null 2>&1
-    else
-      "$agtermctl" session restore "claude --resume $sid" \
-        --target "$AGTERM_SESSION_ID" >/dev/null 2>&1
+# Case of AGTERM_SESSION_ID vs. the `.result.id` claude-btw.sh keyed this
+# directory by at fork time have been observed to differ; normalize to
+# lowercase to match btw_fork_dir() in skills/btw/scripts/lib.sh.
+if [[ -f $btw_root/forks/${AGTERM_SESSION_ID:l}/meta.json ]]; then
+  # $sid is interpolated into a command line that is PERSISTED and
+  # re-executed by agterm on every restart (`session restore`), unlike every
+  # other use of a session id in this hook, which is passed as a separate
+  # argv element. It comes from Claude Code's own hook payload and is always
+  # a UUID, so this is defense in depth — but given the persistence, refuse
+  # to build the restore line from anything else rather than interpolating
+  # it blind.
+  if [[ $sid =~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' ]]; then
+    agtermctl=${AGTERMCTL:-/opt/homebrew/bin/agtermctl}
+    if [[ -x $agtermctl ]]; then
+      if [[ -n ${AGTERM_PANE_ID:-} ]]; then
+        "$agtermctl" session restore "claude --resume $sid" \
+          --target "$AGTERM_SESSION_ID" --pane-id "$AGTERM_PANE_ID" >/dev/null 2>&1
+      else
+        "$agtermctl" session restore "claude --resume $sid" \
+          --target "$AGTERM_SESSION_ID" >/dev/null 2>&1
+      fi
     fi
+  else
+    print -ru2 -- "register-tab: refusing to build a restore command from a malformed session id: $sid"
   fi
 fi
 exit 0

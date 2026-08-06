@@ -48,7 +48,8 @@ while (( $# )); do
   case $1 in
     --dry-run) dry=1; shift ;;
     --force)   force=1; shift ;;
-    --line)    line=$2; shift 2 ;;
+    --line)    (( $# >= 2 )) || btw_die "--line requires a value"
+               line=$2; shift 2 ;;
     *) btw_die "unknown argument: $1" ;;
   esac
 done
@@ -56,8 +57,8 @@ done
 
 btw_need jq
 
-meta=$(btw_meta)
-dir=$BTW_ROOT/forks/$AGTERM_SESSION_ID
+meta=$(btw_meta) || exit 1
+dir=$(btw_fork_dir)
 base_sid=$(print -r -- "$meta"  | jq -r '.base_agterm_sid')
 base_pane=$(print -r -- "$meta" | jq -r '.base_pane')
 

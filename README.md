@@ -152,8 +152,12 @@ Install in that order:
 cp -r hooks/agterm-tabs ~/.claude/hooks/agterm-tabs
 # merge hooks/agterm-tabs/settings-snippet.json into ~/.claude/settings.json (see hooks/agterm-tabs/README.md)
 
-# 2. the hotkey
-cp commands/claude-btw/claude-btw.sh ~/.config/agterm-projects/claude-btw.sh
+# 2. the hotkey — SYMLINK, not cp: claude-btw.sh finds lib.sh via ${0:A:h},
+#    resolved through the symlink back into this checkout. A plain cp puts it
+#    at ~/skills/btw/scripts/lib.sh (nonexistent), and because a keybinding's
+#    stderr goes nowhere visible, cmd+shift+a would become a silent dead key.
+mkdir -p ~/.config/agterm-projects
+ln -s "$(pwd)/commands/claude-btw/claude-btw.sh" ~/.config/agterm-projects/claude-btw.sh
 # merge commands/claude-btw/keymap.conf into ~/.config/agterm/keymap.conf
 
 # 3. the skill + slash commands, run inside the fork

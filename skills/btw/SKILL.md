@@ -18,10 +18,13 @@ fork belongs to.
 
 ## btw-sync — pull in base activity
 
-Run `skills/btw/scripts/btw-sync.sh` (no arguments). It resolves the base tab from `meta.json`,
-reads the base's transcript forward from the recorded watermark, and writes two files under
-`$BTW_ROOT/forks/$AGTERM_SESSION_ID/`: `sync-NNN.md` (the digest to read) and `sync-NNN.full.md`
-(the complete rendering, always written in full regardless of size).
+Run `~/.claude/skills/btw/scripts/btw-sync.sh` (no arguments) — a fork inherits the *base tab's*
+cwd, which is the user's project, never this repo, so the repo-relative path only resolves when
+you happen to be running from a checkout of this repo itself (then `skills/btw/scripts/btw-sync.sh`
+also works). It resolves the base tab from `meta.json`, reads the base's transcript forward from
+the recorded watermark, and writes two files under `$BTW_ROOT/forks/$AGTERM_SESSION_ID/`:
+`sync-NNN.md` (the digest to read) and `sync-NNN.full.md` (the uncollapsed rendering, always
+written regardless of size).
 
 The script's stdout is a short **report**, never the transcript body — that's deliberate: an
 oversized sync must not flood this conversation's context by accident. Read the report first:
@@ -45,7 +48,9 @@ last sync, the script just prints `btw-sync: nothing new since <timestamp>` and 
   render. Both conditions must hold: a handful of very large messages under that count stays
   `verbatim` even when oversized. When squeezed, `.md` collapses everything except the most recent
   `BTW_TAIL_MSGS` messages into one-line summaries and keeps only that tail in full. `.full.md` is
-  unaffected — it always holds the complete, uncollapsed rendering, in both modes.
+  unaffected by squeezing — it always holds every message, in both modes. It is *uncollapsed*, not
+  literally complete: every assistant message, in `.full.md` too, is still individually truncated
+  past `BTW_ASSISTANT_CHARS` (1200 chars by default) with a `…[+N chars]` marker.
 - `base:` reports what happened to the base session since the fork or last sync — `alive` (same
   session, nothing unusual), `reset` (the base was `/clear`ed or restarted; the digest chains the
   old tail onto the new session's activity with a `--- base session was reset here (/clear or
@@ -92,6 +97,8 @@ tell the user its path.
 | `gone` | Either the base tab's agterm session no longer exists (closed, or agterm restarted without "Restore running commands on restart"), or the tab is still there but no Claude session is currently registered in *any* of its panes. | Nothing to send to. The answer is saved at the printed path; there is no live tab to receive it. |
 | `ambiguous` | The base agterm session still exists, but more than one pane in it currently has a Claude session registered (e.g. after a re-split), so which pane was the original base pane can't be determined. | Not something `--force` fixes. The user picks the right pane by hand, or re-forks. |
 | `busy-input` | The base tab was resolved, but its prompt already has text in it. `agtermctl session type` **appends** rather than replacing, so injecting now would mangle whatever is already there. | Clear the base tab's prompt first, or re-run `btw-back.sh` with `--force` — it skips **only** this check, never `gone` or `ambiguous`. |
+
+Anything other than these three verdicts (i.e. `ok`, or `moved` after re-resolving the pane) means: the agterm tab exists and a registry entry names a pane in it — not that a Claude process is actually alive and listening there. A crashed session leaves a stale registry entry behind, and `btw_input_empty`'s heuristic (an empty prompt after the last `>`) can then read a plain shell prompt as "safe to type into." This is bounded — `btw-back` never presses Enter, so nothing is ever submitted on the user's behalf — and accepted as designed, but don't be surprised if the line lands in a dead tab's shell instead of a live Claude prompt.
 
 ## What not to do
 

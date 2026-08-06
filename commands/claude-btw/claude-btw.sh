@@ -6,7 +6,13 @@
 #   claude-btw.sh [--dry-run] <AGT_SESSION_ID> <AGT_PANE> <AGT_SESSION_PWD> <AGT_SESSION_NAME>
 set -u
 
-source "${0:A:h}/../../skills/btw/scripts/lib.sh"
+lib=${BTW_LIB:-${0:A:h}/../../skills/btw/scripts/lib.sh}
+if [[ ! -f $lib ]]; then
+  print -ru2 -- "claude-btw: cannot find lib.sh at $lib"
+  print -ru2 -- "claude-btw: this script must be a SYMLINK into the repo (see README.md's install steps) so \${0:A:h} resolves back into the checkout — a plain cp breaks the relative lookup. Alternatively set BTW_LIB to the absolute path of skills/btw/scripts/lib.sh."
+  exit 1
+fi
+source "$lib"
 
 dry=0
 if [[ ${1:-} == --dry-run ]]; then dry=1; shift; fi
@@ -37,11 +43,23 @@ btw_need jq
 #    definition, so the two never interact.
 tree=$( (( dry )) || "$AGTERMCTL" tree --json 2>/dev/null )
 if [[ -n $tree ]]; then
-  live=( ${(f)"$(print -r -- "$tree" | jq -r '.result.tree.workspaces[].sessions[].id | ascii_downcase')"} )
-  for f in $AGTERM_TABS_DIR/*(N); do
-    base=${${f:t}%.*}
-    (( ${live[(Ie)${base:l}]} )) || rm -f -- "$f"
-  done
+  # Guard on the PARSED result, not just a non-empty response: a schema
+  # change or an error object is non-empty text that jq can't parse, which
+  # exits 5 with empty stdout. Guarding on `-n $tree` alone would then see
+  # zero live sessions and prune the ENTIRE registry. `live` being empty
+  # covers both "jq failed" and "genuinely nothing is live" — either way,
+  # skipping the prune this run is the safe choice.
+  live=( ${(f)"$(print -r -- "$tree" | jq -r '.result.tree.workspaces[].sessions[].id | ascii_downcase' 2>/dev/null)"} )
+  if (( $#live )); then
+    for f in $AGTERM_TABS_DIR/*(N); do
+      base=${${f:t}%.*}
+      # Registry files are named <agterm-session-id>.<pane>; skip anything
+      # that isn't shaped like a UUID (a stray README, .DS_Store, etc.)
+      # rather than deleting it as if it were a dead session.
+      [[ $base =~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' ]] || continue
+      (( ${live[(Ie)${base:l}]} )) || rm -f -- "$f"
+    done
+  fi
 fi
 
 # 2. Resolve the Claude running in this pane.
@@ -54,6 +72,11 @@ base_id=$(print -r -- "$reg"  | jq -r '.claude_session_id // empty')
 base_cwd=$(print -r -- "$reg" | jq -r '.cwd // empty')
 [[ -n $base_cwd ]] || base_cwd=$base_pwd
 [[ -n $base_id ]] || { notify "registry entry has no session id"; exit 1 }
+# $base_id is interpolated below into `cmd`, a string that will itself be run
+# by a shell (`zsh -lc '...'`) rather than passed as a separate argv element.
+# It comes from Claude Code's own hook payload and is always a UUID, so this
+# is defense in depth, not a live vulnerability.
+btw_is_uuid "$base_id" || { notify "registry entry has a malformed session id"; btw_die "registry entry has a malformed session id: $base_id" }
 
 # 3. Locate the transcript. A tab that opens onto a --resume error is worse
 #    than no tab, so refuse before spawning.
@@ -79,6 +102,10 @@ new=$("$AGTERMCTL" session new --json \
         --cwd "$base_cwd" --after "$sid" \
         --name "btw: $base_name" \
         --command "$cmd" 2>/dev/null | jq -r '.result.id // empty')
+# Lowercase to match btw_fork_dir() in lib.sh: `.result.id` here and
+# $AGTERM_SESSION_ID as later read by the forked Claude's own hooks have been
+# observed to differ in case.
+new=${new:l}
 [[ -n $new ]] || { notify "could not create the fork tab"; btw_die "session new returned no id" }
 
 # 6. Record fork metadata, keyed by the NEW tab's agterm session id.

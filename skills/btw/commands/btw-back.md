@@ -6,10 +6,14 @@ Compose the answer to the side question as markdown, and a single summarising
 sentence. Then run:
 
 ```bash
-skills/btw/scripts/btw-back.sh --line "<one sentence>" <<'EOF'
+~/.claude/skills/btw/scripts/btw-back.sh --line "<one sentence>" <<'EOF'
 <the full answer as markdown>
 EOF
 ```
+
+(If running from a checkout of this repo, `skills/btw/scripts/btw-back.sh` also works. A fork
+inherits the *base tab's* cwd — the user's project, never this repo — so the repo-relative path
+is not the general case.)
 
 The script writes the answer to a file, refuses if the base tab is gone,
 ambiguous, or has half-typed text in its prompt, and otherwise types one line

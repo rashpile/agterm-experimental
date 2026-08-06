@@ -12,8 +12,8 @@ DIGEST=${0:A:h}/btw-digest.sh
 
 btw_need jq
 
-meta=$(btw_meta)
-dir=$BTW_ROOT/forks/$AGTERM_SESSION_ID
+meta=$(btw_meta) || exit 1
+dir=$(btw_fork_dir)
 
 base_id=$(print -r -- "$meta"   | jq -r '.base_claude_id')
 base_sid=$(print -r -- "$meta"  | jq -r '.base_agterm_sid')
@@ -34,7 +34,8 @@ now_id=$(print -r -- "$reg" | jq -r '.claude_session_id // empty' 2>/dev/null)
 from=$(( watermark + 1 ))
 
 rpt=$(mktemp "${TMPDIR:-/tmp}/btw-sync.XXXXXX") || btw_die "cannot create a temp file"
-trap 'rm -f -- "$rpt"' EXIT INT TERM
+rpt_old=$(mktemp "${TMPDIR:-/tmp}/btw-sync.XXXXXX") || btw_die "cannot create a temp file"
+trap 'rm -f -- "$rpt" "$rpt_old"' EXIT INT TERM
 
 base_state=alive
 if [[ -z $now_id ]]; then
@@ -53,15 +54,27 @@ else
   new_id=$now_id
 fi
 
+# Read the watermark HERE, right after the transcript(s) to read from are
+# settled and before either render below — not after both renders, which is
+# what this line used to do. The base session working during a sync is the
+# normal case: lines appended between the renders and a post-render `wc -l`
+# would be counted into the watermark but appear in no digest, losing them
+# permanently. Reading early instead risks the opposite — a line landing
+# between this read and the render being duplicated into the NEXT sync — which
+# is the trade the spec already accepts for the fork-time race (benign
+# duplication beats silent loss).
+new_watermark=$(wc -l < "$new_transcript" | tr -d ' ')
+
 # One renderer for both files, so the reset chain and its marker survive into
 # BOTH. Rendering `.full.md` straight from the new transcript would silently
 # drop the pre-reset tail, and copying `.full.md` over `.md` in verbatim mode
 # would drop it from there too.
-render() {  # <squeeze-byte-threshold> -> body on stdout, digest report into $rpt
-  local sq=$1 old new
+render() {  # <squeeze-byte-threshold> -> body on stdout, digest report(s) into $rpt (and $rpt_old on reset)
+  local sq=$1 old new ec=0
+  : > "$rpt_old"
   if [[ $base_state == reset ]]; then
-    old=$(BTW_SQUEEZE_BYTES=$sq $DIGEST "$transcript" "$from" 2>/dev/null)
-    new=$(BTW_SQUEEZE_BYTES=$sq $DIGEST "$new_transcript" 1 2>"$rpt")
+    old=$(BTW_SQUEEZE_BYTES=$sq $DIGEST "$transcript" "$from" 2>"$rpt_old") || ec=1
+    new=$(BTW_SQUEEZE_BYTES=$sq $DIGEST "$new_transcript" 1 2>"$rpt") || ec=1
     if [[ -n ${old//[[:space:]]/} ]]; then
       print -r -- "$old"
       print -r -- ""
@@ -69,18 +82,50 @@ render() {  # <squeeze-byte-threshold> -> body on stdout, digest report into $rp
       print -r -- ""
     fi
     print -r -- "$new"
+    return $ec
   else
     BTW_SQUEEZE_BYTES=$sq $DIGEST "$transcript" "$from" 2>"$rpt"
   fi
 }
 
-body=$(render "${BTW_SQUEEZE_BYTES:-24576}")
-report=$(< "$rpt")               # the squeezed run's report is the one we report
-full_body=$(render 99999999)
+if ! body=$(render "${BTW_SQUEEZE_BYTES:-24576}"); then
+  btw_die "btw-digest failed rendering base activity — cannot tell 'nothing new' from a broken render: $(cat -- "$rpt" "$rpt_old" 2>/dev/null)"
+fi
+report=$(< "$rpt")
+report_old=$(< "$rpt_old")       # only non-empty on the reset path
+if ! full_body=$(render 99999999); then
+  btw_die "btw-digest failed rendering the full (uncollapsed) pass: $(cat -- "$rpt" "$rpt_old" 2>/dev/null)"
+fi
 
 mode=${${(M)${=report}:#mode=*}#mode=}
 collapsed=${${(M)${=report}:#collapsed=*}#collapsed=}
 messages=${${(M)${=report}:#messages=*}#messages=}
+
+# A missing or malformed report line must not silently read as mode=verbatim
+# — that's exactly the empty-body/broken-digest case this is meant to catch.
+if [[ $mode != verbatim && $mode != squeezed ]]; then
+  btw_die "btw-digest produced an unreadable report line: '$report'"
+fi
+
+if [[ $base_state == reset ]]; then
+  # The pre-reset tail's own report was previously discarded (2>/dev/null),
+  # so `messages` undercounted (new-half only) and `mode` reflected only the
+  # post-reset half. If the PRE-reset tail was the oversized half, that made
+  # `mode` read verbatim while `body` (rendered at the same squeeze
+  # threshold) actually held squeezed content for the old half — and because
+  # `mode` drove which file became sync-NNN.md, cp then handed the fork the
+  # unsqueezed `full` rendering on exactly the path where content is
+  # largest. Combine both halves' reports instead.
+  mode_old=${${(M)${=report_old}:#mode=*}#mode=}
+  collapsed_old=${${(M)${=report_old}:#collapsed=*}#collapsed=}
+  messages_old=${${(M)${=report_old}:#messages=*}#messages=}
+  if [[ $mode_old != verbatim && $mode_old != squeezed ]]; then
+    btw_die "btw-digest produced an unreadable report line for the pre-reset tail: '$report_old'"
+  fi
+  messages=$(( messages + messages_old ))
+  collapsed=$(( collapsed + collapsed_old ))
+  [[ $mode_old == squeezed ]] && mode=squeezed
+fi
 
 if [[ -z ${body//[[:space:]]/} ]]; then
   synced=$(print -r -- "$meta" | jq -r '.synced_at // .forked_at')
@@ -111,7 +156,7 @@ fi
 
 # meta.json is the fork's only durable state. Write it via a temp file and
 # rename, so a jq failure cannot leave a truncated record behind.
-new_watermark=$(wc -l < "$new_transcript" | tr -d ' ')
+# (new_watermark was read earlier, before either render — see above.)
 if print -r -- "$meta" | jq \
      --argjson wm "$new_watermark" --argjson c "$(( count + 1 ))" \
      --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
