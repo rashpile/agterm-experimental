@@ -15,10 +15,14 @@ EOF
 inherits the *base tab's* cwd — the user's project, never this repo — so the repo-relative path
 is not the general case.)
 
-The script writes the answer to a file, refuses if the base tab is gone,
-ambiguous, or has half-typed text in its prompt, and otherwise types one line
-into the base prompt without submitting it and raises the base tab's sidebar
-glyph (it clears itself the next time the user visits that tab). Report what
-it printed. On refusal, tell the user where the answer file was kept.
+The script writes the answer to a file, refuses if the base tab is gone or
+ambiguous, and otherwise clears the base tab's prompt (Ctrl+U — `session type`
+appends rather than replacing, and an empty box can't be reliably told apart
+from Claude's dimmed "ghost" suggestion, so it clears unconditionally rather
+than guessing) before typing one line into it without submitting it, and
+raises the base tab's sidebar glyph (it clears itself the next time the user
+visits that tab). Whatever was in the box before clearing is printed too, so
+a half-typed thought is recoverable by copy-paste. Report what it printed. On
+refusal, tell the user where the answer file was kept.
 
 $ARGUMENTS

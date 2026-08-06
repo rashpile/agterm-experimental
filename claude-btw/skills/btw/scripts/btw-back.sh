@@ -1,13 +1,26 @@
 #!/bin/zsh
 # Send the fork's answer back to the base tab's prompt — unsubmitted.
 #
-#   btw-back.sh --line "<one sentence>" [--dry-run] [--force]  < answer-body.md
-#   btw-back.sh --compose "<text>" --answer-path <path>        # composer only, for tests
+#   btw-back.sh --line "<one sentence>" [--dry-run]      < answer-body.md
+#   btw-back.sh --compose "<text>" --answer-path <path>  # composer only, for tests
 #
 # Two artifacts: the full answer goes to a file, and ONE line goes into the
 # base prompt. `agtermctl session type` turns every newline into Return, so a
 # multi-line brief would submit itself line by line — single line is a safety
 # constraint, not a style rule.
+#
+# Before typing, this always clears the base prompt (Ctrl+U) first. Two
+# things force that: `session type` APPENDS rather than replacing, so typing
+# into a box that already has text in it would mangle whatever was there —
+# and the box's actual contents can't be reliably read to check. `session
+# text` returns plain text with ANSI stripped, and Claude Code renders an
+# empty box's dimmed "ghost" suggestion with nothing but ANSI to distinguish
+# it from real typed text — so an empty prompt and an occupied one read
+# identically. Clearing sidesteps the question instead of trying to answer
+# it: whatever was there (typed text, not a ghost — those can't be told
+# apart, so both get treated as if they might be real) is read and reported
+# in this script's own output *before* being discarded, so it's recoverable
+# by copy-paste even though the box itself is wiped.
 set -u
 # REQUIRED for the `[[:space:]]#` trims below — `#` is a zero-or-more
 # quantifier only under extended globbing. Without it both trims are silent
@@ -43,11 +56,10 @@ if [[ ${1:-} == --compose ]]; then
   exit 0
 fi
 
-dry=0 force=0 line=""
+dry=0 line=""
 while (( $# )); do
   case $1 in
     --dry-run) dry=1; shift ;;
-    --force)   force=1; shift ;;
     --line)    (( $# >= 2 )) || btw_die "--line requires a value"
                line=$2; shift 2 ;;
     *) btw_die "unknown argument: $1" ;;
@@ -88,20 +100,28 @@ case $verdict in
   *) refuse "$verdict" ;;
 esac
 
-# `session type` APPENDS to whatever is already in the box, so injecting into
-# half-typed text would mangle it. Fail closed when we cannot tell.
-if (( ! force )) && ! btw_input_empty "$base_sid" "$base_pane"; then
-  refuse busy-input
-fi
+# Read whatever is currently in the box — typed text or an indistinguishable
+# ghost suggestion, see the header comment — so it's recoverable from this
+# script's own output even though the box is about to be cleared regardless.
+prev=$(btw_prompt_text "$base_sid" "$base_pane")
 
 out=$(btw_compose_line "$line" "$answer")
 
 if (( dry )); then
   print -r -- "verdict: $verdict"
+  if [[ -n $prev ]]; then
+    print -r -- "btw-back: would clear base prompt (was: $prev) and send"
+  else
+    print -r -- "btw-back: would clear base prompt and send"
+  fi
+  print -r -- "$AGTERMCTL session type <ctrl-u> --target $base_sid --pane $base_pane"
   print -r -- "$AGTERMCTL session type <line> --target $base_sid --pane $base_pane"
   print -r -- "$out"
   exit 0
 fi
+
+"$AGTERMCTL" session type $'\x15' --target "$base_sid" --pane "$base_pane" >/dev/null \
+  || refuse "clear failed"
 
 "$AGTERMCTL" session type "$out" --target "$base_sid" --pane "$base_pane" >/dev/null \
   || refuse "type failed"
@@ -109,5 +129,8 @@ fi
 "$AGTERMCTL" session status blocked --blink --auto-reset \
   --target "$base_sid" --pane "$base_pane" >/dev/null 2>&1
 
+if [[ -n $prev ]]; then
+  print -r -- "btw-back: cleared base prompt (was: $prev)"
+fi
 print -r -- "btw-back: sent to base tab (glyph raised, not submitted)"
 print -r -- "answer: $answer"

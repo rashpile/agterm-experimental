@@ -110,26 +110,46 @@ verdict_case verdict-ambiguous "sid1 sid2" "sid1.right sid1.scratch" left ambigu
 verdict_case verdict-gone-tab  "sid2"      "sid1.left"            left gone
 verdict_case verdict-gone-noclaude "sid1 sid2" ""                 left gone
 
-input_case() {  # name pane-text expected-exit
+# Verbatim captures from a real agterm pane running Claude Code, ANSI already
+# stripped exactly as `agtermctl session text` returns it. The character
+# right after the `❯` marker is U+00A0 (non-breaking space, bytes c2 a0), NOT
+# a plain space -- a synthetic fixture would never have gotten that detail
+# right, which is exactly why these are captures, not hand-written strings.
+NBSP=$'\xc2\xa0'
+REAL_CAPTURE_GHOST=$'────────────────────────────────────────────────\n'\
+$'❯'$NBSP$'what does update-agterm do?\n'\
+$'────────────────────────────────────────────────\n'\
+$'  Model: Opus 5, high - 46.5k | ⎇ claude-btw-design (+0,-0)\n'\
+$'  .../agterm-experimental | koptilin@gmail.com | 📡 ○ | v2.1.222\n'\
+$'  ⏵⏵ auto mode on (shift+tab to cycle)'
+REAL_CAPTURE_TYPED=$'────────────────────────────────────────────────\n'\
+$'❯'$NBSP$'XYZZY\n'\
+$'────────────────────────────────────────────────\n'\
+$'  Model: Opus 5, high - 46.5k | ⎇ claude-btw-design (+0,-0)'
+
+prompt_text_case() {  # name pane-text expected
   local name=$1 text=$2 expected=$3
   local actual
-  AGTERMCTL=$HERE/fake-agtermctl.sh FAKE_PANE_TEXT=$text \
-    zsh -c "source '$LIB'; btw_input_empty 'sid1' 'left'"
-  actual=$?
+  actual=$(
+    AGTERMCTL=$HERE/fake-agtermctl.sh FAKE_PANE_TEXT=$text \
+      zsh -c "source '$LIB'; btw_prompt_text 'sid1' 'left'"
+  )
   assert_eq "$name" "$expected" "$actual"
 }
 
 print -r -- ""
-print -r -- "input box:"
-input_case input-empty     $'│ > │\n' 0
-input_case input-typed     $'│ > half typed │\n' 1
-input_case input-noprompt  $'nothing here\n' 1
+print -r -- "prompt text (real captures):"
+prompt_text_case prompt-text-typed      $REAL_CAPTURE_TYPED "XYZZY"
+prompt_text_case prompt-text-ghost      $REAL_CAPTURE_GHOST "what does update-agterm do?"
+prompt_text_case prompt-text-noprompt   $'nothing here\n' ""
 
 # --- failure injection ------------------------------------------------------
-# This is the fail-closed contract on the most safety-critical path in the
-# project (btw-back deciding whether it's safe to type into a live tab), and
-# until now it had no coverage at all: if agtermctl is unreachable or errors,
-# both helpers must fail CLOSED — never treat "I don't know" as "safe".
+# btw_verdict is the fail-closed contract on the most safety-critical path in
+# the project (deciding whether it's safe to type into a live tab at all): if
+# agtermctl is unreachable or errors, it must fail CLOSED to `gone` — never
+# treat "I don't know" as "safe". btw_prompt_text carries no such contract
+# any more (it's a read, not a verdict) but must still degrade to an empty
+# read rather than erroring out.
 print -r -- ""
 print -r -- "failure injection (agtermctl unreachable):"
 
@@ -139,10 +159,11 @@ actual=$(
 )
 assert_eq verdict-agtermctl-fails gone "$actual"
 
-AGTERMCTL=$HERE/fake-agtermctl.sh FAKE_FAIL=1 \
-  zsh -c "source '$LIB'; btw_input_empty 'sid1' 'left'"
-actual=$?
-assert_eq input-agtermctl-fails 1 "$actual"
+actual=$(
+  AGTERMCTL=$HERE/fake-agtermctl.sh FAKE_FAIL=1 \
+  zsh -c "source '$LIB'; btw_prompt_text 'sid1' 'left'"
+)
+assert_eq prompt-text-agtermctl-fails "" "$actual"
 
 # --- one-liner composition ------------------------------------------------
 BACK=$REPO/claude-btw/skills/btw/scripts/btw-back.sh
@@ -177,6 +198,101 @@ assert_eq compose-capped-length 400 "${#composed}"
 assert_eq compose-capped-lines   1   "$(print -r -- "$composed" | wc -l | tr -d ' ')"
 if [[ $composed == *". Full notes: /tmp/a.md" ]]; then ok compose-capped-path
 else bad compose-capped-path "does not end with the answer path: $composed"; fi
+
+# --- btw-back end to end -----------------------------------------------------
+# Exercises the real refusal/clear/send path through btw-back.sh itself,
+# never the real agtermctl (per the task's safety rule) -- always the fake.
+# Registry has BOTH sid1.left and sid1.right so that a meta.json pointing at
+# an unregistered pane ("mid") resolves to `ambiguous` (2 hits) rather than
+# `moved` (1 hit), without disturbing the `ok` case, which is decided by an
+# exact-match check before the hit-count logic ever runs.
+back_root=$(mktemp -d)
+mkdir -p "$back_root/tabs"
+: > "$back_root/tabs/sid1.left"
+: > "$back_root/tabs/sid1.right"
+
+back_meta() {  # fork-sid base-pane
+  mkdir -p "$back_root/btw/forks/$1"
+  jq -n --arg ba sid1 --arg bp "$2" \
+    '{base_agterm_sid: $ba, base_pane: $bp, base_claude_id: "x", transcript: "/dev/null",
+      watermark: 0, forked_at: "x", sync_count: 0, synced_at: null}' \
+    > "$back_root/btw/forks/$1/meta.json"
+}
+
+fork_ok=fork-ok0-0000-0000-0000-000000000000
+fork_gone=fork-gone-0000-0000-0000-000000000000
+fork_amb=fork-amb0-0000-0000-0000-000000000000
+back_meta "$fork_ok"   left
+back_meta "$fork_gone" left
+back_meta "$fork_amb"  mid
+
+print -r -- ""
+print -r -- "btw-back end to end:"
+
+# --- dry-run against a resolvable pane: reports it would clear and send,
+#     instead of refusing on busy-input (which no longer exists at all). ---
+out_dry=$(
+  print -r -- "answer body one" | \
+  AGTERM_SESSION_ID=$fork_ok AGTERM_TABS_DIR=$back_root/tabs BTW_ROOT=$back_root/btw \
+  AGTERMCTL=$HERE/fake-agtermctl.sh FAKE_TREE_IDS=sid1 FAKE_PANE_TEXT=$REAL_CAPTURE_TYPED \
+    zsh "$BACK" --line "Answer one" --dry-run 2>&1
+)
+assert_contains back-dryrun-would-clear "$out_dry" "would clear base prompt (was: XYZZY) and send"
+assert_not_contains back-dryrun-not-refused "$out_dry" "refused"
+
+# --- gone: still refuses, answer file still kept. ---
+out_gone=$(
+  print -r -- "answer body two" | \
+  AGTERM_SESSION_ID=$fork_gone AGTERM_TABS_DIR=$back_root/tabs BTW_ROOT=$back_root/btw \
+  AGTERMCTL=$HERE/fake-agtermctl.sh FAKE_TREE_IDS="" \
+    zsh "$BACK" --line "Answer two" 2>&1
+)
+status_gone=$?
+assert_contains back-gone-refuses "$out_gone" "refused (gone)"
+assert_eq       back-gone-exit    1 "$status_gone"
+path_gone=$(print -r -- "$out_gone" | grep '^answer kept at: ' | sed 's/^answer kept at: //')
+if [[ -n $path_gone && -f $path_gone ]]; then ok back-gone-keeps-answer
+else bad back-gone-keeps-answer "no answer file kept: $out_gone"; fi
+
+# --- ambiguous: still refuses, answer file still kept. ---
+out_amb=$(
+  print -r -- "answer body three" | \
+  AGTERM_SESSION_ID=$fork_amb AGTERM_TABS_DIR=$back_root/tabs BTW_ROOT=$back_root/btw \
+  AGTERMCTL=$HERE/fake-agtermctl.sh FAKE_TREE_IDS=sid1 \
+    zsh "$BACK" --line "Answer three" 2>&1
+)
+status_amb=$?
+assert_contains back-ambiguous-refuses "$out_amb" "refused (ambiguous)"
+assert_eq       back-ambiguous-exit    1 "$status_amb"
+path_amb=$(print -r -- "$out_amb" | grep '^answer kept at: ' | sed 's/^answer kept at: //')
+if [[ -n $path_amb && -f $path_amb ]]; then ok back-ambiguous-keeps-answer
+else bad back-ambiguous-keeps-answer "no answer file kept: $out_amb"; fi
+
+# --- real (non-dry-run) send against the fake agtermctl: Ctrl+U is actually
+#     issued before the composed line, and the previous prompt text is
+#     reported as cleared. Asserted against the fake's own call log, not
+#     just this script's stdout. ---
+call_log=$(mktemp)
+out_real=$(
+  print -r -- "answer body four" | \
+  AGTERM_SESSION_ID=$fork_ok AGTERM_TABS_DIR=$back_root/tabs BTW_ROOT=$back_root/btw \
+  AGTERMCTL=$HERE/fake-agtermctl.sh FAKE_TREE_IDS=sid1 FAKE_PANE_TEXT=$REAL_CAPTURE_TYPED \
+  FAKE_CALL_LOG=$call_log \
+    zsh "$BACK" --line "Answer four" 2>&1
+)
+status_real=$?
+assert_eq       back-real-exit             0 "$status_real"
+assert_contains back-real-cleared-report   "$out_real" "cleared base prompt (was: XYZZY)"
+assert_contains back-real-sent-report      "$out_real" "sent to base tab"
+
+call_log_text=$(<"$call_log")
+if [[ $call_log_text == *"session"$'\t'"type"$'\t'$'\x15'* ]]; then ok back-real-ctrlu-issued
+else bad back-real-ctrlu-issued "no Ctrl+U session-type call in log:" "$call_log_text"; fi
+if [[ $call_log_text == *"session"$'\t'"type"$'\t'"btw: Answer four"* ]]; then ok back-real-line-issued
+else bad back-real-line-issued "composed line not sent in log:" "$call_log_text"; fi
+
+rm -f "$call_log"
+rm -rf "$back_root"
 
 # --- btw-sync state machine -------------------------------------------------
 # btw-sync.sh talks to no agtermctl at all — it only reads meta.json, the

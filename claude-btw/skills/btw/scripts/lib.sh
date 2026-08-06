@@ -71,15 +71,37 @@ btw_verdict() {  # <agterm-sid> <pane> -> ok|moved|ambiguous|gone
   esac
 }
 
-# Fail closed: anything we cannot read as an empty prompt counts as occupied.
-btw_input_empty() {  # <agterm-sid> <pane>
-  local txt line
+# Reads the base pane's last prompt line and returns whatever follows the
+# prompt marker, with box-drawing characters and surrounding whitespace
+# stripped. Empty if no prompt line can be found (including on any agtermctl
+# failure). Matches both the real Claude Code marker `❯` (U+276F) and a
+# plain `>`, so this keeps working if the glyph ever changes.
+#
+# This is a READ, not a verdict. There used to be a `btw_input_empty` here
+# that tried to judge "safe to type into" from this same text — it never
+# worked (it only ever matched ASCII `>`, which Claude Code doesn't render,
+# so it failed closed on every call), and worse, it couldn't have worked even
+# with the right glyph: Claude Code renders a dimmed "ghost" suggestion in a
+# genuinely empty box, `session text` strips ANSI before returning it, and a
+# ghost suggestion is textually indistinguishable from something the user
+# actually typed. So callers must not infer "empty" from an empty result
+# here — there is no reliable way to tell "nothing typed" from "something
+# typed" by reading the box. btw-back.sh instead clears the box
+# unconditionally before typing, and uses this function only to recover
+# whatever was there beforehand for the user to see.
+btw_prompt_text() {  # <agterm-sid> <pane>
+  local txt line nbsp=$'\xc2\xa0'
   txt=$("$AGTERMCTL" session text --lines 6 --target "$1" --pane "$2" --json 2>/dev/null \
-        | jq -r '.result.text // ""' 2>/dev/null) || return 1
-  line=$(print -r -- "$txt" | grep -- '>' | tail -1)
-  [[ -n $line ]] || return 1
+        | jq -r '.result.text // ""' 2>/dev/null) || { print -r -- ""; return }
+  line=$(print -r -- "$txt" | grep -E -- '❯|>' | tail -1)
+  [[ -n $line ]] || return
   line=${line//[│┃|]/}
-  line=${line#*>}
-  line=${line//[[:space:]]/}
-  [[ -z $line ]]
+  if [[ $line == *❯* ]]; then
+    line=${line#*❯}
+  else
+    line=${line#*>}
+  fi
+  while [[ $line == [[:space:]]* || $line == $nbsp* ]]; do line=${line#?}; done
+  while [[ $line == *[[:space:]] || $line == *$nbsp ]]; do line=${line%?}; done
+  print -r -- "$line"
 }
