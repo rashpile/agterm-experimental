@@ -41,8 +41,10 @@ last sync, the script just prints `btw-sync: nothing new since <timestamp>` and 
 - `mode: verbatim` — `.md` and `.full.md` are the same content, every new message rendered in
   full.
 - `mode: squeezed` — the verbatim rendering exceeded the size threshold (24 KB by default,
-  `BTW_SQUEEZE_BYTES`), so `.md` collapses everything except the most recent messages (20 by
-  default, `BTW_TAIL_MSGS`) into one-line summaries and keeps only that tail in full. `.full.md` is
+  `BTW_SQUEEZE_BYTES`) **and** there are more than `BTW_TAIL_MSGS` (20 by default) messages to
+  render. Both conditions must hold: a handful of very large messages under that count stays
+  `verbatim` even when oversized. When squeezed, `.md` collapses everything except the most recent
+  `BTW_TAIL_MSGS` messages into one-line summaries and keeps only that tail in full. `.full.md` is
   unaffected — it always holds the complete, uncollapsed rendering, in both modes.
 - `base:` reports what happened to the base session since the fork or last sync — `alive` (same
   session, nothing unusual), `reset` (the base was `/clear`ed or restarted; the digest chains the
@@ -77,8 +79,11 @@ The script always writes the full answer to `$BTW_ROOT/forks/$AGTERM_SESSION_ID/
 can safely receive text (the verdicts below); if it can, it composes the `--line` sentence into a
 single capped-length line and types just that one line into the base tab's prompt with `agtermctl
 session type`. It does **not** press Enter — the user reviews and submits it — and it does **not**
-switch you to the base tab; you stay in the fork. On refusal, the answer file is kept — tell the
-user its path.
+switch you to the base tab; you stay in the fork. On success it also raises the base tab's sidebar
+glyph to a blinking "blocked" indicator, so the user notices there's something to look at even if
+they're not watching the fork; it clears itself automatically the next time they visit that tab
+(`--auto-reset`), so nothing needs to be done to dismiss it. On refusal, the answer file is kept —
+tell the user its path.
 
 ### Refusal verdicts
 

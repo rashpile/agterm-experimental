@@ -120,7 +120,7 @@ inside the fork).
 
 **Usage**
 
-| Chord | Action |
+| Trigger | Action |
 |-------|--------|
 | `cmd+shift+a` | Fork the Claude session in the current pane into a new tab |
 | `/btw-sync` (inside the fork) | Pull in what the base session did since the fork (or last sync) |
@@ -135,9 +135,11 @@ one before it:
    knowing which Claude session it was pressed from without this registry — install it first, or
    the hotkey has nothing to fork.
 2. **[`commands/claude-btw/`](commands/claude-btw/)** — the `cmd+shift+a` hotkey target. Looks the
-   current pane up in the registry, records fork metadata (base session id, transcript path, a
-   line-number watermark) under `$BTW_ROOT/forks/<new-tab-id>/meta.json`, then spawns the new tab
-   running `claude --resume <base-id> --fork-session`.
+   current pane up in the registry, spawns the new tab running `claude --resume <base-id>
+   --fork-session`, then records fork metadata (base session id, transcript path, a line-number
+   watermark) under `$BTW_ROOT/forks/<new-tab-id>/meta.json` — spawn has to come first because
+   that directory is keyed by the *new* tab's agterm session id, which doesn't exist until
+   `session new` returns it.
 3. **[`skills/btw/`](skills/btw/)** — the skill and its two slash commands (`/btw-sync`,
    `/btw-back`), which run *inside* the fork and teach the forked Claude how to catch up on base
    activity and send an answer back without flooding its own context or clobbering the base tab's

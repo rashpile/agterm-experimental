@@ -13,7 +13,8 @@ EOF
 
 The script writes the answer to a file, refuses if the base tab is gone,
 ambiguous, or has half-typed text in its prompt, and otherwise types one line
-into the base prompt without submitting it. Report what it printed. On refusal,
-tell the user where the answer file was kept.
+into the base prompt without submitting it and raises the base tab's sidebar
+glyph (it clears itself the next time the user visits that tab). Report what
+it printed. On refusal, tell the user where the answer file was kept.
 
 $ARGUMENTS
