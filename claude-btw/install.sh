@@ -47,6 +47,19 @@ KEYMAP=$AGTERM_CONFIG_DIR/keymap.conf
 CLAUDE_BTW_SH_DST=$AGTERM_PROJECTS_DIR/claude-btw.sh
 HOOK_CONTROL_CONFIG=$CLAUDE_DIR/hooks/hook-control/config.yaml
 
+# Claude Code scans every directory under $CLAUDE_DIR/skills as a skill and
+# every *.md file under $CLAUDE_DIR/commands as a slash command. Backing up
+# an existing install *in place* (the old `path.bak.<timestamp>` scheme,
+# still used everywhere else below) inside either tree therefore registers
+# as a phantom duplicate skill/command -- observed live after a reinstall,
+# where the session's skill list carried both `btw` and
+# `btw.bak.20260806-214526` with identical descriptions. Backups that would
+# land inside those two trees are redirected here instead, mirroring the
+# relative path so what got displaced is still obvious from the backup
+# path alone. One timestamp per run so every backup from a single
+# install.sh invocation lands together.
+BACKUP_ROOT=$CLAUDE_DIR/claude-btw-backups
+
 MARKER="agterm-tabs/register-tab.sh"
 KEYMAP_START="# >>> claude-btw >>>"
 KEYMAP_END="# <<< claude-btw <<<"
@@ -56,15 +69,30 @@ note() { print -r -- "$*" }
 action() { if (( dry )); then note "would $1"; else note "$1"; fi }
 
 timestamp() { date +%Y%m%d-%H%M%S }
+RUN_TS=$(timestamp)
+
+# Where a backup of $1 should land. Paths under $CLAUDE_DIR/skills or
+# $CLAUDE_DIR/commands are redirected to $BACKUP_ROOT (see its comment
+# above); everything else keeps the plain `path.bak.<timestamp>` sibling.
+backup_target() {  # path
+  local p=$1
+  if [[ $p == $CLAUDE_DIR/skills/* || $p == $CLAUDE_DIR/commands/* ]]; then
+    print -r -- "$BACKUP_ROOT/$RUN_TS/${p#$CLAUDE_DIR/}"
+  else
+    print -r -- "${p}.bak.$(timestamp)"
+  fi
+}
 
 # Timestamped backup of an existing file/dir/symlink before it's mutated.
 backup_existing() {  # path
   local p=$1
   [[ -e $p || -L $p ]] || return 0
-  local b="${p}.bak.$(timestamp)"
+  local b
+  b=$(backup_target "$p")
   if (( dry )); then
     note "would back up $p -> $b"
   else
+    mkdir -p -- "${b:h}"
     mv -- "$p" "$b"
     note "backed up $p -> $b"
   fi

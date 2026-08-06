@@ -739,6 +739,55 @@ assert_eq link-claude-btw-dry-run-exit-0 0 "$btw_status"
 assert_not_contains link-claude-btw-resolves-lib "$btw_out" "cannot find lib.sh"
 rm -rf "$root"
 
+# --- 8. reinstalling over an existing install never pollutes the two trees
+#     Claude Code auto-scans: every directory under ~/.claude/skills loads
+#     as a skill, every *.md under ~/.claude/commands loads as a slash
+#     command. The old backup scheme (`path.bak.<timestamp>` sibling, still
+#     used for settings.json/keymap.conf below) left the backup INSIDE
+#     those trees, so a reinstall registered a second, duplicate skill
+#     (`btw.bak.20260806-214526`, observed live) and would do the same to
+#     the two commands. Force a real backup+overwrite here (not a same-tree
+#     "up to date" skip) by mutating the installed skill tree and replacing
+#     one command symlink with an unrelated file before reinstalling. ---
+root=$(mktemp -d); mkdir -p "$root/home"
+h=$root/home
+run_install "$root" >/dev/null
+
+print -r -- "stale content" >> "$h/.claude/skills/btw/SKILL.md"
+rm -f "$h/.claude/commands/btw-sync.md"
+print -r -- "stale command content" > "$h/.claude/commands/btw-sync.md"
+
+run_install "$root" >/dev/null
+
+skills_entries=$(ls -1 "$h/.claude/skills")
+assert_eq install-reinstall-skills-namespace-clean "btw" "$skills_entries"
+
+commands_entries=$(ls -1 "$h/.claude/commands" | sort)
+expected_commands=$'btw-back.md\nbtw-sync.md'
+assert_eq install-reinstall-commands-namespace-clean "$expected_commands" "$commands_entries"
+
+# The displaced content must actually be recoverable -- a backup that's
+# merely hidden from Claude Code is worse than no backup at all.
+backup_root_dir="$h/.claude/claude-btw-backups"
+if [[ -d $backup_root_dir ]]; then ok install-reinstall-backup-dir-created
+else bad install-reinstall-backup-dir-created "no backup directory at $backup_root_dir"; fi
+
+found_skill_backup=$(find "$backup_root_dir" -path '*/skills/btw/SKILL.md' 2>/dev/null | head -1)
+if [[ -n $found_skill_backup ]] && grep -q "stale content" -- "$found_skill_backup"; then
+  ok install-reinstall-skill-backup-recoverable
+else
+  bad install-reinstall-skill-backup-recoverable "stale SKILL.md not recovered under $backup_root_dir"
+fi
+
+found_cmd_backup=$(find "$backup_root_dir" -path '*/commands/btw-sync.md' 2>/dev/null | head -1)
+if [[ -n $found_cmd_backup ]] && grep -q "stale command content" -- "$found_cmd_backup"; then
+  ok install-reinstall-command-backup-recoverable
+else
+  bad install-reinstall-command-backup-recoverable "stale btw-sync.md not recovered under $backup_root_dir"
+fi
+
+rm -rf "$root"
+
 print -r -- ""
 print -r -- "$PASS passed, $FAIL failed"
 (( FAIL == 0 ))

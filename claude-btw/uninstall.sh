@@ -48,6 +48,12 @@ HOOK_CONTROL_CONFIG=$CLAUDE_DIR/hooks/hook-control/config.yaml
 TABS_DIR=$CLAUDE_DIR/agterm/tabs
 BTW_STATE_DIR=$CLAUDE_DIR/btw
 
+# See install.sh's matching comment: anything backed up in place inside
+# $CLAUDE_DIR/skills or $CLAUDE_DIR/commands registers as a phantom
+# duplicate skill/slash-command, so remove_path's backups of the skill dir
+# and the two command symlinks are redirected here instead.
+BACKUP_ROOT=$CLAUDE_DIR/claude-btw-backups
+
 MARKER="agterm-tabs/register-tab.sh"
 KEYMAP_START="# >>> claude-btw >>>"
 KEYMAP_END="# <<< claude-btw <<<"
@@ -57,14 +63,29 @@ note() { print -r -- "$*" }
 action() { if (( dry )); then note "would $1"; else note "$1"; fi }
 
 timestamp() { date +%Y%m%d-%H%M%S }
+RUN_TS=$(timestamp)
+
+# Where a backup of $1 should land. Paths under $CLAUDE_DIR/skills or
+# $CLAUDE_DIR/commands are redirected to $BACKUP_ROOT (see its comment
+# above); everything else keeps the plain `path.bak.<timestamp>` sibling.
+backup_target() {  # path
+  local p=$1
+  if [[ $p == $CLAUDE_DIR/skills/* || $p == $CLAUDE_DIR/commands/* ]]; then
+    print -r -- "$BACKUP_ROOT/$RUN_TS/${p#$CLAUDE_DIR/}"
+  else
+    print -r -- "${p}.bak.$(timestamp)"
+  fi
+}
 
 backup_existing() {  # path
   local p=$1
   [[ -e $p || -L $p ]] || return 0
-  local b="${p}.bak.$(timestamp)"
+  local b
+  b=$(backup_target "$p")
   if (( dry )); then
     note "would back up $p -> $b"
   else
+    mkdir -p -- "${b:h}"
     if [[ -L $p ]]; then
       # Record the symlink's target rather than following it -- the target
       # (e.g. a --link install's checkout) is not ours to copy or touch.
