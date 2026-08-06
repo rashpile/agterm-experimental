@@ -104,6 +104,34 @@ input_case input-empty     $'│ > │\n' 0
 input_case input-typed     $'│ > half typed │\n' 1
 input_case input-noprompt  $'nothing here\n' 1
 
+# --- one-liner composition ------------------------------------------------
+BACK=$REPO/skills/btw/scripts/btw-back.sh
+
+compose_case() {  # name line path expected
+  local name=$1 line=$2 path=$3 expected=$4
+  assert_eq "$name" "$expected" "$("$BACK" --compose "$line" --answer-path "$path")"
+}
+
+print -r -- ""
+print -r -- "one-liner:"
+compose_case compose-plain \
+  "Auth uses JWT" "/tmp/a.md" \
+  "btw: Auth uses JWT. Full notes: /tmp/a.md"
+compose_case compose-newlines \
+  $'first\nsecond\n\nthird' "/tmp/a.md" \
+  "btw: first · second · third. Full notes: /tmp/a.md"
+compose_case compose-trailing-period \
+  "Auth uses JWT." "/tmp/a.md" \
+  "btw: Auth uses JWT. Full notes: /tmp/a.md"
+
+long=$(printf 'x%.0s' {1..500})
+composed=$("$BACK" --compose "$long" --answer-path "/tmp/a.md")
+
+assert_eq compose-capped-length 400 "${#composed}"
+assert_eq compose-capped-lines   1   "$(print -r -- "$composed" | wc -l | tr -d ' ')"
+if [[ $composed == *". Full notes: /tmp/a.md" ]]; then ok compose-capped-path
+else bad compose-capped-path "does not end with the answer path: $composed"; fi
+
 print -r -- ""
 print -r -- "$PASS passed, $FAIL failed"
 (( FAIL == 0 ))
