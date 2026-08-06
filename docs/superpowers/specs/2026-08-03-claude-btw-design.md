@@ -26,7 +26,12 @@ Checked against the running system on 2026-08-03. Do not re-derive.
   `~/.claude/projects/*/<id>.jsonl` — **never derive the slug from a cwd**.
 - Compaction keeps the same session id and the same transcript file: it appends a
   `type:"system"`, `subtype:"compact_boundary"` entry plus an `isCompactSummary` user entry.
-  Only `/clear` (or a fresh start) mints a new session id.
+  `/clear` was checked live on 2026-08-06: it also kept the same session id and the same
+  transcript file (35 lines before, 55 after, same `<id>.jsonl`) — it behaves like compaction for
+  our purposes here, not like a fresh start. This is version-dependent and could change on a later
+  Claude Code build; do not re-derive from memory, re-check live if it matters. What actually
+  mints a new session id, observed the same day, is the Claude process in the pane being replaced
+  by a different one (quit and relaunch `claude`).
 - Transcript entry types observed in the wild: `assistant`, `user`, `system`, and the non-message
   types `attachment`, `last-prompt`, `mode`, `permission-mode`, `ai-title`,
   `file-history-snapshot`, `file-history-delta`, `queue-operation`, `agent-name`,
@@ -240,8 +245,10 @@ so an oversize sync cannot flood the fork's context by accident.
    fork", exit non-zero.
 2. Read the registry for `base_agterm_sid.base_pane` → the Claude id running there **now**.
 3. **Same id** → read `transcript` from `watermark` to EOF.
-4. **Different id** → the base was `/clear`ed or restarted. Read the old transcript from
-   `watermark` to EOF, then the new one from line 1 to EOF, with
+4. **Different id** → the Claude session in the base pane has been replaced by a different one
+   (observed trigger: quit and relaunch `claude` in that pane — **not** `/clear`, which was
+   checked live and keeps the same id; see Constraints). Read the old transcript from `watermark`
+   to EOF, then the new one from line 1 to EOF, with
    `--- base session was reset here (/clear or restart) ---` between them. Rewrite `transcript`
    and `base_claude_id` in meta.
 5. **Registry entry missing** → the base tab is gone. The transcript is still on disk, so sync
@@ -370,7 +377,8 @@ fork is not closed and not renamed.
 | `jq` or `agtermctl` missing | loud fail, `notify`, exit non-zero |
 | Claude exited, registry file left behind | `SessionEnd` deletes it; `claude-btw` also prunes entries whose agterm sid is absent from `tree` |
 | Base tab closed while the fork lives | sync degrades to the recorded transcript and reports `base: gone`; btw-back refuses |
-| Base `/clear`ed | sync chains across with a reset marker |
+| Base session replaced (quit + relaunch `claude`) | sync chains across with a reset marker |
+| Base `/clear`ed | same id, same transcript (checked live 2026-08-06, version-dependent) — sync just picks up the new turns, no reset marker |
 | Base compacted | same file, same id — one marker line |
 | Fork of a fork | allowed, no special case; the fork becomes the base, meta chains one level |
 | Two forks off one base | separate agterm sids, separate meta directories; duplicate tab names are fine |
@@ -414,7 +422,8 @@ that stops btw-back typing into the wrong place.
 3. Send an answer back — one line lands in the base prompt, unsubmitted, glyph lights
 4. Restart agterm — the fork tab comes back as itself, the base is not re-forked
 5. Close the base tab, then sync and send back — degrades and refuses respectively
-6. `/clear` the base, then sync — reset marker present, new turns included
+6. Quit and relaunch `claude` in the base, then sync — reset marker present, new turns included
+   (`/clear` alone does not exercise this — see Constraints and the failure-modes table)
 
 ## Out of scope
 

@@ -52,10 +52,12 @@ last sync, the script just prints `btw-sync: nothing new since <timestamp>` and 
   literally complete: every assistant message, in `.full.md` too, is still individually truncated
   past `BTW_ASSISTANT_CHARS` (1200 chars by default) with a `…[+N chars]` marker.
 - `base:` reports what happened to the base session since the fork or last sync — `alive` (same
-  session, nothing unusual), `reset` (the base was `/clear`ed or restarted; the digest chains the
-  old tail onto the new session's activity with a `--- base session was reset here (/clear or
-  restart) ---` marker), or `gone` (the base tab or its Claude session is no longer in the
-  registry; the transcript on disk is still readable, so the digest is still produced).
+  session, nothing unusual), `reset` (the Claude session in the base pane has been replaced by a
+  different one — observed trigger: quit and relaunch `claude`, **not** `/clear`, which was
+  checked live and keeps the same session id and transcript, same as compaction; the digest
+  chains the old tail onto the new session's activity with a `--- base session was reset here
+  (/clear or restart) ---` marker), or `gone` (the base tab or its Claude session is no longer in
+  the registry; the transcript on disk is still readable, so the digest is still produced).
 
 **`--summarize`.** If the user asked for a summary and the report says `mode: squeezed`, do not
 read the (possibly large) `.full.md` into this conversation's own context. Dispatch a **subagent**
