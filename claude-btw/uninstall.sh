@@ -190,7 +190,11 @@ else
 fi
 
 note ""
-note "claude-btw uninstall complete."
+if (( dry )); then
+  note "dry run complete -- nothing was removed. Re-run without --dry-run to apply."
+else
+  note "claude-btw uninstall complete."
+fi
 
 if [[ -f $HOOK_CONTROL_CONFIG ]]; then
   note ""

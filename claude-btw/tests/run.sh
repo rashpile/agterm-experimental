@@ -312,13 +312,30 @@ run_uninstall() {  # root [args...]
 print -r -- ""
 print -r -- "install.sh / uninstall.sh:"
 
-# --- 1. --dry-run writes nothing at all -------------------------------------
+# --- 1. --dry-run writes nothing at all, and its own output cannot be
+#     misread as a completed install/uninstall: no dry-run claims work it
+#     did not do, in either tense (the closing banner, or the hook-control
+#     warning's "just merged" phrasing). Regression guard for a real
+#     defect: the first version of these scripts always printed
+#     "claude-btw install complete." / "claude-btw uninstall complete." even
+#     under --dry-run, so someone who ran --dry-run first (the cautious,
+#     correct thing to do) would read that line and reasonably believe the
+#     hook was registered when nothing had been written. ---
 root=$(mktemp -d); mkdir -p "$root/home"
 before=$(cd "$root" && find . | sort)
 out=$(run_install "$root" --dry-run)
 after=$(cd "$root" && find . | sort)
 assert_eq install-dryrun-tree-untouched "$before" "$after"
 assert_contains install-dryrun-says-would "$out" "would "
+assert_not_contains install-dryrun-no-false-complete "$out" "install complete."
+assert_contains install-dryrun-says-dry-run-complete "$out" "dry run complete -- nothing was written"
+rm -rf "$root"
+
+# Same false-completion defect class, on the uninstall side.
+root=$(mktemp -d); mkdir -p "$root/home"
+out=$(run_uninstall "$root" --dry-run)
+assert_not_contains uninstall-dryrun-no-false-complete "$out" "uninstall complete."
+assert_contains uninstall-dryrun-says-dry-run-complete "$out" "dry run complete -- nothing was removed"
 rm -rf "$root"
 
 # --- 2. a clean install lands all five artifacts + valid settings.json -----
