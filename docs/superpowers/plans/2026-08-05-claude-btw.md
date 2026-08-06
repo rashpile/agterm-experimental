@@ -26,6 +26,7 @@
 - **`btw-digest.sh` output must contain no timestamps, no paths, and no session ids.** It is a pure function of its inputs so golden-file tests stay stable. Headers with timestamps are added by `btw-sync.sh`, which is not golden-tested.
 - **Terminology clarification against the spec:** the spec's size guard says "last 20 turns" and "N older turns collapsed". A transcript contains messages, not turns, and turns are not delimited in it. The implementation counts **messages** and the knob is `BTW_TAIL_MSGS`. Report text says "messages".
 - **Commit after every task** with the message given in the task's final step.
+- **A script installed outside the repo cannot reach a sibling directory.** `commands/claude-btw/claude-btw.sh` sources `skills/btw/scripts/lib.sh` by relative position, but it gets installed to `~/.config/agterm-projects/`. Install by **symlink**, never `cp` — `${0:A:h}` resolves a symlink back into the repo, a copy does not. This bug shipped: the copy died at `source`, cascaded into `command not found`, and because a keybinding's stderr is invisible the hotkey was dead with no diagnostic. Neither per-task review could catch it — the sourcing is Task 5 and the install text is Task 8. Any future feature spanning `commands/` and `skills/` inherits this constraint.
 
 ---
 
