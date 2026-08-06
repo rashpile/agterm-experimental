@@ -962,7 +962,15 @@ pane=${2:-left}
 base_pwd=${3:-$HOME}
 base_name=${4:-session}
 
-notify() { [[ -x $AGTERMCTL ]] && "$AGTERMCTL" notify "$1" --title "claude-btw" >/dev/null 2>&1 }
+# Under --dry-run this prints instead of posting: a desktop notification is a
+# real side effect, and "print what you would do" has to mean all of it.
+notify() {
+  if (( dry )); then
+    print -r -- "notify: $1"
+  else
+    [[ -x $AGTERMCTL ]] && "$AGTERMCTL" notify "$1" --title "claude-btw" >/dev/null 2>&1
+  fi
+}
 
 btw_need jq
 [[ -x $AGTERMCTL ]] || { notify "agtermctl not found"; btw_die "agtermctl not found: $AGTERMCTL" }
@@ -1057,11 +1065,12 @@ Expected: `exit=0` and no `session new` line.
 # path below if you install it elsewhere.
 #
 # A keybinding rather than a slash command on purpose: it must work while the
-# base Claude is mid-turn, when you cannot type into it.
-command "Fork session (btw)"  cmd+shift+b  $HOME/.config/agterm-projects/claude-btw.sh "$AGT_SESSION_ID" "$AGT_PANE" "$AGT_SESSION_PWD" "$AGT_SESSION_NAME"
+# base Claude is mid-turn, when you cannot type into it. A single chord rather
+# than a leader for the same reason — it should be a reflex.
+command "Fork session (btw)"  cmd+shift+a  $HOME/.config/agterm-projects/claude-btw.sh "$AGT_SESSION_ID" "$AGT_PANE" "$AGT_SESSION_PWD" "$AGT_SESSION_NAME"
 ```
 
-Before committing, check `cmd+shift+b` is free: `grep -n "cmd+shift+b" ~/.config/agterm/keymap.conf`. If it collides, pick another chord and update both this file and the README section in Task 8.
+`cmd+shift+a` was chosen by the user after `cmd+shift+b` (the original proposal) turned out to be taken by their own "Toggle side panel" command at `~/.config/agterm/keymap.conf:229`. Verified free at the time of writing, along with `c g h i l p q s t u v x y z`.
 
 - [ ] **Step 5: Commit**
 
