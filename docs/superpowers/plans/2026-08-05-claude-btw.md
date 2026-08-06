@@ -1307,7 +1307,15 @@ compose_case compose-newlines \
 compose_case compose-trailing-period \
   "Auth uses JWT." "/tmp/a.md" \
   "btw: Auth uses JWT. Full notes: /tmp/a.md"
+compose_case compose-leading-blank \
+  $'\n\nAuth uses JWT' "/tmp/a.md" \
+  "btw: Auth uses JWT. Full notes: /tmp/a.md"
+compose_case compose-trailing-blank \
+  $'Auth uses JWT  \n' "/tmp/a.md" \
+  "btw: Auth uses JWT. Full notes: /tmp/a.md"
 ```
+
+The last two are the regression guard for a bug that shipped in the first draft: the trim ran *after* the newline collapse and depended on `extended_glob` being set, so it was a silent no-op **and** in the wrong order. A leading newline became a stray `· ` that reached the user's live prompt. LLM-generated `--line` text plausibly has leading or trailing blank lines, so this is not a theoretical shape.
 
 Truncation is asserted by **property**, not by a literal string — the exact cut position is an implementation detail, but "never longer than the cap", "never contains a newline", and "always ends with the path" are the guarantees that matter:
 
@@ -1326,7 +1334,7 @@ else bad compose-capped-path "does not end with the answer path: $composed"; fi
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `commands/claude-btw/tests/run.sh`
-Expected: the six `compose-*` cases FAIL (no such script). The 19 earlier cases pass.
+Expected: the eight `compose-*` cases FAIL (no such script). The 19 earlier cases pass.
 
 - [ ] **Step 3: Write the script**
 
@@ -1344,6 +1352,10 @@ Expected: the six `compose-*` cases FAIL (no such script). The 19 earlier cases 
 # multi-line brief would submit itself line by line — single line is a safety
 # constraint, not a style rule.
 set -u
+# REQUIRED for the `[[:space:]]#` trims below — `#` is a zero-or-more
+# quantifier only under extended globbing. Without it both trims are silent
+# no-ops and stray whitespace reaches the user's live prompt.
+setopt extended_glob
 
 source "${0:A:h}/lib.sh"
 
@@ -1351,11 +1363,14 @@ MAXLINE=${BTW_MAX_LINE:-400}
 
 btw_compose_line() {  # <text> <answer-path>
   local text=$1 path=$2
+  # Trim BEFORE collapsing, not after: a leading or trailing newline would
+  # otherwise already have become a " · " separator, which no whitespace trim
+  # can remove. [[:space:]] covers \n, so this handles both.
+  text=${text##[[:space:]]#}
+  text=${text%%[[:space:]]#}
   # Collapse every newline run; nothing multi-line may reach `session type`.
   text=${text//$'\n'/ · }
   while [[ $text == *' ·  · '* ]]; do text=${text//' ·  · '/' · '}; done
-  text=${text##[[:space:]]#}
-  text=${text%%[[:space:]]#}
   text=${text%.}
 
   local prefix="btw: " suffix=". Full notes: $path"
@@ -1443,7 +1458,7 @@ print -r -- "answer: $answer"
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `commands/claude-btw/tests/run.sh`
-Expected: `25 passed, 0 failed`, exit 0.
+Expected: `27 passed, 0 failed`, exit 0.
 
 If `compose-capped-length` reports something other than `400`, the cause is `${#text}` counting characters while the cap is meant as characters too — that is correct and consistent. Do not switch to byte counting; `·` and `…` are multibyte and the cap exists to keep the prompt line readable, not to fit a buffer.
 
@@ -1583,7 +1598,7 @@ In `commands/claude-btw/design-notes.md`, change the superseded banner to also p
 - [ ] **Step 5: Run the full suite one last time**
 
 Run: `commands/claude-btw/tests/run.sh`
-Expected: `25 passed, 0 failed`, exit 0.
+Expected: `27 passed, 0 failed`, exit 0.
 
 - [ ] **Step 6: Walk the manual smoke checklist**
 
