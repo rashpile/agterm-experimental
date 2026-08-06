@@ -59,7 +59,7 @@ fi
 btw_root=${BTW_ROOT:-$HOME/.claude/btw}
 # Case of AGTERM_SESSION_ID vs. the `.result.id` claude-btw.sh keyed this
 # directory by at fork time have been observed to differ; normalize to
-# lowercase to match btw_fork_dir() in skills/btw/scripts/lib.sh.
+# lowercase to match btw_fork_dir() in claude-btw/skills/btw/scripts/lib.sh.
 if [[ -f $btw_root/forks/${AGTERM_SESSION_ID:l}/meta.json ]]; then
   # $sid is interpolated into a command line that is PERSISTED and
   # re-executed by agterm on every restart (`session restore`), unlike every

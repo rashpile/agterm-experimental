@@ -1,10 +1,16 @@
 # claude-btw — design notes (handoff)
 
 > **Superseded.** The brainstorm is finished. The full design lives in
-> [`docs/superpowers/specs/2026-08-03-claude-btw-design.md`](../../docs/superpowers/specs/2026-08-03-claude-btw-design.md),
+> [`docs/superpowers/specs/2026-08-03-claude-btw-design.md`](../docs/superpowers/specs/2026-08-03-claude-btw-design.md),
 > and its implementation plan — now executed — lives in
-> [`docs/superpowers/plans/2026-08-05-claude-btw.md`](../../docs/superpowers/plans/2026-08-05-claude-btw.md).
+> [`docs/superpowers/plans/2026-08-05-claude-btw.md`](../docs/superpowers/plans/2026-08-05-claude-btw.md).
 > These notes are kept only as a record of how the design got there.
+>
+> Note: the layout described below (`commands/claude-btw/`, a top-level
+> `hooks/agterm-tabs/`, `skills/btw/`) is what shipped initially. The project
+> was later consolidated into a single `claude-btw/` directory; see
+> [`claude-btw/README.md`](README.md) for the layout that actually exists on
+> disk today.
 
 Brainstorm started in `~/workspace/ops` on 2026-08-03, continued here.
 **Status: complete.** Part 1 was presented and amended; part 2 (btw-sync internals, btw-back,

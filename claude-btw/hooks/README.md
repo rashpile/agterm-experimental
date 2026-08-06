@@ -10,12 +10,15 @@ fired from. This hook runs as a Claude `SessionStart` / `SessionEnd` hook,
 inside the Claude session itself, and writes that fact down to a small file
 registry that any later shell command (bound to a key or not) can read.
 
-The registry is a generic, standalone concept — not specific to any one
-consumer. It lives under its own top-level `hooks/agterm-tabs/` rather than
-inside a particular tool's directory. `claude-btw` (see `commands/claude-btw/`
-and `skills/btw/`) is its first consumer, reading it via `btw_registry()` in
-`skills/btw/scripts/lib.sh`, but nothing about the registry format is
-btw-specific.
+This hook ships as part of `claude-btw` — `claude-btw` (see
+[`../commands/`](../commands/) and [`../skills/btw/`](../skills/btw/)) is what
+installs it and what maintains it, and it reads the registry via
+`btw_registry()` in `../skills/btw/scripts/lib.sh`. But the **file format** it
+writes is deliberately generic: a plain "which Claude session is running in
+this agterm tab and pane" map, keyed by nothing btw-specific, with no
+btw-specific fields in its JSON body. Any other shell command or hook that
+wants that answer can read `$AGTERM_TABS_DIR/<agterm-session-id>.<pane>`
+directly — nothing here couples the format to claude-btw's own logic.
 
 ## The registry
 
@@ -101,7 +104,7 @@ had.
 1. Copy this directory into place:
 
    ```
-   cp -r hooks/agterm-tabs ~/.claude/hooks/agterm-tabs
+   cp -r claude-btw/hooks ~/.claude/hooks/agterm-tabs
    ```
 
 2. Merge `settings-snippet.json` into `~/.claude/settings.json`, under the

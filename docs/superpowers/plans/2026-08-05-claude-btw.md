@@ -32,6 +32,24 @@
 
 ## File Structure
 
+> **Note:** after implementation, this tree was consolidated into a single
+> `claude-btw/` directory (each subdirectory mirroring where it installs).
+> The table below documents the paths as originally implemented; the current
+> layout is:
+>
+> ```
+> claude-btw/
+>   README.md
+>   design-notes.md
+>   hooks/{register-tab.sh, settings-snippet.json, README.md}
+>   commands/{claude-btw.sh, keymap.conf}
+>   skills/btw/{SKILL.md, scripts/*, commands/*}
+>   tests/{run.sh, fake-agtermctl.sh, fixtures/, golden/}
+> ```
+>
+> See [`claude-btw/README.md`](../../../claude-btw/README.md) for the
+> authoritative layout and install steps.
+
 | File | Responsibility |
 |---|---|
 | `commands/claude-btw/tests/run.sh` | The whole automated suite. Run by hand. Never touches agterm or Claude. |

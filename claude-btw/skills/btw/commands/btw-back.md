@@ -11,7 +11,7 @@ sentence. Then run:
 EOF
 ```
 
-(If running from a checkout of this repo, `skills/btw/scripts/btw-back.sh` also works. A fork
+(If running from a checkout of this repo, `claude-btw/skills/btw/scripts/btw-back.sh` also works. A fork
 inherits the *base tab's* cwd — the user's project, never this repo — so the repo-relative path
 is not the general case.)
 

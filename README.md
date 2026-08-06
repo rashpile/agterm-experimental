@@ -16,8 +16,7 @@ remotely from Telegram.
 |------|-----------|
 | [`skills/orchestrating-agterm-agents/`](skills/orchestrating-agterm-agents/) | A Claude Code **skill**: one orchestrator agent spawns, reads, and drives worker agents in separate agterm sessions — plus a Telegram remote-control loop. |
 | [`skills/agterm-check-update/`](skills/agterm-check-update/) | A Claude Code **skill**: after an agterm upgrade, diff the upstream changelog for the delta since the configs were last reviewed, then audit whether custom configs/scripts should adopt new built-ins or can be simplified. Tracks the last-validated version so each run covers only the delta. |
-| [`skills/btw/`](skills/btw/) | A Claude Code **skill** (plus two slash commands) that runs *inside* a `claude-btw` fork tab: catch up on what the base session did (`/btw-sync`) and send an answer back to the base tab's prompt (`/btw-back`). See [claude-btw](#claude-btw). |
-| [`hooks/agterm-tabs/`](hooks/agterm-tabs/) | A Claude Code **hook**: records which Claude session runs in which agterm tab and pane, as a small file registry. A generic facility — `claude-btw` is its first consumer. |
+| [`claude-btw/`](claude-btw/) | A self-contained feature: fork the Claude session running in an agterm tab into a new tab beside it. Hook, hotkey, and skill in one directory, each subdirectory mirroring where it installs. See [claude-btw](#claude-btw). |
 | [`commands/`](commands/) | Small standalone **agterm commands** — shell scripts bound to keymap chords via `agtermctl`. See [Commands](#commands). |
 | [`config/agterm-tree/`](config/agterm-tree/) | A **file tree panel** for agterm — nvim-tree in the right split, files opening into overlays. Built entirely on the control API; no app changes. |
 | [`shell/zsh/`](shell/zsh/) | A **zsh status-badge hook** — turns each tab's sidebar glyph into a traffic light for *any* command: dim while running, green on success, yellow on failure. agterm does this for agents; this does it for everything. |
@@ -114,9 +113,8 @@ Fork the Claude session running in the current tab into a new tab beside it, so 
 opens with the base conversation's full history and an empty prompt; from there, `/btw-sync` pulls
 in what the base did while you were on the side question, and `/btw-back` sends the answer to the
 base tab's prompt — unsubmitted, so the user reviews and sends it themselves. Files:
-[`commands/claude-btw/`](commands/claude-btw/) (hotkey), [`hooks/agterm-tabs/`](hooks/agterm-tabs/)
-(the registry the hotkey depends on), [`skills/btw/`](skills/btw/) (skill + slash commands that run
-inside the fork).
+[`claude-btw/`](claude-btw/) — see [`claude-btw/README.md`](claude-btw/README.md) for the full
+layout and install steps.
 
 **Usage**
 
@@ -129,42 +127,25 @@ inside the fork).
 **How it works.** Three moving parts, and they install in this order because each depends on the
 one before it:
 
-1. **[`hooks/agterm-tabs/`](hooks/agterm-tabs/)** — a Claude Code `SessionStart`/`SessionEnd` hook
+1. **[`claude-btw/hooks/`](claude-btw/hooks/)** — a Claude Code `SessionStart`/`SessionEnd` hook
    that records which Claude session is running in which agterm tab and pane, in a small file
    registry. The hotkey fires a plain shell command, never through Claude, so it has no way of
    knowing which Claude session it was pressed from without this registry — install it first, or
    the hotkey has nothing to fork.
-2. **[`commands/claude-btw/`](commands/claude-btw/)** — the `cmd+shift+a` hotkey target. Looks the
+2. **[`claude-btw/commands/`](claude-btw/commands/)** — the `cmd+shift+a` hotkey target. Looks the
    current pane up in the registry, spawns the new tab running `claude --resume <base-id>
    --fork-session`, then records fork metadata (base session id, transcript path, a line-number
    watermark) under `$BTW_ROOT/forks/<new-tab-id>/meta.json` — spawn has to come first because
    that directory is keyed by the *new* tab's agterm session id, which doesn't exist until
    `session new` returns it.
-3. **[`skills/btw/`](skills/btw/)** — the skill and its two slash commands (`/btw-sync`,
-   `/btw-back`), which run *inside* the fork and teach the forked Claude how to catch up on base
-   activity and send an answer back without flooding its own context or clobbering the base tab's
-   prompt.
+3. **[`claude-btw/skills/btw/`](claude-btw/skills/btw/)** — the skill and its two slash commands
+   (`/btw-sync`, `/btw-back`), which run *inside* the fork and teach the forked Claude how to catch
+   up on base activity and send an answer back without flooding its own context or clobbering the
+   base tab's prompt.
 
-Install in that order:
-
-```bash
-# 1. the hook — registry the hotkey depends on
-cp -r hooks/agterm-tabs ~/.claude/hooks/agterm-tabs
-# merge hooks/agterm-tabs/settings-snippet.json into ~/.claude/settings.json (see hooks/agterm-tabs/README.md)
-
-# 2. the hotkey — SYMLINK, not cp: claude-btw.sh finds lib.sh via ${0:A:h},
-#    resolved through the symlink back into this checkout. A plain cp puts it
-#    at ~/skills/btw/scripts/lib.sh (nonexistent), and because a keybinding's
-#    stderr goes nowhere visible, cmd+shift+a would become a silent dead key.
-mkdir -p ~/.config/agterm-projects
-ln -s "$(pwd)/commands/claude-btw/claude-btw.sh" ~/.config/agterm-projects/claude-btw.sh
-# merge commands/claude-btw/keymap.conf into ~/.config/agterm/keymap.conf
-
-# 3. the skill + slash commands, run inside the fork
-ln -s "$(pwd)/skills/btw" ~/.claude/skills/btw
-ln -s ~/.claude/skills/btw/commands/btw-sync.md ~/.claude/commands/btw-sync.md
-ln -s ~/.claude/skills/btw/commands/btw-back.md ~/.claude/commands/btw-back.md
-```
+Full install steps (in this order) live in
+**[`claude-btw/README.md`](claude-btw/README.md#install)**, kept there and only there so they
+can't drift out of sync with this overview.
 
 - **Fork tabs only survive an agterm restart if "Restore running commands on restart" is on**
   (agterm's General settings; **off by default**). With it on, the registry hook pins each fork tab

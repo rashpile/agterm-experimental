@@ -1,13 +1,13 @@
 #!/bin/zsh
 # Automated suite for claude-btw. Run by hand:
-#   commands/claude-btw/tests/run.sh
+#   claude-btw/tests/run.sh
 # Never talks to agterm or Claude. Exits non-zero on any failure.
 set -u
 setopt extended_glob
 
 HERE=${0:A:h}
-REPO=${HERE:h:h:h}
-DIGEST=$REPO/skills/btw/scripts/btw-digest.sh
+REPO=${HERE:h:h}
+DIGEST=$REPO/claude-btw/skills/btw/scripts/btw-digest.sh
 
 typeset -g PASS=0 FAIL=0
 
@@ -82,7 +82,7 @@ report_case report-bytes-alone-stays-verbatim basic 1 \
   BTW_SQUEEZE_BYTES=1
 
 # --- verdicts -------------------------------------------------------------
-LIB=$REPO/skills/btw/scripts/lib.sh
+LIB=$REPO/claude-btw/skills/btw/scripts/lib.sh
 
 verdict_case() {  # name tree-ids registry-keys pane expected
   local name=$1 ids=$2 keys=$3 pane=$4 expected=$5
@@ -145,7 +145,7 @@ actual=$?
 assert_eq input-agtermctl-fails 1 "$actual"
 
 # --- one-liner composition ------------------------------------------------
-BACK=$REPO/skills/btw/scripts/btw-back.sh
+BACK=$REPO/claude-btw/skills/btw/scripts/btw-back.sh
 
 compose_case() {  # name line path expected
   local name=$1 line=$2 path=$3 expected=$4
@@ -185,7 +185,7 @@ else bad compose-capped-path "does not end with the answer path: $composed"; fi
 # this branch's real bugs were found. Build a synthetic fork end to end and
 # walk it through: first sync, a no-op second sync, an incremental third
 # sync (the off-by-one regression guard), and a base reset.
-SYNC=$REPO/skills/btw/scripts/btw-sync.sh
+SYNC=$REPO/claude-btw/skills/btw/scripts/btw-sync.sh
 
 sync_mkuser() { jq -nc --arg t "$1" '{type: "user", message: {role: "user", content: $t}}' }
 sync_mkasst() { jq -nc --arg t "$1" '{type: "assistant", message: {role: "assistant", content: [{type: "text", text: $t}]}}' }

@@ -1,18 +1,24 @@
 #!/bin/zsh
 # Fork the Claude session running in this pane into a new tab beside it.
-# Bound to a chord in keymap.conf; see commands/claude-btw/design-notes.md and
+# Bound to a chord in keymap.conf; see claude-btw/design-notes.md and
 # docs/superpowers/specs/2026-08-03-claude-btw-design.md.
 #
 #   claude-btw.sh [--dry-run] <AGT_SESSION_ID> <AGT_PANE> <AGT_SESSION_PWD> <AGT_SESSION_NAME>
 set -u
 
-lib=${BTW_LIB:-${0:A:h}/../../skills/btw/scripts/lib.sh}
-if [[ ! -f $lib ]]; then
-  print -ru2 -- "claude-btw: cannot find lib.sh at $lib"
-  print -ru2 -- "claude-btw: this script must be a SYMLINK into the repo (see README.md's install steps) so \${0:A:h} resolves back into the checkout — a plain cp breaks the relative lookup. Alternatively set BTW_LIB to the absolute path of skills/btw/scripts/lib.sh."
-  exit 1
-fi
-source "$lib"
+# lib.sh lookup, in order: an explicit override; the installed skill location
+# (what a plain `cp` install of this script — see README.md — lands next to,
+# since $HOME/.claude/skills/btw is where step 3 of the install puts it); the
+# checkout's own skills/ directory, one level up from this script, for
+# running straight out of a clone. A total miss dies with one clear line
+# instead of cascading into "command not found" once execution reaches a
+# btw_* function.
+for lib in "${BTW_LIB:-}" \
+           "$HOME/.claude/skills/btw/scripts/lib.sh" \
+           "${0:A:h}/../skills/btw/scripts/lib.sh"; do
+  [[ -n $lib && -f $lib ]] && { source "$lib"; break }
+done
+(( $+functions[btw_need] )) || { print -ru2 -- "claude-btw: cannot find lib.sh"; exit 1 }
 
 dry=0
 if [[ ${1:-} == --dry-run ]]; then dry=1; shift; fi

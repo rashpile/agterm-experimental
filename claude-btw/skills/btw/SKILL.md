@@ -20,7 +20,7 @@ fork belongs to.
 
 Run `~/.claude/skills/btw/scripts/btw-sync.sh` (no arguments) — a fork inherits the *base tab's*
 cwd, which is the user's project, never this repo, so the repo-relative path only resolves when
-you happen to be running from a checkout of this repo itself (then `skills/btw/scripts/btw-sync.sh`
+you happen to be running from a checkout of this repo itself (then `claude-btw/skills/btw/scripts/btw-sync.sh`
 also works). It resolves the base tab from `meta.json`, reads the base's transcript forward from
 the recorded watermark, and writes two files under `$BTW_ROOT/forks/$AGTERM_SESSION_ID/`:
 `sync-NNN.md` (the digest to read) and `sync-NNN.full.md` (the uncollapsed rendering, always
@@ -79,7 +79,7 @@ JWT once per request...
 EOF
 ```
 
-(If running from a checkout of this repo, `skills/btw/scripts/btw-back.sh` also works — but a
+(If running from a checkout of this repo, `claude-btw/skills/btw/scripts/btw-back.sh` also works — but a
 fork inherits the *base tab's* cwd, the user's project, never this repo, so the installed path
 is the general case.)
 
