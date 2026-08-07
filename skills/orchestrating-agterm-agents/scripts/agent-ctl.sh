@@ -50,8 +50,10 @@ if [ "$cmd" = spawn ] || [ "$cmd" = new ]; then
   # read as injected text). Workers don't need suggestions; kill the ambiguity at spawn.
   # NB: --prompt-suggestions false alone is NOT enough — it governs the print/SDK-mode
   # suggestion messages; the interactive ghost text is the settings key promptSuggestionEnabled
-  # (verified live: a worker spawned with only the flag still rendered ghosts).
-  run="${*:-zsh -ic 'claude --settings \"{\\\"promptSuggestionEnabled\\\": false}\" --prompt-suggestions false'}"
+  # (verified live: a worker spawned with only the flag still rendered ghosts). The env var
+  # CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION (verified present in the 2.1.224 binary's feature-gate
+  # table) is set too — three mechanisms, so the ghosts stay dead across versions.
+  run="${*:-zsh -ic 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --settings \"{\\\"promptSuggestionEnabled\\\": false}\" --prompt-suggestions false'}"
   # --no-select (agterm ≥0.15.2): create the worker in the BACKGROUND. Delegation is the whole point —
   # spawning used to yank the user into the worker's workspace, mid-task, once per worker. Safe for the
   # supervise loop: a never-selected session's buffer is still live, so `ready`/`read`/`status`/
