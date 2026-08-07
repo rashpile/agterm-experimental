@@ -253,14 +253,14 @@ normal Recovery path.
 
 **Usage preflight (between dispatches).** Before each new spawn, check the meter:
 `~/.local/bin/claude-usage.sh --current`
-→ `Current session: N% used; Resets <time>`. If N ≥ **85%**, don't start new work:
+→ `Current session: N% used; Resets <time>`. If N ≥ **95%**, don't start new work:
 drain, tell the user ("usage at N%, holding dispatch until <reset>"), and schedule
 auto-wakeup. The meter is an estimate — it gates *dispatch decisions only*, never
 anything destructive. Script missing → skip preflight; the reactive backstop still holds.
 **The meter lags in bursts**: it counts tokens as sessions flush transcripts, so a busy
 worker finishing a big turn can jump it 20+ points between two reads a minute apart.
 During an active run treat readings as lower bounds — re-check right before each spawn,
-not once per cycle, and leave headroom under the 85% line when several workers are busy.
+not once per cycle, and leave headroom under the 95% line when several workers are busy.
 
 **Reactive backstop.** `agent-ctl.sh ready` distinguishes boot failures: exit 3 = worker
 is up but Claude shows a usage-limit/login banner (banner text includes the reset time);
