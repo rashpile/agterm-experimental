@@ -44,7 +44,11 @@ if [ "$cmd" = spawn ] || [ "$cmd" = new ]; then
   name="${3:?spawn: missing <name>}"
   cwd="${4:?spawn: missing <cwd>}"
   shift 4
-  run="${*:-zsh -ic claude}"
+  # Default command disables prompt suggestions: their ghost text sits in the input box and
+  # `session text` cannot tell it from real typed input — an orchestrator reading the screen
+  # sees a plausible instruction of unknown origin (observed live: a suggested "merge the PR"
+  # read as injected text). Workers don't need suggestions; kill the ambiguity at spawn.
+  run="${*:-zsh -ic 'claude --prompt-suggestions false'}"
   # --no-select (agterm ≥0.15.2): create the worker in the BACKGROUND. Delegation is the whole point —
   # spawning used to yank the user into the worker's workspace, mid-task, once per worker. Safe for the
   # supervise loop: a never-selected session's buffer is still live, so `ready`/`read`/`status`/
