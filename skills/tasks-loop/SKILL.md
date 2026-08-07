@@ -40,22 +40,23 @@ Everything project-specific belongs in that file — this skill stays generic.
 
 ## Arguments
 
-`/tasks-loop [--slots N] [--keep] [--auto]`
+`/tasks-loop [--slots N] [--keep] [--auto] [--list]`
 
 | Parameter | Meaning | Default |
 |---|---|---|
 | `--slots 1..5` | Max **busy** worker sessions at once. Idle-alive sessions (parked authors awaiting review findings, `--keep`-retained workers) do NOT consume a slot — only sessions actively working do. A review pair (reviewer + codex) takes 2 slots. | 2 |
 | `--keep` | Don't close worker sessions on completion — leave them idle so the user can review their transcripts. Their worktrees are kept too (a kept session lives in its worktree). Cleanup happens when the user says "cleanup" or on the next run's Recovery reconcile. | off |
 | `--auto` | Fully-automatic preference, applicable to any flow: project config sections may define human checkpoints and how `--auto` changes them (typically: skip the checkpoint). Never overrides the skill's own safety gates (done+pending approval, CI-green, dispute escalation). Pass the flag's state to workers. | off |
+| `--list` | Manual selection: don't dispatch automatically. Show the actionable issues (`#idx  labels — title`, plus what would be dispatched for each) and ask the user which to process; dispatch only the chosen ones, then run those to completion as normal. Issues not chosen are left untouched, not relabeled. | off |
 
 A bare number (`/tasks-loop 3`) is shorthand for `--slots 3`. Unknown parameters →
 don't guess: show the table above and ask.
 
 **Preflight**: before dispatching anything, echo the effective run config in one line —
 `slots=N keep=on|off auto=on|off · usage: session N% (resets <t>) · repo <owner>/<repo> as <user> ·
-deploy: <configured|not configured>` — followed by the dispatch plan. This doubles as the
-parameter reference: the user sees what knobs exist and what this run will do before it
-does it.
+deploy: <configured|not configured>` — followed by the dispatch plan (with `--list`, the
+plan is replaced by the selection question). This doubles as the parameter reference: the
+user sees what knobs exist and what this run will do before it does it.
 
 ## Orchestrator is a coordinator, never a worker
 
