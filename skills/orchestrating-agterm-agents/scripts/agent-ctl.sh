@@ -50,19 +50,24 @@ if [ "$cmd" = spawn ] || [ "$cmd" = new ]; then
   # supervise loop: a never-selected session's buffer is still live, so `ready`/`read`/`status`/
   # `agent-wait` all work without it ever being focused (verified). Use `agent-ctl.sh select <id>` on
   # the rare occasion you actually want it foregrounded.
+  # Surface spawn failures LOUDLY: jq on an {"ok":false,...} envelope used to print the literal
+  # string "null", which callers then used as a session id. Print the error and exit non-zero instead.
   if [ "$create_ws" = 1 ]; then
     # Idempotent: agterm reuses the workspace NAMED "$ws" if present, creates it if absent. Keeps the
     # whole spawn (incl. workspace creation) inside this one allow-listed path — no raw `workspace new`.
-    "$AGT" session new --workspace-name "$ws" --create-workspace --no-select \
-        --name "$name" --cwd "$cwd" --command "$run" --json | jq -r '.result.id'
-    exit "${PIPESTATUS[0]:-$?}"
+    out="$("$AGT" session new --workspace-name "$ws" --create-workspace --no-select \
+        --name "$name" --cwd "$cwd" --command "$run" --json)"
+  else
+    wsid=$("$AGT" tree --json | jq -r --arg w "$ws" \
+        '.result.tree.workspaces[] | select(.id==$w or .name==$w or (.name|startswith($w))) | .id' | head -1)
+    [ -n "$wsid" ] || wsid="$ws"
+    out="$("$AGT" session new --workspace "$wsid" --no-select --name "$name" --cwd "$cwd" --command "$run" --json)"
   fi
-  wsid=$("$AGT" tree --json | jq -r --arg w "$ws" \
-      '.result.tree.workspaces[] | select(.id==$w or .name==$w or (.name|startswith($w))) | .id' | head -1)
-  [ -n "$wsid" ] || wsid="$ws"
-  "$AGT" session new --workspace "$wsid" --no-select --name "$name" --cwd "$cwd" --command "$run" --json \
-    | jq -r '.result.id'
-  exit "${PIPESTATUS[0]:-$?}"
+  sid="$(printf '%s' "$out" | jq -r '.result.id // empty' 2>/dev/null)"
+  if [ -n "$sid" ]; then printf '%s\n' "$sid"; exit 0; fi
+  echo "spawn FAILED for '$name' in workspace '$ws':" >&2
+  printf '%s' "$out" | jq -c '.error // .' >&2 2>/dev/null || printf '%s\n' "$out" >&2
+  exit 1
 fi
 
 targ="${2:?missing <session>}"
@@ -78,17 +83,38 @@ case "$cmd" in
     # Block until the target's freshly-spawned Claude is ready to receive a task: poll the screen,
     # auto-dismiss the first-run "trust this folder" prompt, and return once the input box footer is up.
     # Keeps the raw `session text` polling INSIDE this allow-listed path (the orchestrator never runs it).
-    secs="${1:-15}"; iters=$(( secs * 2 )); trusted=0
+    secs="${1:-15}"; iters=$(( secs * 2 )); trusted=0; gone=0
     i=0
     while [ "$i" -lt "$iters" ]; do
       i=$(( i + 1 )); sleep 0.5
-      txt="$("$AGT" session text --target "$id" --json 2>/dev/null | jq -r '.result.text // ""')"
+      raw="$("$AGT" session text --target "$id" --json 2>/dev/null)"
+      # Fail FAST if the session died (claude exited on a usage-limit/login error and took the
+      # shell with it) — polling a gone session to timeout used to read as "cold start too slow".
+      if ! printf '%s' "$raw" | jq -e '.ok == true' >/dev/null 2>&1; then
+        gone=$(( gone + 1 ))
+        if [ "$gone" -ge 4 ]; then
+          echo "ready: session $id is GONE — spawned claude likely exited at startup (check usage limits / login):"
+          printf '%s' "$raw" | jq -c '.error // .' 2>/dev/null
+          exit 2
+        fi
+        continue
+      fi
+      gone=0
+      txt="$(printf '%s' "$raw" | jq -r '.result.text // ""')"
       if [ "$trusted" = 0 ] && printf '%s' "$txt" | grep -qi 'trust this folder'; then
         printf '\r' | "$AGT" session type --stdin --target "$id" >/dev/null 2>&1
         trusted=1; continue
       fi
-      # Idle/ready markers: the shortcuts hint, or the input box footer ("for agents" / a token counter).
-      if printf '%s' "$txt" | grep -qE '\? for shortcuts|for agents|[0-9]+ tokens'; then
+      # Surface a usage-limit / login banner instead of timing out on it.
+      if printf '%s' "$txt" | grep -qiE 'usage limit reached|Run /login|Please log in'; then
+        echo "ready: $id is up but claude is BLOCKED (usage limit / login):"
+        printf '%s\n' "$txt" | grep -iE 'usage limit|log ?in' | head -3
+        exit 3
+      fi
+      # Ready markers, oldest UI to newest: shortcuts hint, "for agents" footer, token counter,
+      # or the mode-cycle footer line ("⏵⏵ auto mode on (shift+tab to cycle)" — v2.1.224+ boot
+      # screens show ONLY this one, which is why the old marker set caused false timeouts).
+      if printf '%s' "$txt" | grep -qE '\? for shortcuts|for agents|[0-9]+ tokens|shift\+tab to cycle|mode on '; then
         echo "ready -> $id"; exit 0
       fi
     done
@@ -101,7 +127,13 @@ case "$cmd" in
     # Close a session (e.g. a worker you spawned) — allow-listed so shutdown/cleanup never prompts.
     "$AGT" session close --target "$id" >/dev/null && echo "closed -> $id" ;;
   read)
-    "$AGT" session text --target "$id" --json | jq -r '.result.text' | tail -n "${1:-20}" ;;
+    out="$("$AGT" session text --target "$id" --json)"
+    if ! printf '%s' "$out" | jq -e '.ok == true' >/dev/null 2>&1; then
+      echo "read FAILED — session $id gone or unreadable:"
+      printf '%s' "$out" | jq -c '.error // .' 2>/dev/null || printf '%s\n' "$out"
+      exit 1
+    fi
+    printf '%s' "$out" | jq -r '.result.text' | tail -n "${1:-20}" ;;
   submit)
     printf '\r' | "$AGT" session type --stdin --target "$id" >/dev/null && echo "submitted Enter -> $id"
     "$(dirname "$0")/agterm-clear-status.sh" "$id" 2>/dev/null || true ;;

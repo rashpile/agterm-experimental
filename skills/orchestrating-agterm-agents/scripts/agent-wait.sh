@@ -46,6 +46,8 @@ id=$("$AGT" tree --json | jq -r --arg t "$targ" \
 [ -n "$id" ] || id="$targ"
 
 grab() { "$AGT" session text --target "$id" --json 2>/dev/null | jq -r '.result.text'; }
+native() { "$AGT" tree --json 2>/dev/null | jq -r --arg id "$id" \
+    '.result.tree.workspaces[].sessions[] | select(.id==$id) | (.status // "")' | head -1; }
 
 # spinner / active-work markers — a safety net for the rare no-timer tool run; the ticking timer
 # usually resets stability on its own.
@@ -69,7 +71,14 @@ while [ "$polls" -lt "$maxpolls" ]; do
   fi
   if [ "$cur" = "$prev" ]; then same=$((same+1)); else same=0; prev="$cur"; fi
   printf '%s' "$cur" | grep -qE "$work_re" && same=0   # working -> not quiet
-  [ "$same" -ge "$stable" ] && { ended=stable; break; }
+  if [ "$same" -ge "$stable" ]; then
+    # Screen quiet — but a scrolled-up viewport (e.g. the user peeking via remote control)
+    # freezes the scrape while the agent is still mid-turn, causing a false idle. Native
+    # status is the veto: Claude's lifecycle hooks hold "active" for the whole turn. Absent
+    # or any other native value → the screen's judgment stands (SSH/plain-shell sessions).
+    if [ "$(native)" = active ]; then same=0
+    else ended=stable; break; fi
+  fi
   sleep "$interval"
 done
 
