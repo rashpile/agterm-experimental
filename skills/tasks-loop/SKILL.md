@@ -94,7 +94,7 @@ the name itself carries no meaning — never guess from it):
 
 ```bash
 tea issues list --output json   # labels = comma string
-tea issues <idx>                # full issue body
+tea issues <idx> --comments     # full issue body + comment thread (user answers live there)
 ```
 
 **Lifecycle** (loop-performed transitions in bold; the rest are the human's):
@@ -281,12 +281,17 @@ re-schedule and inform the user.
 
 ## Worker prompt template
 
-Compose from the issue (fetch body first); one message via `say`:
+Compose from the issue — fetch body AND comments first (`tea issues <idx> --comments`);
+comments are where the user answers an issue's open questions, so dropping them sends a
+worker off to guess or re-ask what was already decided. One message via `say`:
 
 ```
 Work on Gitea issue #<idx>: "<title>".
 
 <full issue body>
+
+<the comment thread verbatim, each entry attributed (author, date). Comments refine the
+body: where they conflict, the newest user comment wins. Omit this block if none.>
 
 Rules:
 - Task type: <implement|investigate|review|discuss> — <the label's description verbatim>.
