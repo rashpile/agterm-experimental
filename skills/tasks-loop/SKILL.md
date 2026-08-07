@@ -181,6 +181,13 @@ Every dispatch (all types, including `discuss`) adds `progress` first.
    report DONE with what shipped. Orchestrator supervises it like any worker and relays
    the result. No confirmation needed — the `done` label authorizes the whole path.
    Deploy not configured → the ship worker merges + closes + reports "merged, not deployed".
+   **Batched merges go stale**: each merge can conflict the next PR and invalidate its
+   pre-merge CI verdict (`mergeable: False` / a 405 on merge is this, not a transient
+   server error). Mechanical conflicts → resolve by merging main into the branch (never
+   force-push), re-run checks, push, re-verify CI. A **semantic** collision
+   (feature-vs-deletion, both sides changed behavior) → report BLOCKED and put the call
+   to the user — a conflict resolution is unreviewed code landing after the gate, so
+   anything non-mechanical needs a human or a re-review round.
 6. **Summary**: report per issue: what happened, PR/comment links, discussions waiting for
    the user, issues needing triage.
 
