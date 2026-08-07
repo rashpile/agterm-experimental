@@ -137,7 +137,9 @@ Every dispatch (all types, including `discuss`) adds `progress` first.
    on `waiting` judge the prompt (approve read-only/reversible; stop and ask the user for
    destructive — force-push, rm, migrate), on `idle` collect the result.
 4. **Complete**: verify the deliverable exists (PR opened / comment posted — don't trust the
-   worker's word, check with `tea`). Then relabel:
+   worker's word, check with `tea`). For a new PR, also verify it's registered as a
+   dependency of the issue (GET `/issues/<idx>/dependencies`); if the worker missed it,
+   add it yourself. Then relabel:
    - `implement` done (PR open) → `--add-labels review --remove-labels progress,implement`,
      **keep the implementer session alive** (it is the fixer/skeptic for the review cycle)
      and start the Review→fix cycle in the same run — preferred, it pipelines without waiting.
@@ -244,6 +246,11 @@ Rules:
 - You are in <cwd>. Follow the project's CLAUDE.md.
 - implement: you are on branch issue/<idx>-<slug>; commit here, run the project's
   typecheck+lint+tests, open a PR with `tea pulls create ...` referencing #<idx>.
+  Then register the PR as a dependency of the issue ("Depends on" in the Gitea UI —
+  tea has no verb for this, use the API; PRs share the issue numbering):
+  `TOKEN=$(grep 'token:' "$HOME/Library/Application Support/tea/config.yml" | head -1 | sed 's/.*token: *//' | tr -d '"')`
+  `curl -X POST -H "Authorization: token $TOKEN" -H "Content-Type: application/json" -d '{"index": <pr-idx>, "owner": "<owner>", "repo": "<repo>"}' https://<gitea-host>/api/v1/repos/<owner>/<repo>/issues/<idx>/dependencies`
+  (all three body fields are required — a bare index returns 404)
   Do NOT merge.
 - investigate: make NO commits; post findings as an issue comment:
   `tea comment <idx> "<report>"`.
