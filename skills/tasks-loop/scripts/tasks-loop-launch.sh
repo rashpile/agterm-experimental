@@ -31,15 +31,17 @@ while :; do
   items="[{\"id\":\"run\",\"label\":\"$run_label\",\"subtitle\":\"/tasks-loop$flags\"}"
   [ "$has_auto" = 0 ] && items="$items,{\"id\":\"auto\",\"label\":\"auto\",\"subtitle\":\"add --auto: skip human checkpoints (e.g. plan review)\"}"
   [ "$has_keep" = 0 ] && items="$items,{\"id\":\"keep\",\"label\":\"keep\",\"subtitle\":\"add --keep: keep worker sessions + worktrees\"}"
+  [ -n "$flags" ] && items="$items,{\"id\":\"clear\",\"label\":\"clear\",\"subtitle\":\"drop selected flags, back to the first menu\"}"
   items="$items]"
 
   choice=$(printf '%s' "$items" | agtermctl pick --prompt "tasks-loop$flags") || exit 0  # cancelled -> no-op
 
   case "$(printf '%s' "$choice" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')" in
-    run)  break ;;
-    auto) flags="$flags --auto"; has_auto=1; run_label="run" ;;
-    keep) flags="$flags --keep"; has_keep=1; run_label="run" ;;
-    *)    exit 0 ;;
+    run)   break ;;
+    auto)  flags="$flags --auto"; has_auto=1; run_label="run" ;;
+    keep)  flags="$flags --keep"; has_keep=1; run_label="run" ;;
+    clear) flags=""; has_auto=0; has_keep=0; run_label="default" ;;
+    *)     exit 0 ;;
   esac
 done
 
