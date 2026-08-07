@@ -214,8 +214,10 @@ PR thread — durable, phone-readable, survives session loss.
    agents never make the final call (done = auto-deploy).
 5. **Gate** (inside the review worker's final pass, NOT the orchestrator): all thread
    findings terminal (fixed / withdrawn / dismissed-with-rationale) + CI green →
-   `DONE NOTHING-BLOCKING gate=pass`. Orchestrator then: close author+review+codex
-   sessions, remove worktrees, and park ready-to-ship:
+   `DONE NOTHING-BLOCKING gate=pass`. Orchestrator then: **first** have the still-alive
+   author post the resolution summary on the issue (see worker prompt — brief what-was-done
+   + review-fix list; the author has the context, the PR thread keeps the detail), then
+   close author+review+codex sessions, remove worktrees, and park ready-to-ship:
    `tea issues edit <idx> --add-labels done,pending --remove-labels review,progress`,
    then tell the user: "#<idx> ready to ship (done+pending) — remove pending to deploy,
    or say go". If the user says go, the orchestrator removes `pending` itself and runs
@@ -300,6 +302,12 @@ Rules:
 - implement (post-PR): your session stays open — when review findings land on your PR,
   you evaluate them as the author: fix CONFIRMED and push, dispute false positives in
   the PR thread with evidence.
+- implement (review cycle ends clean): before your session is closed, post a
+  **resolution comment on the originating issue** (`tea comment <idx> "..."`): 2-4
+  sentences on what was done and why, then a short bullet list of fixes made during
+  review (one line each; note withdrawn disputes only if instructive). This is the
+  human-readable record — full detail stays in the PR thread, link it. Scope changes
+  vs the original issue (new migration, extra endpoint) must be named explicitly.
 - discuss: prepare recommendation + key decisions, present them, then WAIT for the user to
   join this session and discuss. Afterward: post a summary comment and relabel per the
   agreed outcome (implement / close / keep discuss).
