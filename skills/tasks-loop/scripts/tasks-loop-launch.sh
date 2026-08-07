@@ -2,7 +2,7 @@
 # tasks-loop-launch.sh — agterm keymap command: start a tasks-loop run in a NEW session.
 #
 # Cascading native picker that accumulates flags:
-#   menu 1:  default | auto | keep | remote   — "default" runs bare /tasks-loop immediately
+#   menu 1:  default | auto | keep | list | remote   — "default" runs bare /tasks-loop immediately
 #   pick an item -> next menu: run (with selection so far) | the items not yet added | clear
 #   "run" executes; "clear" resets to menu 1; cancelling any menu aborts silently.
 # auto/keep become /tasks-loop flags; "remote" instead starts claude itself with
@@ -28,6 +28,7 @@ flags=""
 run_label="default"
 has_auto=0
 has_keep=0
+has_list=0
 has_remote=0
 remote_tag=""
 
@@ -35,6 +36,7 @@ while :; do
   items="[{\"id\":\"run\",\"label\":\"$run_label\",\"subtitle\":\"/tasks-loop$flags$remote_tag\"}"
   [ "$has_auto" = 0 ] && items="$items,{\"id\":\"auto\",\"label\":\"auto\",\"subtitle\":\"add --auto: skip human checkpoints (e.g. plan review)\"}"
   [ "$has_keep" = 0 ] && items="$items,{\"id\":\"keep\",\"label\":\"keep\",\"subtitle\":\"add --keep: keep worker sessions + worktrees\"}"
+  [ "$has_list" = 0 ] && items="$items,{\"id\":\"list\",\"label\":\"list\",\"subtitle\":\"add --list: show actionable issues, pick which to process\"}"
   [ "$has_remote" = 0 ] && items="$items,{\"id\":\"remote\",\"label\":\"remote\",\"subtitle\":\"start claude with --remote-control (steer from claude.ai / phone)\"}"
   [ -n "$flags$remote_tag" ] && items="$items,{\"id\":\"clear\",\"label\":\"clear\",\"subtitle\":\"drop selection, back to the first menu\"}"
   items="$items]"
@@ -45,8 +47,9 @@ while :; do
     run)    break ;;
     auto)   flags="$flags --auto"; has_auto=1; run_label="run" ;;
     keep)   flags="$flags --keep"; has_keep=1; run_label="run" ;;
+    list)   flags="$flags --list"; has_list=1; run_label="run" ;;
     remote) has_remote=1; remote_tag=" · remote"; run_label="run" ;;
-    clear)  flags=""; has_auto=0; has_keep=0; has_remote=0; remote_tag=""; run_label="default" ;;
+    clear)  flags=""; has_auto=0; has_keep=0; has_list=0; has_remote=0; remote_tag=""; run_label="default" ;;
     *)      exit 0 ;;
   esac
 done
