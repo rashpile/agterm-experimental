@@ -55,9 +55,11 @@ does it.
 
 ## Orchestrator is a coordinator, never a worker
 
-The orchestrator does no reviews, no fixes, no long analysis — every heavy task goes to
-a session it supervises via background `agent-wait.sh`. Between wakeups it sits idle so
-the user can ask it anything at any moment. When asked for status, answer via the
+The orchestrator does no reviews, no fixes, no long analysis — **and no shipping** (the
+Done flow runs in a ship worker too). Every heavy task goes to a session it supervises
+via background `agent-wait.sh`. Between wakeups it sits idle so the user can ask it
+anything at any moment. Rule of thumb: any orchestrator action that takes more than a
+few seconds of wall time belongs in a worker. When asked for status, answer via the
 **tasks-status** command: current slots → orchestrator queue → waiting-on-user; if all
 three are empty, just print the Gitea issues overview.
 
@@ -169,11 +171,16 @@ Every dispatch (all types, including `discuss`) adds `progress` first.
    (`git worktree remove .worktrees/issue-<idx>`), dispatch the next queued issue.
    **With `--keep`**: skip both — leave the session idle and the worktree in place, and
    list kept sessions in the summary so the user knows what's reviewable.
-5. **Done flow (end of run)**: collect all `done`-labeled issues. For each: verify its PR's
-   CI is green, squash-merge via `tea`. After ALL merges, run the **project's configured
-   deploy** ONCE (the last merge's artifact includes every merge), verify it, then close
-   each issue and notify the user what shipped. No confirmation needed — the `done` label
-   authorizes this. Deploy not configured → merge + close + report "merged, not deployed".
+5. **Done flow (end of run)** — delegated like everything else, the orchestrator never
+   ships inline (merge waits, image builds, ssh deploys and healthchecks are minutes of
+   work that would block it from answering the user). Collect all `done`-labeled issues,
+   then dispatch ONE **ship worker** (session `ship-<idx>[-<idx>…]`, e.g. `ship-12-17`,
+   main checkout as cwd, takes a slot) with: for each PR in order — verify CI green,
+   squash-merge via `tea`; after ALL merges wait for the final artifact build, run the
+   **project's configured deploy** ONCE, verify it (healthchecks), close each issue, and
+   report DONE with what shipped. Orchestrator supervises it like any worker and relays
+   the result. No confirmation needed — the `done` label authorizes the whole path.
+   Deploy not configured → the ship worker merges + closes + reports "merged, not deployed".
 6. **Summary**: report per issue: what happened, PR/comment links, discussions waiting for
    the user, issues needing triage.
 
