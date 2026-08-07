@@ -229,9 +229,13 @@ PR thread — durable, phone-readable, survives session loss.
    commits, no issue edits until the discussion ends.
 3. Notify the user the session is ready to join (session name `discuss-<slug>-<idx>`).
    **Remote mode:** if the user asks for "remote" / "remote discussion" / says they'll
-   answer from the phone — after the worker has presented its context, type `/rc` into
-   that worker session (`agent-ctl.sh say discuss-<slug>-<idx> "/rc"`) so it becomes
-   reachable via remote control, then notify the user it's available on their phone.
+   answer from the phone — after the worker has presented its context, enable remote
+   control on it **with its session name as the label** so the user can tell the RC
+   sessions apart on their phone:
+   `agent-ctl.sh say discuss-<slug>-<idx> "/rc worker:discuss-<slug>-<idx>"`.
+   Same rule for ANY worker exposed via /rc (decision inputs, review approvals):
+   always `/rc worker:<session-name>`, never a bare `/rc`. Then notify the user it's
+   available on their phone.
 4. When the discussion concludes, the worker posts a summary comment on the issue and
    relabels **based on the outcome**: e.g. agreed to build → `--add-labels implement
    --remove-labels discuss,progress`; rejected → close the issue; unfinished → keep
