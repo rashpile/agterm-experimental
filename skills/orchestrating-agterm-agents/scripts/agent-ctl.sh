@@ -48,7 +48,10 @@ if [ "$cmd" = spawn ] || [ "$cmd" = new ]; then
   # `session text` cannot tell it from real typed input — an orchestrator reading the screen
   # sees a plausible instruction of unknown origin (observed live: a suggested "merge the PR"
   # read as injected text). Workers don't need suggestions; kill the ambiguity at spawn.
-  run="${*:-zsh -ic 'claude --prompt-suggestions false'}"
+  # NB: --prompt-suggestions false alone is NOT enough — it governs the print/SDK-mode
+  # suggestion messages; the interactive ghost text is the settings key promptSuggestionEnabled
+  # (verified live: a worker spawned with only the flag still rendered ghosts).
+  run="${*:-zsh -ic 'claude --settings \"{\\\"promptSuggestionEnabled\\\": false}\" --prompt-suggestions false'}"
   # --no-select (agterm ≥0.15.2): create the worker in the BACKGROUND. Delegation is the whole point —
   # spawning used to yank the user into the worker's workspace, mid-task, once per worker. Safe for the
   # supervise loop: a never-selected session's buffer is still live, so `ready`/`read`/`status`/
