@@ -32,23 +32,27 @@ At run start, read `.claude/tasks-loop.md` in the project root (if present). It 
 - **slots** — default slot count override.
 - **labels** — additions/overrides to the label semantics below (rare; the protocol here
   is the default contract).
+- **implementation** — project workflow for implement workers, included in their prompt
+  verbatim (it may reference `--auto`; a worker that reaches a wait-for-user step in it
+  reports WAITING and the orchestrator relays to the user).
 
 Everything project-specific belongs in that file — this skill stays generic.
 
 ## Arguments
 
-`/tasks-loop [--slots N] [--keep]`
+`/tasks-loop [--slots N] [--keep] [--auto]`
 
 | Parameter | Meaning | Default |
 |---|---|---|
 | `--slots 1..5` | Max **busy** worker sessions at once. Idle-alive sessions (parked authors awaiting review findings, `--keep`-retained workers) do NOT consume a slot — only sessions actively working do. A review pair (reviewer + codex) takes 2 slots. | 2 |
 | `--keep` | Don't close worker sessions on completion — leave them idle so the user can review their transcripts. Their worktrees are kept too (a kept session lives in its worktree). Cleanup happens when the user says "cleanup" or on the next run's Recovery reconcile. | off |
+| `--auto` | Fully-automatic preference, applicable to any flow: project config sections may define human checkpoints and how `--auto` changes them (typically: skip the checkpoint). Never overrides the skill's own safety gates (done+pending approval, CI-green, dispute escalation). Pass the flag's state to workers. | off |
 
 A bare number (`/tasks-loop 3`) is shorthand for `--slots 3`. Unknown parameters →
 don't guess: show the table above and ask.
 
 **Preflight**: before dispatching anything, echo the effective run config in one line —
-`slots=N keep=on|off · usage: session N% (resets <t>) · repo <owner>/<repo> as <user> ·
+`slots=N keep=on|off auto=on|off · usage: session N% (resets <t>) · repo <owner>/<repo> as <user> ·
 deploy: <configured|not configured>` — followed by the dispatch plan. This doubles as the
 parameter reference: the user sees what knobs exist and what this run will do before it
 does it.
