@@ -1,0 +1,32 @@
+#!/bin/bash
+# stub-agtermctl — scriptable stand-in for agtermctl, used by agent-ctl-test.sh.
+# Point the scripts at it with AGENT_CTL_AGTERMCTL=<path to this file>.
+#
+#   $STUB_DIR/text.responses   one response per line, consumed in order; the LAST line repeats forever.
+#                              A line starting with "ERR " is written to stderr with a non-zero exit
+#                              (that is how a control-socket refusal actually reaches the caller).
+#   $STUB_DIR/tree.json        the `tree --json` response (single line).
+#   $STUB_DIR/calls.log        every invocation, appended — lets a test assert what was sent.
+#   $STUB_DIR/text.n           consumption counter (managed here).
+set -uo pipefail
+: "${STUB_DIR:?stub-agtermctl needs STUB_DIR}"
+printf '%s\n' "$*" >> "$STUB_DIR/calls.log"
+
+case "${1:-}${2:+ $2}" in
+  "tree"|"tree --json")
+    cat "$STUB_DIR/tree.json"; exit 0 ;;
+  "session text")
+    n=$(cat "$STUB_DIR/text.n" 2>/dev/null || echo 0)
+    total=$(grep -c '' "$STUB_DIR/text.responses")
+    n=$(( n + 1 )); echo "$n" > "$STUB_DIR/text.n"
+    [ "$n" -gt "$total" ] && n="$total"
+    line="$(sed -n "${n}p" "$STUB_DIR/text.responses")"
+    case "$line" in
+      "ERR "*) printf '%s\n' "${line#ERR }" >&2; exit 1 ;;
+      *)       printf '%s\n' "$line"; exit 0 ;;
+    esac ;;
+  "session new")
+    printf '{"ok":true,"result":{"id":"NEW-SESSION-ID"}}\n'; exit 0 ;;
+  *)
+    printf '{"ok":true,"result":{}}\n'; exit 0 ;;
+esac
