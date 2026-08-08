@@ -14,6 +14,15 @@
 #   agent-ctl.sh ready  <session> [secs]     # block until the worker's Claude box is up (dismisses the
 #                                            #   first-run "trust folder" prompt); default 15s. So the
 #                                            #   orchestrator never hand-rolls raw `session text` polling.
+#
+# EXIT CODES for the two reading verbs — a caller MUST branch on these, they are not interchangeable:
+#   ready: 0 up | 1 timed out with a readable screen | 2 session died at startup |
+#          3 up but claude shows a usage-limit/login banner | 4 session ALIVE but its surface never
+#            became readable (agterm-side, transient — close and re-spawn; NOT a usage problem)
+#   read:  0 ok | 2 session gone | 4 alive but unreadable after the retry budget
+# Env: AGENT_CTL_DEBUG=1 dumps every raw agtermctl response to stderr;
+#      AGENT_CTL_READ_RETRY_SECS (default 5) is `read`'s transient-retry budget;
+#      AGENT_CTL_AGTERMCTL overrides the agtermctl path (tests).
 #   agent-ctl.sh spawn  [--create-workspace] <workspace> <name> <cwd> [command...]  # new session, prints id
 #          workspace = id | exact name | name-prefix (e.g. "ops" → "ops ⎇ main")
 #          --create-workspace : reuse the workspace NAMED <workspace> if it exists, else create it
@@ -25,7 +34,8 @@
 # SAFETY: `submit`/`say` push input into a live agent (may launch real work). Read first.
 set -uo pipefail
 export PATH="/opt/homebrew/bin:$PATH"
-AGT=/opt/homebrew/bin/agtermctl
+# shellcheck source=_agt-common.sh
+. "$(dirname "$0")/_agt-common.sh"   # defines $AGT, agt_text/agt_alive/agt_classify/agt_dbg
 
 resolve() {  # exact session name -> id, else pass through as id/prefix
   local t="$1" id
@@ -92,24 +102,29 @@ case "$cmd" in
     # Block until the target's freshly-spawned Claude is ready to receive a task: poll the screen,
     # auto-dismiss the first-run "trust this folder" prompt, and return once the input box footer is up.
     # Keeps the raw `session text` polling INSIDE this allow-listed path (the orchestrator never runs it).
-    secs="${1:-15}"; iters=$(( secs * 2 )); trusted=0; gone=0
+    secs="${1:-15}"; iters=$(( secs * 2 )); [ "$iters" -lt 1 ] && iters=1
+    trusted=0; unreadable=0
     i=0
     while [ "$i" -lt "$iters" ]; do
       i=$(( i + 1 )); sleep 0.5
-      raw="$("$AGT" session text --target "$id" --json 2>/dev/null)"
-      # Fail FAST if the session died (claude exited on a usage-limit/login error and took the
-      # shell with it) — polling a gone session to timeout used to read as "cold start too slow".
-      if ! printf '%s' "$raw" | jq -e '.ok == true' >/dev/null 2>&1; then
-        gone=$(( gone + 1 ))
-        if [ "$gone" -ge 4 ]; then
+      # A non-ok response is NOT evidence of death. A freshly spawned session's surface is routinely
+      # unreadable for seconds ("failed to read surface buffer"), and the control socket itself
+      # intermittently refuses connections while several sessions spawn at once. The old code counted
+      # 4 consecutive non-ok polls as "GONE" and bailed after ~2s — so `ready <name> 90` returned an
+      # instant, wrong exit 2 on a perfectly healthy worker, and the timeout it was given never
+      # applied. Ask the SESSION TREE instead: absent from the tree = really gone, present = wait it
+      # out. That is also what stops a retry loop from hanging on a genuinely dead session.
+      if ! agt_text "$id" "ready#$i"; then
+        if [ "$(agt_alive "$id")" = gone ]; then
           echo "ready: session $id is GONE — spawned claude likely exited at startup (check usage limits / login):"
-          printf '%s' "$raw" | jq -c '.error // .' 2>/dev/null
+          agt_err_line
           exit 2
         fi
+        unreadable=$(( unreadable + 1 ))
         continue
       fi
-      gone=0
-      txt="$(printf '%s' "$raw" | jq -r '.result.text // ""')"
+      unreadable=0
+      txt="$AGT_TEXT"
       if [ "$trusted" = 0 ] && printf '%s' "$txt" | grep -qi 'trust this folder'; then
         printf '\r' | "$AGT" session type --stdin --target "$id" >/dev/null 2>&1
         trusted=1; continue
@@ -127,6 +142,14 @@ case "$cmd" in
         echo "ready -> $id"; exit 0
       fi
     done
+    # Distinguish the two timeouts: a readable screen that never showed a ready marker (1, the worker
+    # is slow / stuck) from a surface agterm never handed us (4, an agterm-side problem — the caller
+    # should close and re-spawn, NOT treat it as a usage-limit window like exit 2/3).
+    if [ "$unreadable" -gt 0 ]; then
+      echo "ready: timed out after ${secs}s — session $id is ALIVE but its surface stayed unreadable (${unreadable} consecutive polls, class=${AGT_CLASS}):"
+      agt_err_line
+      exit 4
+    fi
     echo "ready: timed out after ${secs}s waiting for $id"; exit 1 ;;
   select|view)
     # Bring a session to the foreground (steals focus). Rarely needed — read/status populate the buffer
@@ -136,13 +159,27 @@ case "$cmd" in
     # Close a session (e.g. a worker you spawned) — allow-listed so shutdown/cleanup never prompts.
     "$AGT" session close --target "$id" >/dev/null && echo "closed -> $id" ;;
   read)
-    out="$("$AGT" session text --target "$id" --json)"
-    if ! printf '%s' "$out" | jq -e '.ok == true' >/dev/null 2>&1; then
-      echo "read FAILED — session $id gone or unreadable:"
-      printf '%s' "$out" | jq -c '.error // .' 2>/dev/null || printf '%s\n' "$out"
-      exit 1
-    fi
-    printf '%s' "$out" | jq -r '.result.text' | tail -n "${1:-20}" ;;
+    # Single-shot reads lost the race against a just-spawned surface, so a read issued right after
+    # `spawn` failed hard even though waiting half a second would have worked. Retry while the
+    # session is alive; give up the moment the tree says it is not.
+    lines="${1:-20}"
+    budget="${AGENT_CTL_READ_RETRY_SECS:-5}"
+    tries=$(( budget * 2 )); [ "$tries" -lt 1 ] && tries=1
+    a=0
+    while :; do
+      a=$(( a + 1 ))
+      if agt_text "$id" "read#$a"; then printf '%s\n' "$AGT_TEXT" | tail -n "$lines"; exit 0; fi
+      if [ "$(agt_alive "$id")" = gone ]; then
+        echo "read FAILED — session $id is GONE (absent from the session tree):"
+        agt_err_line
+        exit 2
+      fi
+      [ "$a" -ge "$tries" ] && break
+      sleep 0.5
+    done
+    echo "read FAILED — session $id is ALIVE but unreadable after ${budget}s (class=${AGT_CLASS}):"
+    agt_err_line
+    exit 4 ;;
   submit)
     printf '\r' | "$AGT" session type --stdin --target "$id" >/dev/null && echo "submitted Enter -> $id"
     "$(dirname "$0")/agterm-clear-status.sh" "$id" 2>/dev/null || true ;;
@@ -199,20 +236,27 @@ case "$cmd" in
       blocked)        nat=waiting ;;
       *)              nat=none ;;
     esac
-    txt="$("$AGT" session text --target "$id" --json 2>/dev/null | jq -r '.result.text')"
+    # An unreadable surface used to leak the literal string "null" into $txt (jq -r on an {"ok":false}
+    # envelope), which then screen-scraped as "no markers -> unknown" and, with no native status,
+    # defaulted to *idle* — reporting a session ready for injection when we could not see it at all.
+    if agt_text "$id" status; then txt="$AGT_TEXT"; readable=1; else txt=""; readable=0; fi
     nb="$(printf '%s\n' "$txt" | grep -vE '^[[:space:]]*$')"
     foot="$(printf '%s\n' "$nb" | tail -6)"
     region="$(printf '%s\n' "$nb" | tail -20)"
     busy_re='to run in background|[Ee]sc to interrupt|ctrl\+b|· ↓ [0-9]'
     idle_re='\? for shortcuts|accept edits on|bypass permissions on|plan mode on'
     wait_re='Esc to cancel|Do you want to (proceed|create|make)|(❯|›)[[:space:]]*[0-9]+[.)][[:space:]]*(Yes|Allow|Proceed|No)'
-    if   printf '%s' "$foot"   | grep -qE "$busy_re"; then scr=busy
+    if   [ "$readable" = 0 ];                          then scr=unreadable
+    elif printf '%s' "$foot"   | grep -qE "$busy_re"; then scr=busy
     elif printf '%s' "$foot"   | grep -qE "$idle_re"; then scr=idle
     elif printf '%s' "$region" | grep -qE "$wait_re"; then scr=waiting
     else scr=unknown; fi
-    if   [ "$scr" != unknown ]; then st="$scr"
-    elif [ "$nat" != none ];    then st="$nat"
-    else st=idle; fi
+    case "$scr" in
+      busy|idle|waiting) st="$scr" ;;                       # live screen is definitive
+      *) if   [ "$nat" != none ];    then st="$nat"         # native fills the gap
+         elif [ "$scr" = unreadable ]; then st=unknown      # we saw NOTHING — do not claim idle
+         else st=idle; fi ;;
+    esac
     echo "$st"
     echo "--- native=${native:-<none>} screen=$scr -> $st ---"
     printf '%s\n' "$nb" | tail -12 ;;

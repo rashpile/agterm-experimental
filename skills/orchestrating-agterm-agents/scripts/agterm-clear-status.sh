@@ -19,7 +19,7 @@
 # Exit: always 0 (best-effort; must never break the caller's flow).
 set -uo pipefail
 export PATH="/opt/homebrew/bin:$PATH"
-AGT=/opt/homebrew/bin/agtermctl
+AGT="${AGENT_CTL_AGTERMCTL:-/opt/homebrew/bin/agtermctl}"   # override = the tests' stub agtermctl
 JQ="$(command -v jq || true)"   # resolves /usr/bin/jq or /opt/homebrew/bin/jq — don't hardcode
 
 id="${1:-}"
