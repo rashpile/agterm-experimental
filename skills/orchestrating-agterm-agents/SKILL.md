@@ -37,10 +37,10 @@ notification badge). The verbs below keep the whole loop allow-listed.
 | spawn a worker agent | `scripts/agent-ctl.sh spawn [--create-workspace] <ws-id\|name> <name> <cwd> [command]` → prints new id. `--create-workspace` makes/reuses the workspace **by name** (idempotent) so you never touch raw `workspace new` |
 | wait until a fresh worker is ready | `scripts/agent-ctl.sh ready <id> [secs]` — dismisses the first-run "trust folder" prompt, returns when the input box is up (no hand-rolled `session text` polling) |
 | read its screen | `scripts/agent-ctl.sh read <id> [N]` (replaces raw `session text`) |
-| classify a session's state | `scripts/agent-ctl.sh status <id>` → `idle\|busy\|waiting` + screen tail (reads agterm **native** status first; screen-scrapes only for SSH agents) |
+| classify a session's state | `scripts/agent-ctl.sh status <id>` → `idle\|busy\|waiting\|unknown` + screen tail (reads agterm **native** status first; screen-scrapes only for SSH agents). `unknown` = the screen could not be read at all and there was no native status — never read it as idle |
 | send a full instruction | `scripts/agent-ctl.sh say <id> <text>` (clear box → type → submit), or `type` → **verify via `read`** → `submit` |
 | answer a prompt / menu | `scripts/agent-ctl.sh submit <id>` (Enter) · `key <id> down\|up\|esc\|enter` for a multi-choice menu |
-| wait for the worker to stop | `scripts/agent-wait.sh <session-id>` (returns `STATE=waiting\|idle` + tail) |
+| wait for the worker to stop | `scripts/agent-wait.sh <session-id>` (returns `STATE=waiting\|idle` + tail; `STATE=gone` exit 2 if the session vanished, `STATE=unreadable` exit 4 if its screen never became readable) |
 | ping the human on Telegram | `scripts/notify.sh --level done\|attention\|info <message>` |
 | ask the human to approve a **worker** (Telegram buttons) | `scripts/wask.sh <worker-id> [note]` — posts adaptive ✅ Yes / ♾️ Always / 🚫 No buttons that approve **that** worker via the `wapprove` bot command (needs a one-time `/reload`) |
 | register THIS session as `/o` target (**only when the user explicitly asks**) | `scripts/register.sh` — or the user presses **`cmd+shift+r`** in any session (toggles: again in the bound one = unbind) |
@@ -48,6 +48,30 @@ notification badge). The verbs below keep the whole loop allow-listed.
 | (rare) bring a session to the foreground | `scripts/agent-ctl.sh select <id>` — steals focus; `read`/`status` populate the buffer without it, so you rarely need this |
 
 Always target by the quoted `--target <id>`, and call `agtermctl` by absolute path in scripts.
+
+### Exit codes — branch on them, they are not interchangeable
+
+`agtermctl session text` fails in three shapes that look alike but mean opposite things: `no such
+session:` (dead), `failed to read surface buffer` (surface not realized **yet**), and a plain
+`connect(…agterm.sock) failed: Connection refused` (the control socket briefly refusing while several
+sessions spawn at once). Only the first is death. The scripts decide liveness from the **session
+tree**, never from the error string, and retry the rest.
+
+| code | `ready` | `read` | what the orchestrator should do |
+|---|---|---|---|
+| 0 | worker's input box is up | screen printed | proceed |
+| 1 | timed out, screen was readable | — | worker is slow/stuck: read it and decide |
+| 2 | session left the session tree | same | worker died at startup — usage limit / login; drain and notify |
+| 3 | up, but claude shows a usage-limit/login banner | — | same as 2: the window is exhausted |
+| 4 | alive, but its surface never became readable | same | **agterm-side**, not a usage problem — close the session and re-spawn |
+
+Exit **4 must not be treated as a usage-limit signal.** It means agterm could not hand us the
+session's buffer while the session itself was healthy; retrying the spawn is the correct response.
+
+`AGENT_CTL_DEBUG=1` dumps every raw `agtermctl` response, its classification and the poll number to
+stderr — use it the moment a spawn behaves oddly, otherwise all you get is the final one-line verdict.
+`AGENT_CTL_READ_RETRY_SECS` (default 5) is `read`'s transient-retry budget.
+`scripts/tests/agent-ctl-test.sh` runs the whole contract against a stub `agtermctl`; no agterm needed.
 
 ## Bundled helper scripts (allow-list these, not ad-hoc pipelines)
 Compound one-liners (`printf … | agtermctl … | jq …`) are a *novel* command each time, so a permission
@@ -72,6 +96,10 @@ allow-list can't match them — they re-prompt. The fix is stable script paths. 
   since the wait started, and the tail. Run it in the background; its exit wakes you to decide. This is
   the **harness-agnostic** supervise primitive — it detects that the agent *stopped*, and you (the LLM)
   read the payload and choose the action. If the tail isn't enough, re-read with `agent-ctl.sh read`.
+  Unreadable polls never count toward quiescence (an unreadable read is "static" for the wrong reason
+  and used to report a worker as finished before it had ever been seen); a session that leaves the tree
+  ends the wait at once with `STATE=gone` (exit 2) instead of burning the full timeout, and a session
+  that stays alive but never becomes readable ends with `STATE=unreadable` (exit 4).
 - **`notify.sh [--level done|attention|info] <message>`** — sends a Telegram message to the user. Use
   it to pull a human in when a long unattended job finishes (`done`) or a supervised worker hits a
   prompt you shouldn't auto-approve (`attention`). Touches no session (just `curl`); reads its bot
@@ -288,6 +316,7 @@ case (fall back to the slow path).
 | `agtermctl`/`jq` silently "not found" | agterm & the allow-list run scripts with a **bare PATH** (`/usr/bin:/bin`). Use the absolute `/opt/homebrew/bin/agtermctl`, or `export PATH="/opt/homebrew/bin:$PATH"` at the top of scripts. |
 | Wrong session driven | Several sessions are named `agent` — resolve and target by **id**, not name. |
 | `no such workspace` on spawn | Workspace names carry a ` ⎇ <branch>` suffix (e.g. `ops ⎇ main`), so `--workspace ops` fails. Pass the workspace **id** from `tree --json`, or the exact full name. |
+| `ready <name> 90` returns in ~2s claiming the session is **GONE** (`"failed to read surface buffer"`) while `id` resolves it and `tree` still lists it | A freshly spawned surface is unreadable for a few seconds — and the control socket itself intermittently refuses connections during back-to-back spawns. The old loop counted 4 consecutive non-ok polls as death, so the timeout never applied. Fixed: liveness now comes from the session tree, transient reads are ridden out to the real deadline, and a permanently unreadable-but-alive session exits **4** (re-spawn), not 2 (usage limit). If you see the old behaviour, update the script. |
 | Expecting a `waiting` that never comes | Read-only/allow-listed commands (e.g. `git log`) run with no confirmation, so `agent-wait` returns `idle`, not `waiting` — correct, nothing to approve. |
 | `agent-wait` wakes early / mid-run | A tool that runs without ticking output can look static. `agent-wait` guards with spinner markers (`to run in background\|esc to interrupt\|↓ [0-9]`) and needs `--stable` consecutive identical polls (default 3) — keep it ≥3 so a momentary lull isn't read as done. |
 | `agent-wait` **never** returns while a prompt is up (loops to timeout) | When the worker runs **parallel** sub-agent tasks, the "❯ 1. Yes" approval prompt shows *alongside* a still-running task's `(ctrl+b to run in background)` marker. That marker matches the busy-guard, resetting stability forever so the pending prompt is masked. Fixed in `agent-wait.sh`: a choice/permission prompt (`wait_re`, incl. "Do you want to proceed"/"requires approval") now **wins over** the busy-guard and returns immediately as `STATE=waiting ENDED=prompt`. If you see an old copy hang, update the script. |

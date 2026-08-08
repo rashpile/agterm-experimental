@@ -275,6 +275,13 @@ exit 2 = session died at startup. Either one during dispatch → treat the windo
 exhausted even if the meter disagreed: close the failed spawn, drain, notify with the
 reset time, schedule auto-wakeup.
 
+**Exit 4 is NOT an exhausted window.** It means the session is alive but agterm never made
+its surface readable — an app-side hiccup, seen right after a Claude Code auto-update and
+during back-to-back spawns. Close that session and re-spawn the same task; do not drain and
+do not schedule a wakeup. Same for `agent-wait.sh` exit 4 (`STATE=unreadable`). Only
+`agent-wait.sh` exit 2 (`STATE=gone`) means the worker really vanished mid-task.
+Set `AGENT_CTL_DEBUG=1` on the retry to capture the raw `agtermctl` responses.
+
 **Auto-wakeup.** Compute seconds until the reset time (+5 min margin) and run
 `sleep <seconds>` as a **background** task — its completion wakes you. Then re-run the
 usage script: window fresh → resume dispatching the queue and say so; still exhausted →
