@@ -126,6 +126,22 @@ Collect every task the tracker reports as ship-ready and dispatch **one** ship w
 are green and squash-merge; after **all** merges, wait for the final artifact build, run the
 config's `## 8. Deploy` **once**, verify it, close each task, report what shipped.
 
+**Clean up each merged delivery — the branch, not just the worktree.** A squash-merge leaves the
+branch behind and **not** an ancestor of the default branch, so `git branch --merged` will not
+list it and `git branch -d` will refuse it. Verify by content instead, then remove:
+
+```bash
+git diff <branch-tip> <merge-commit>      # empty = the squash captured the branch exactly
+git worktree remove .worktrees/<id>
+git branch -D <branch>                    # only once that diff came back empty
+git push origin --delete <branch>         # the merge authorized it; a protected branch refuses — say so and move on
+```
+
+**A non-empty diff means something on that branch did not land. Stop: keep the worktree, the
+branch and the session, and report it.** That is a lost commit, not a cleanup problem.
+
+`--keep` skips all of it — worktree, branch and session stay for inspection.
+
 **Batched merges go stale.** Each merge can conflict the next and invalidate the verdict it was
 cleared on (`mergeable: false`, or a 405 on merge — that is this, not a flaky server).
 Mechanical conflicts: merge the default branch in (never force-push), re-run checks, push,

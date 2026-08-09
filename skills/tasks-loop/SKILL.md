@@ -135,8 +135,10 @@ its whole duration. This rule has no exceptions.
      → close it, clear the task's in-flight mark, and report. Never retry silently.
 4. **Complete** — **verify the deliverable exists** through the tracker, never on the
    worker's word. Then advance the phase per the workflow doc, close the session, drop its
-   workspace, and dispatch the next queued task. With `--keep`: leave session and workspace,
-   and list them in the summary.
+   workspace, and dispatch the next queued task. A delivery branch is **not** part of the
+   workspace — it outlives the worker and is removed only once the work has landed, by whatever
+   the workflow doc says. With `--keep`: leave session and workspace, and list them in the
+   summary.
 5. **Summary** — per task: what happened, links, what now waits on the user, what needs triage.
 
 ## Slots
