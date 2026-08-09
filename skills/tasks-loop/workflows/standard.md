@@ -1,0 +1,140 @@
+# Workflow — standard
+
+How **one task is worked**, start to finish. The tracker doc owns task state and says which
+phase a task enters at; this doc owns the phases themselves.
+
+**Review instruction:** `review.md`, beside this file. Pass review workers its resolved
+absolute path.
+
+## Phases
+
+| # | Phase | Runs in | Done when |
+|---|---|---|---|
+| 1 | Brainstorm | task worker | the approach is settled |
+| 2 | Plan | task worker | a written plan exists |
+| 3 | Plan Review | separate session, then the user | the plan is approved |
+| 4 | Execute | task worker | the change is committed |
+| 5 | Code Review | review legs + the author | every finding is terminal |
+| 6 | Test | task worker | the project's checks pass |
+| 7 | Push | task worker, then the orchestrator | delivered, then merged |
+| 8 | Deploy | ship worker | shipped and verified |
+
+**The project decides which phases it runs.** The config's `# Workflow` section lists them: a
+phase with no heading there is skipped; a heading not in this table is a custom phase, run in
+the position its number gives it. A heading's body is the project's detail for that phase — it
+sharpens the description below, it does not replace it.
+
+## What each phase means
+
+**1. Brainstorm** — settle the approach before any code: the real options and their trade-offs.
+Skippable for trivial work (a typo, a one-liner with an obvious fix) — say so in the delivery
+when skipped. When the project runs this **with the user**, the worker presents its
+recommendation and the 2–3 real decisions, then waits in its session; tell the user which
+session to join.
+
+**2. Plan** — write the plan down where a human can read it. It is what phase 3 reviews and
+what the work is checked against later.
+
+**3. Plan Review** — a separate session reviews the plan against the task; never the session
+that wrote it. Then the human checkpoint: the plan reaches the user before any code.
+`--auto` skips the human half, not the review half.
+
+**4. Execute** — implement the approved plan. A deviation from it gets named in the delivery,
+not absorbed silently.
+
+**5. Code Review** — the legs below. The reviewer never fixes; the author never judges its own
+verdict.
+
+**6. Test** — run the project's own checks (its config section names them). Red is not a phase
+outcome; it is a return to phase 4.
+
+**7. Push** — deliver through the tracker's review mechanism. Never force-push, never push to
+the default branch. **Merging is the orchestrator's**, and only after the ship approval.
+
+**8. Deploy** — always project-specific. No `## 8. Deploy` in the config → merge and close, but
+do not deploy, and report "deploy not configured".
+
+## Phase 5 — review phases
+
+Three of them; the config's `## 5. Code Review` says how deep this project goes.
+
+| # | Review phase | What |
+|---|---|---|
+| 1 | **internal** | the bundled agents (`.tasks-loop/agents/*.txt`) over the diff, one session, per `review.md` |
+| 2 | **external** | a second model (codex) over the same diff. It cannot reach the tracker — read its output and post it yourself as "External review (codex)". Costs its own slot. |
+| 3 | **final** | one pass over the finished state, carrying **the completion gate**. Always runs. |
+
+| Depth | Runs |
+|---|---|
+| **full** | 1 + 2 + 3 — internal, external codex, final |
+| **standard** | 1 + 3 — no external model |
+| **simple** | 3 only — one pass and the gate |
+
+1 and 2 run in parallel over the same diff. A task may ask for a different depth — the tracker
+doc says how it expresses that, and the plan must say what was applied. **The gate is not
+negotiable at any depth**, which is why phase 3 always runs.
+
+**Then the fix cycle.** Findings go to the **still-alive author session**: "Findings are on the
+thread. Verify each against the code: fix confirmed ones and push; dispute false positives as
+replies with evidence. No blind obedience." Author gone → spawn a fresh fixer, same protocol,
+weaker skeptic. The reviewer then answers every dispute in-thread (WITHDRAW / MAINTAIN /
+COMPROMISE) and reviews only the new commits. **Max 3 rounds** — still unresolved, stop and
+hand the thread to the user; agents don't make that call.
+
+**Gate**, decided inside the reviewer's final pass and not by the orchestrator: every finding
+terminal (fixed, withdrawn, or dismissed with rationale) **and** the project's checks green →
+`DONE NOTHING-BLOCKING gate=pass`.
+
+## Worker prompt
+
+Write it to a file and `say --file`:
+
+```
+Work on <task ref>: "<title>".
+
+<the task body verbatim>
+
+<the comment thread, each entry attributed (author, date). Comments refine the body: where
+they conflict, the newest user comment wins. Omit if there is none.>
+
+Rules:
+- You are in <cwd>. Follow the project's CLAUDE.md.
+- Phases for this task: <the enabled phases, from <entry> onward, each with the project's
+  detail from its config section>.
+- Report WAITING plus what you need at any human checkpoint; do not proceed past it.
+- If you file a new task, freeze it unless the user chose otherwise, and end its body with
+  "_Filed by agent while working on <task ref>._" — agents post under the user's account.
+- Your final message is DONE plus the deliverable's link, or WAITING plus the question.
+```
+
+One worktree per task — `git worktree add .worktrees/<id> -b issue/<id>-<slug>`, `.worktrees/`
+gitignored so ripgrep skips it. A review leg gets a worktree on the **existing** branch. A
+read-only task runs in the main checkout.
+
+**Remote mode** — if the user asks for "remote", or says they will answer from their phone:
+once the worker has presented its context, `say <session> "/rc worker:<session-name>"`, then
+tell them. **Always label it with the session name, never a bare `/rc`** — otherwise the
+sessions are indistinguishable on the phone. Claude-specific; skip it for other agents.
+
+## Ship flow — phase 8, end of run
+
+Delegated like everything else: merges, image builds and deploys are minutes of wall time that
+would stop the orchestrator answering the user.
+
+Collect every task the tracker reports as ship-ready and dispatch **one** ship worker (session
+`ship-<id>[-<id>…]`, main checkout, takes a slot): for each delivery in order verify the checks
+are green and squash-merge; after **all** merges, wait for the final artifact build, run the
+config's `## 8. Deploy` **once**, verify it, close each task, report what shipped.
+
+**Batched merges go stale.** Each merge can conflict the next and invalidate the verdict it was
+cleared on (`mergeable: false`, or a 405 on merge — that is this, not a flaky server).
+Mechanical conflicts: merge the default branch in (never force-push), re-run checks, push,
+re-verify. A **semantic** collision — feature versus deletion, both sides changing behavior —
+is BLOCKED: put the call to the user. A conflict resolution is unreviewed code landing after
+the gate.
+
+## Gates `--auto` may not skip
+
+`--auto` skips the human checkpoints the project's phase sections define. It never skips: the
+ship approval, checks-green before a merge, the 3-round dispute escalation, or a semantic
+merge conflict.
