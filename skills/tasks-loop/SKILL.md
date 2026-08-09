@@ -61,7 +61,7 @@ YAML frontmatter, then free-form project overrides.
 
 | Key | Meaning |
 |---|---|
-| `task-tracker` | bundled tracker name (`gitea`, `markdown`) — or a path to the project's own |
+| `task-tracker` | bundled tracker name (`gitea`, `markdown`, `none`) — or a path to the project's own |
 | `task-workflow` | bundled workflow name (`standard`) — or a path to the project's own |
 | `agent-driver` | driver name (for reporting) |
 | `agent-driver-cmd` | the driver executable (`~` is expanded) — `<cmd> skill` prints its contract, `<cmd> spawn …` runs it |
@@ -69,6 +69,11 @@ YAML frontmatter, then free-form project overrides.
 
 A tracker or workflow doc may require further keys (tasks root, deploy target). That doc says
 what they mean; this skill passes them through without interpreting them.
+
+**`task-tracker: none` is a legitimate answer**: no backlog, tasks come from the user in the
+session. The loop runs unchanged apart from selection and state — `none.md` says how each
+tracker responsibility degrades, in the same sections every tracker doc uses. Ask for a task
+rather than going looking for work.
 
 The project holds **only** `config.md` — plus any doc it chose to write itself. A bundled doc
 is read where it lives, never copied, so fixing a bundled tracker fixes every project at once.

@@ -8,12 +8,14 @@ config — and picks up skill updates for free. Paths below are relative to this
 
 | Question | Options |
 |---|---|
-| Task tracker? | `gitea` · `markdown` (experimental — say so) · custom |
+| Task tracker? | `gitea` · `none` · `markdown` (experimental — say so) · custom |
 | Workflow? | `standard` · custom |
 | Agent driver? | `bash-claude-agterm` · `go-claude-agterm` · custom |
 
 List the bundled options from what is actually in `task-trackers/` and `workflows/`, not from
-what this doc remembers. **Custom** means the project writes its own doc: ask for its path (it
+what this doc remembers. **`none`** means the project has no backlog: tasks come from the user
+in the session, and the loop asks for one instead of listing. Offer it — a project can use the
+phases, the review depth and the parallel workers without owning a tracker at all. **Custom** means the project writes its own doc: ask for its path (it
 need not exist yet) and tell the user what it has to answer — for a tracker: list, read body
 **and** thread, claim, comment, set phase, verify a deliverable; for a workflow: the phases,
 their transitions, and what each kind of worker is told.
