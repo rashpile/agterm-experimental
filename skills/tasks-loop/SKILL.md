@@ -108,9 +108,11 @@ its whole duration. This rule has no exceptions.
 
 1. **Snapshot** — list tasks with the tracker doc's command and classify each **by its tracker
    state**: actionable · frozen · in flight (→ Recovery) · owned by someone else · needs a
-   human. For each actionable one the tracker also gives the **phase it enters at**. Report
-   what will be dispatched and what is skipped, with reasons.
-2. **Dispatch**, while free slots remain:
+   human. For each actionable one the tracker also gives the **phase it enters at**, and — if
+   it defines an order — **the order to take them in**. Report what will be dispatched, in that
+   order, and what is skipped and why. The order is a proposal: the user can change it while
+   nothing is claimed yet.
+2. **Dispatch**, while free slots remain, in the order from step 1:
    - **Claim** the task and mark it in flight, the way the tracker doc says.
    - **Prepare the workspace** the workflow doc calls for (typically one git worktree per
      task, so two workers never share a checkout).
