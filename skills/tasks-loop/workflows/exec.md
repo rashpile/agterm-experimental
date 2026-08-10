@@ -24,6 +24,11 @@ no signals, no run file, no memory held in the orchestrator. Re-read the plan at
 every iteration, because the last author changed it. A restarted orchestrator resumes at the
 first `[ ]` it finds.
 
+**Read it from the committed ref, never from a worker's checkout** —
+`git show <delivery-branch>:<plan-path>` in the main checkout. Never `cd` into `.worktrees/`:
+that leaves an ambient cwd on later commands and puts you inside a live author's tree, and the
+file on disk counts ticks it has not committed yet.
+
 ## Review granularity
 
 **The plan declares its own review points, and the default is the end.**
