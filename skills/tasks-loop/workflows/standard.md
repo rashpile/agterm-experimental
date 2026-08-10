@@ -23,13 +23,10 @@ phase 3 finds a plan with task checkboxes.
 Phase 4 is the orchestrator's to dispatch into its own session(s), and a task worker that
 reaches it **stops and reports** instead of reviewing itself.
 
-**Every phase produces an artifact or a state change** — a settled approach, a plan, commits, a
-verdict, a delivery, a shipped system. That is the test for whether something belongs in this
-table at all. Two things that look like phases and are not: reviewing a plan (it happens inside
-phase 2, in a context that did not write the plan) and **running the checks** — a predicate over
-the other phases, not a step between them. The checks live in the config's `# Checks` section and
-are run by whoever needs them: the author before committing, the review gate, the ship worker
-before merging.
+**Reviewing a plan and running the checks are not phases.** Plan review happens inside phase 2,
+in a context that did not write the plan. The checks live in the config's `# Checks` section,
+run by whoever needs them: the author before committing, the review gate, the ship worker before
+merging.
 
 **The project decides which phases it runs.** The config's `# Workflow` section lists them: a
 phase with no heading there is skipped; a heading not in this table is a custom phase, run in
@@ -37,11 +34,9 @@ the position its number gives it. A heading's body is the project's detail for t
 sharpens the description below, it does not replace it.
 
 **The project decides which phases run; the worker decides whether an enabled phase applies to
-this task.** A phase earns its place on the average task, not on every one. Skipping one that
-does not apply is correct work, not a shortcut. Two conditions:
+this task.** Two conditions:
 
-- **Declare it in advance, with the reason** — in the plan if there is one, in the delivery if
-  not. A skipped phase nobody can see is indistinguishable from a forgotten one.
+- **Declare it in advance, with the reason** — in the plan if there is one, in the delivery if not.
 - **Only ever "does this phase apply?"** Never who runs it, never a gate.
 
 **Never a judgment call**, because these exist precisely because judgment fails under pressure:
@@ -55,18 +50,14 @@ the author never reviews its own work · checks green before a merge · the ship
 | "The user is watching anyway" | Watching is not approving. |
 | "This project is different" | The config is where a project says how it differs. If it doesn't say so, it doesn't. |
 
-**A phase body tunes HOW, never WHO.** It may name the commands, the conventions, the depth, the
-checkpoints. It may not hand a phase to a different owner: `use skill X` under
-`## 4. Code Review` does not make the author its own reviewer — it names what **the reviewer**
-should run. A body that reads as reassigning a phase is detail written loosely, not a dispatch
-instruction. Apply it inside the owner the table gives, and say in the plan how you read it.
+**A phase body tunes HOW, never WHO.** It may name commands, conventions, depth, checkpoints —
+never a different owner: `use skill X` under `## 4. Code Review` names what **the reviewer**
+runs, it does not make the author its own reviewer. Apply it inside the owner the table gives,
+and say in the plan how you read it.
 
-**A phase body may set the model** — `model: opus:xhigh` on a line of its own, `model[:effort]`
-with effort one of `low` `medium` `high` `xhigh` `max`. It is the clearest case of tuning HOW:
-it changes neither who runs the phase nor which gate applies. No line → the driver's default;
-never guess a model. **A session runs its own phase's model** — the inner loop's per-task
-reviewer is a review, so it takes phase 4's, not phase 3's, or a cheap author ends up reviewing
-its own work.
+**A phase body may set the model** — `model: opus:xhigh` on a line of its own, effort one of
+`low` `medium` `high` `xhigh` `max`. No line → the driver's default; never guess. **A session
+runs its own phase's model**: the inner loop's per-task reviewer takes phase 4's, not phase 3's.
 
 ## What each phase means
 
@@ -82,9 +73,8 @@ Three parts, and the phase is not done until all three are:
 1. **Write it.** Where phase 3 runs the inner loop, the plan is also its state machine, so it
    must follow the format in `exec.md`: `### Task N:` sections, checkboxes **only** inside them,
    and a `## Validation Commands` section.
-2. **Review it in a context that did not write it** — a subagent is enough; this needs no
-   session of its own, and there is no dispute cycle to corrupt, because rewriting your own plan
-   after review is not the same as judging your own code. Then apply what survives.
+2. **Review it in a context that did not write it** — a subagent is enough, no session of its
+   own. Then apply what survives.
 3. **The user approves it**, before any code. `--auto` skips this third part — **never the
    second**.
 
@@ -132,13 +122,11 @@ Legs 1 and 2 run in parallel over the same diff. A task may ask for a different 
 doc says how it expresses that, and the plan must say what was applied. **The gate is not
 negotiable at any depth**, which is why leg 3 always runs.
 
-**Then the fix cycle. The fixer is whoever has the knowledge** — which is not always the author:
+**Then the fix cycle. The fixer is whoever has the knowledge**, which is not always the author:
 
-- **One worker wrote the whole delivery** → that session, still parked and alive. It is a real
-  advocate: it knows why the code is the way it is.
-- **A plan's inner loop wrote it** → a **fresh fixer**. The last task's author has no privileged
-  knowledge of the other tasks, only the look of continuity, and partial context produces
-  confident wrong disputes. Close it; spawn a reader with a clean slate.
+- **One worker wrote the whole delivery** → that session, still parked and alive.
+- **A plan's inner loop wrote it** → close the last task's author and spawn a **fresh fixer**: it
+  knows only its own task, and partial context produces confident wrong disputes.
 
 Either way: "Findings are on the thread. Verify each against the code: fix confirmed ones and
 push; dispute false positives as replies with evidence. No blind obedience." **Evidence is the
@@ -188,17 +176,13 @@ sessions are indistinguishable on the phone. Claude-specific; skip it for other 
 
 ## Ship flow — phase 6, end of run
 
-Delegated like everything else: merges, image builds and deploys are minutes of wall time that
-would stop the orchestrator answering the user.
-
 Collect every task the tracker reports as ship-ready and dispatch **one** ship worker (session
 `ship-<id>[-<id>…]`, main checkout, takes a slot): for each delivery in order verify the checks
 are green and squash-merge; after **all** merges, wait for the final artifact build, run the
 config's `## 6. Deploy` **once**, verify it, close each task, report what shipped.
 
 **Clean up each merged delivery — the branch, not just the worktree.** A squash-merge leaves the
-branch behind and **not** an ancestor of the default branch, so `git branch --merged` will not
-list it and `git branch -d` will refuse it. Verify by content instead, then remove:
+branch un-merged by ancestry, so `git branch -d` refuses it. Verify by content, then remove:
 
 ```bash
 git diff <branch-tip> <merge-commit>      # empty = the squash captured the branch exactly

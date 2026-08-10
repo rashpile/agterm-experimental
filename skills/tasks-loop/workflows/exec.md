@@ -5,13 +5,6 @@ with no plan runs phase 3 as a single worker and none of this applies.
 
 **The orchestrator runs this loop.** Workers never dispatch — see the workflow's phase table.
 
-## Why the author restarts
-
-A plan's tasks are small and ordered. One long-lived worker accumulates every earlier task's
-context and ends up reviewing its own work at a size where honest review is impossible. A fresh
-session per task keeps each diff small enough to review and each reviewer's job narrow. The
-plan file carries everything a fresh session needs.
-
 ## Plan format
 
 The loop reads the plan mechanically, so phase 2 has to write it that way:
@@ -42,17 +35,10 @@ first `[ ]` it finds.
 
 The config's `## 3. Execute` may force **per task**, and wins over the plan.
 
-**Why the end and not per task.** A reviewer plus a fix round roughly triples a task's wall
-time, and tasks cannot run in parallel — a 15-task plan goes from a few hours to most of a day.
-Per-task review buys catching a bad pattern at task 2 instead of meeting fifteen copies of it at
-the end: worth paying for on risky work, not by default. **The gate that always runs per task is
-validation, not review** — correctness is caught immediately, design is batched.
+**The gate that always runs per task is validation, not review** — correctness is caught
+immediately, design is batched. Grouping belongs to the plan, not to this loop.
 
-Grouping is a judgment about which tasks form a coherent unit, so it belongs to the plan, where
-phase 2 wrote it and phase 3 had a human approve it. Not to this doc, and not to the loop.
-
-Whatever the level, **phase 4 still runs over the whole delivery afterwards.** An in-loop review
-sees what a small diff shows; phase 4 sees what only exists across tasks.
+Whatever the level, **phase 4 still runs over the whole delivery afterwards.**
 
 ## The loop
 
@@ -81,19 +67,16 @@ Repeat until no `[ ]` remains in any task section:
    unresolved is not an inner-loop problem — leave it for phase 4 and say so.
 8. **Close both sessions**, then the next task.
 
-**One task at a time. Never spawn two authors.** Plan tasks are ordered and interdependent:
-later ones build on files earlier ones create, and every author edits the same plan file and
-overlapping source. Parallel authors corrupt both. This is a correctness rule, not a speed
-preference.
+**One task at a time. Never spawn two authors.** Every author edits the same plan file and
+overlapping source; parallel authors corrupt both. A correctness rule, not a speed preference.
 
 **Stop when**: no boxes remain · a task failed its retry · the iteration count exceeds the
-plan's task count plus retries. A loop that outlives its own plan is a bug, not progress.
+plan's task count plus retries.
 
-**The user may edit the plan between iterations** — that is a feature of checkboxes being the
-state, not a race. Every iteration re-reads the file, so an edited task takes effect on the next
-one, and unticking a finished task's boxes re-runs it with a fresh session. If the user asks to
-change something mid-task, finish or stop the current author first; never edit the plan under a
-running one.
+**The user may edit the plan between iterations.** Every iteration re-reads the file, so an
+edited task takes effect on the next one, and unticking a finished task's boxes re-runs it. If
+the user asks to change something mid-task, finish or stop the current author first; never edit
+the plan under a running one.
 
 ## Rules
 
@@ -108,8 +91,7 @@ running one.
   decides what is real, against the code.
 - **Every author externalizes its reasoning before it closes.** The commit message says why this
   code is the way it is; a judgment call the plan did not settle goes back into the plan as a
-  note. A session's memory dies with it, and the fix cycle that comes later can only dispute a
-  false positive with what was written down while it was still true. This is what replaces the
-  long-lived author — not a weaker version of it, a durable one.
+  note. A session's memory dies with it, and the later fix cycle can only dispute a false
+  positive with what was written down.
 - A task that turns out to be wrong, already done, or impossible is **reported, not skipped
   silently**: say so, leave its boxes unticked, and let the user rule.

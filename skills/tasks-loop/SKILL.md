@@ -197,17 +197,16 @@ costs two.
 
 ## Usage guard
 
-**The driver owns the meter** — it is the component that knows the agent account. If its
-contract documents a usage report, run that before **each** spawn, not once per cycle.
+**The driver owns the meter.** If its contract documents a usage report, run that before
+**each** spawn, not once per cycle.
 
 At **≥95%** used, don't start new work: drain, tell the user ("usage at N%, holding dispatch
-until <reset>"), and take the wakeup path below. The reading is an estimate and it **lags in
-bursts** — a worker flushing a big turn can move it 20+ points between two reads a minute
-apart — so treat every reading as a lower bound and leave headroom while several workers are
-busy. It gates dispatch decisions only, never anything destructive.
+until <reset>"), and take the wakeup path below. The reading **lags in bursts** — a worker
+flushing a big turn can move it 20+ points between two reads a minute apart — so treat it as a
+lower bound and leave headroom while several workers are busy. It gates dispatch only, never
+anything destructive.
 
-A driver that reports no usage → skip this entirely; its policy error below is the backstop
-either way.
+No usage in the driver's contract → skip this; the policy error below is the backstop.
 
 ## Driver errors
 

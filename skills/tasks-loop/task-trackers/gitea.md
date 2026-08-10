@@ -37,9 +37,8 @@ run: `tea login list`. Identity fragment for the run's preflight line:
    tea labels create --name implement --color 1d76db --description "Build it — agents may work this"
    ```
 
-   Descriptions are **human hints only** — the real semantics are the State table below, and a
-   run never re-reads a default label's description. That is why an existing label is left
-   alone: its wording cannot change what the loop does.
+   Descriptions are **human hints only** — the semantics are the State table below, which is why
+   an existing label's wording is left alone.
 
    A project that uses different names keeps them: point `task-tracker` at a copy of this doc
    with the State table renamed, and note the mapping in the config's `# Notes`.
@@ -54,13 +53,9 @@ run: `tea login list`. Identity fragment for the run's preflight line:
 | A PR's thread | `tea pull <idx> --comments` |
 | PRs | `tea pulls list --output json` |
 
-**Always fetch the comments.** The thread is where the user answered the task's open
-questions; a worker sent only the body goes off and guesses, or re-asks what was decided.
+**Always fetch the comments** — the thread is where the user answered the task's open questions.
 
 ## State — labels
-
-Labels are this tracker's own vocabulary; the workflow knows nothing about them. This section
-is the whole mapping, including **where in the workflow each label enters**.
 
 ```
 (no label: triage) → discuss → implement → review → done+pending → done → closed
@@ -108,20 +103,19 @@ a merge and a deploy, and no two-word instruction carries that.
 
 ## Order
 
-Priority is a **modifier**: it never makes a task actionable on its own, and it never changes
-the phase a task enters at. It decides one thing — what gets a free slot first:
+Priority is a **modifier**: never actionable alone, never changes the entry phase. It decides
+one thing — what gets a free slot first:
 
 ```
 priority/high  →  priority/med  →  (no priority label)  →  priority/low
 ```
 
-An unlabelled task is ordinary work; `priority/low` is an explicit "later", so it sorts behind
-it. Ties keep the tracker's own order, oldest first.
+An unlabelled task is ordinary work; `priority/low` is an explicit "later". Ties keep the
+tracker's own order, oldest first.
 
-**Propose it, don't impose it.** Put the order in the dispatch plan —
-`#12 high · #9 · #4 low` — before anything is claimed, so the user can reorder while it is
-still free to change. With `--list` the selection question carries it; without, state the order
-and dispatch unless they say otherwise.
+**Propose it, don't impose it.** Put the order in the dispatch plan — `#12 high · #9 · #4 low` —
+before anything is claimed. With `--list` the selection question carries it; without, state the
+order and dispatch unless they say otherwise.
 
 A dependency stated in a task's own body outranks priority: a `priority/high` task that says it
 waits on another one still waits. Say so in the plan rather than silently reordering.
@@ -131,16 +125,12 @@ waits on another one still waits. Say so in the plan rather than silently reorde
 A modifier like priority: never actionable on its own, and it changes who runs nothing. On a
 task that also carries an actionable label:
 
-- **Enter at phase 3.** No brainstorm, no plan — nothing to settle, nothing to write down.
-  Skipping the plan takes its review with it, which is the honest way to do that: a plan nobody
-  checked is barely a plan.
+- **Enter at phase 3.** No brainstorm, no plan — and no plan review with it.
 - **Review depth `simple`** — one leg, the final pass, which carries the gate.
-- **New tests are not expected.** Existing checks must still pass: that is a gate, and `quick`
-  does not touch gates.
+- **New tests are not expected.** Existing checks must still pass: `quick` does not touch gates.
 
 If the work turns out not to be small — the diff spreads, the approach needs a decision — **say
-so and stop.** `quick` is a claim about size made before the work started, and an author that
-finds it wrong reports rather than quietly running a big change through a small process.
+so and stop.** `quick` is a claim about size made before the work started.
 
 ## Claim — assignment is ownership
 
