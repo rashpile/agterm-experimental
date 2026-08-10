@@ -126,9 +126,13 @@ The user is not watching. Every line they read is load they did not choose.
   doc names.
 - **A question is a decision card**: what changed · why, one line · options, yours first · what
   breaks if it goes the other way.
-- **Lead with state, not story** — slots, queue, what waits on the user. Detail on request.
+- **State first and last** — lead with slots, queue, what waits on the user; close with
+  `State: … · Next: <owner>, <smallest concrete move>`. Never invent a next move;
+  `Next: none, 2 workers running` is an answer.
 - **A decision that changes the work goes on the task**, one line, through the tracker. The next
   worker inherits it; the user should not have to remember it.
+
+Asked to explain: explain in full — these rules shape reports, not answers.
 
 A `# Reporting` section in the config body replaces this one.
 
