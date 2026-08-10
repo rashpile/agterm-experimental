@@ -1,7 +1,7 @@
 ---
 name: tasks-loop
 description: Use when asked to work a project's task backlog with parallel agents — "run the tasks loop", "tasks-loop", "process the open issues", "dispatch agents on the backlog", "work the backlog". Reads .tasks-loop/config.md for the project's tracker, agent driver and workflow.
-argument-hint: "[--slots N] [--keep] [--auto] [--list] [--status]"
+argument-hint: "[--slots N] [--keep] [--auto] [--list] [--status] [--update]"
 ---
 
 # Tasks Loop
@@ -54,7 +54,12 @@ a config body supplies a phase's detail, never its owner.
    will do before it does it.
 
 `--status` stops after step 4: answer from the status instruction the tracker doc names, plus
-your own run state. Dispatch nothing.
+your own run state. Dispatch nothing. `--update` also stops after step 4 — follow
+`references/update.md` instead of dispatching.
+
+**Drift**: if `skill-rev` is recorded and differs from the skill's current rev, or is absent
+entirely, say so once in the preflight — `config reconciled against 98c02d0 · current cfb3de5 —
+run /tasks-loop --update` — and carry on. A run reports drift; only `--update` fixes it.
 
 ## Config — `.tasks-loop/config.md`
 
@@ -67,6 +72,8 @@ YAML frontmatter, then free-form project overrides.
 | `agent-driver` | driver name (for reporting) |
 | `agent-driver-cmd` | the driver executable (`~` is expanded) — `<cmd> skill` prints its contract, `<cmd> spawn …` runs it |
 | `slots` | default slot count |
+| `skill-rev` | what this config was last reconciled against — written by install and `--update`, read to detect drift |
+| `driver-rev` | the driver's rev at that time; absent when the driver is a working-tree symlink |
 
 A tracker or workflow doc may require further keys (tasks root, deploy target). That doc says
 what they mean; this skill passes them through without interpreting them.
@@ -92,6 +99,7 @@ The trade is deliberate: there is no pinning. If a project needs a frozen copy, 
 | `--auto` | Fully-automatic preference. Workflow and config may define human checkpoints and what `--auto` does to them (typically: skip). It never overrides a Safety rule or a gate. Pass its state to workers. | off |
 | `--list` | Don't dispatch automatically: show the actionable tasks and what would be dispatched for each, ask the user which to process, then run only those. Unchosen tasks are left untouched — not claimed, not relabeled. | off |
 | `--status` | Answer status from run state and stop. | off |
+| `--update` | Verify the project against the current docs, reconcile what drifted, record what it was reconciled against. Follow `references/update.md`. Dispatches nothing, and refuses while anything is in flight. | off |
 
 A bare number (`/tasks-loop 3`) means `--slots 3`. An unknown parameter → don't guess: show
 this table and ask.

@@ -9,6 +9,8 @@ task-workflow: standard      # bundled name, or a path
 agent-driver: bash-claude-agterm
 agent-driver-cmd: ~/.config/agent-driver/bash-claude-agterm/claude-agterm
 slots: 2
+skill-rev: 98c02d0        # what this config was last reconciled against
+driver-rev: 9f2a5fe
 ---
 
 # Workflow
