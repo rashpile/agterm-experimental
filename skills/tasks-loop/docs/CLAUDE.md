@@ -17,7 +17,7 @@ own repo, this file moves to the root unchanged.
 | `references/install.md` | orchestrator | config missing |
 | `references/update.md` | orchestrator | `--update` |
 | `references/config.md` | installer | install |
-| `CHANGELOG.md` | orchestrator | `--update` |
+| `MIGRATIONLOG.md` | orchestrator | `--update` |
 | `agents/*.txt` | review worker | copied into the project at install |
 
 The first three are loaded on every run of every project. Length there is a real cost; length
@@ -112,10 +112,10 @@ minus visible content and never read. And `tool_use` inputs are not uniformly
 
 **Measure before claiming.** Every number in this file came from one of those transcripts.
 
-## Commits and the changelog
+## Commits and the migration log
 
 - Subject: `tasks-loop: <lowercase, imperative>`. The body carries the reasoning the doc does
   not.
-- **A `CHANGELOG.md` entry exists only when an existing project must act.** New wording, better
+- **A `MIGRATIONLOG.md` entry exists only when an existing project must act.** New wording, better
   reasoning, a clearer example: none of it belongs there. `--update` applies every entry above
   a project's recorded `skill-rev`, so the file is a work list, not a history.

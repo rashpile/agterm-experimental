@@ -1,16 +1,17 @@
-# Changelog — the migration log
+# Migration log
 
 **An entry exists only when a project must act.** New wording, better reasoning, a clearer
 example: none of it belongs here. This file is `--update`'s work list, not a history of the
-skill. A changelog that collects everything is one nobody maintains and `--update` cannot trust.
+skill — that is what the commits are for. It is not called a changelog because it is not one:
+a log that collects everything is one nobody maintains and `--update` cannot trust.
 
 **Newest first.** `--update` applies every entry **above** the `skill-rev` recorded in a
 project's config, in order, oldest of those first. No version arithmetic and no git required —
 position in this file is the ordering.
 
 **It is never the only check.** `--update` verifies the config against the current docs even
-after applying every entry, because a forgotten entry would otherwise pass in silence. The
-changelog says what is known to have changed; it is not evidence that nothing else did.
+after applying every entry, because a forgotten entry would otherwise pass in silence. This file
+says what is known to have changed; it is not evidence that nothing else did.
 
 Entry shape:
 

@@ -19,17 +19,17 @@ Report each, pass or fail — this half never changes anything:
 | `# Checks` exists and is non-empty | nothing gates a merge |
 | no empty phase heading that must not be empty | an empty `## <n>. Deploy` reads as configured |
 
-## 2. Apply the changelog
+## 2. Apply the migration log
 
-Read `CHANGELOG.md` and take every entry **above** the config's `skill-rev`, oldest of those
+Read `MIGRATIONLOG.md` and take every entry **above** the config's `skill-rev`, oldest of those
 first. Each entry says what to do. **No `skill-rev` recorded → skip this step entirely**: an
 unknown baseline means there is no way to know which entries were already applied, and applying
 them all would undo work someone did by hand. Step 3 covers that case.
 
 ## 3. Verify the config against the current workflow
 
-**This runs whether or not step 2 did**, because a forgotten changelog entry passes in silence
-and "the changelog said nothing" is not evidence that nothing changed.
+**This runs whether or not step 2 did**, because a forgotten entry passes in silence
+and "the log said nothing" is not evidence that nothing changed.
 
 - A `## <n>. <Phase>` heading the workflow's table no longer has → say what replaced it.
 - A phase in the table with no heading → that phase is off. Correct if intended; say it anyway,
@@ -65,11 +65,11 @@ Show the full diff of what would change **before writing anything**, and write o
 user accepts. Then set, in the config frontmatter:
 
 ```yaml
-skill-rev: <the topmost CHANGELOG entry's rev, or the skill's current rev if there are none>
+skill-rev: <the topmost MIGRATIONLOG entry's rev, or the skill's current rev if there are none>
 driver-rev: <the driver's rev, omitted when it is a working-tree symlink>
 ```
 
 A rev is a **fact about what this config was reconciled against**, not a version. There is no
 compatibility matrix behind it: `--update` can say what differs now, never what changed between
-two revs beyond what the changelog spells out. Do not write "upgrading from X to Y" language the
+two revs beyond what the migration log spells out. Do not write "upgrading from X to Y" language the
 data cannot support.

@@ -123,9 +123,9 @@ this — its `implementation` section is a phase list in prose. Split it across 
 
 ## 7. Record and finish
 
-Write `skill-rev` into the frontmatter — the topmost `CHANGELOG.md` entry's rev, or the skill's
+Write `skill-rev` into the frontmatter — the topmost `MIGRATIONLOG.md` entry's rev, or the skill's
 current rev if there are none — plus `driver-rev` when the driver is a git checkout rather than
-a symlink into a working tree. That marker is what later lets `--update` know which changelog
+a symlink into a working tree. That marker is what later lets `--update` know which migration-log
 entries a project has already seen.
 
 Commit `.tasks-loop/` — it is project configuration. Show the user the finished config, then
