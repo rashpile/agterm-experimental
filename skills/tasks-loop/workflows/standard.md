@@ -185,14 +185,20 @@ config's `## 6. Deploy` **once**, verify it, close each task, report what shippe
 branch un-merged by ancestry, so `git branch -d` refuses it. Verify by content, then remove:
 
 ```bash
-git diff <branch-tip> <merge-commit>      # empty = the squash captured the branch exactly
+CUT=$(git merge-base <merge-commit>^ <branch-tip>)                       # where the branch was cut
+git diff <branch-tip> <merge-commit> -- $(git diff --name-only $CUT <branch-tip>)
 git worktree remove .worktrees/<id>
 git branch -D <branch>                    # only once that diff came back empty
 git push origin --delete <branch>         # the merge authorized it; a protected branch refuses — say so and move on
 ```
 
-**A non-empty diff means something on that branch did not land. Stop: keep the worktree, the
-branch and the session, and report it.** That is a lost commit, not a cleanup problem.
+**Scoped to the branch's own files on purpose.** A bare `git diff <branch-tip> <merge-commit>`
+compares whole trees, so it reports everything *main* did since the branch was cut — which in a
+batched run is always something, and reads as a lost commit on a perfectly clean merge.
+
+**Non-empty → read it before deleting anything.** Either the branch has work main never got, or
+another delivery changed the same file after the cut. Only the first is a lost commit; if it is,
+keep the worktree, the branch and the session, and report it.
 
 `--keep` skips all of it — worktree, branch and session stay for inspection.
 
