@@ -26,8 +26,9 @@ folder is never a phase name; a phase is never set on a task.
 none of them covers the situation in front of you, ask the user — do not improvise a command
 against their backlog.
 
-**Precedence:** the project config's body > the docs it names > this skill. The one
-exception is Safety below: nothing overrides it.
+**Precedence:** the project config's body > the docs it names > this skill. Two exceptions:
+Safety below, which nothing overrides, and **who runs a phase**, which the workflow doc owns —
+a config body supplies a phase's detail, never its owner.
 
 ## Startup
 

@@ -28,6 +28,12 @@ phase with no heading there is skipped; a heading not in this table is a custom 
 the position its number gives it. A heading's body is the project's detail for that phase — it
 sharpens the description below, it does not replace it.
 
+**A phase body tunes HOW, never WHO.** It may name the commands, the conventions, the depth, the
+checkpoints. It may not hand a phase to a different owner: `use skill X` under
+`## 5. Code Review` does not make the author its own reviewer — it names what **the reviewer**
+should run. A body that reads as reassigning a phase is detail written loosely, not a dispatch
+instruction. Apply it inside the owner the table gives, and say in the plan how you read it.
+
 ## What each phase means
 
 **1. Brainstorm** — settle the approach before any code: the real options and their trade-offs.
