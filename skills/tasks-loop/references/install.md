@@ -93,8 +93,9 @@ itself is unusable — stop and say so rather than improvising another way to sp
 ## 4. Tracker follow-ups
 
 Follow the chosen tracker doc's `## Install` section — it asks its own questions and adds its
-own keys. The markdown tracker needs a tasks root; the **gitea tracker checks `tea` is logged in
-and offers to create its default labels**. It runs here and only here; a run skips that section.
+own keys; where it names a sibling file instead, that file **is** the section. The markdown
+tracker needs a tasks root; the **gitea tracker (`gitea-install.md`) checks `tea` is logged in
+and offers to create its default labels**. It runs here and only here; a run skips it.
 
 ## 5. Review agents
 

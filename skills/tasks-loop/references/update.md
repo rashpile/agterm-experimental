@@ -39,8 +39,9 @@ and "the changelog said nothing" is not evidence that nothing changed.
 
 ## 4. Reconcile the tracker
 
-Run the tracker doc's `## Install` section — **its checks only, never its questions.** For
-Gitea that means reading the repo's labels and naming the default ones it lacks. **Offer; never
+Run the tracker doc's `## Install` section — **its checks only, never its questions** — and
+follow it to a sibling file where it names one. For Gitea that is `gitea-install.md`: read the
+repo's labels and name the default ones it lacks. **Offer; never
 create silently**, and never touch a label that exists: its wording and colour are the project's.
 
 ## 5. The driver
