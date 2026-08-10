@@ -61,6 +61,17 @@ your own run state. Dispatch nothing. `--update` also stops after step 4 — fol
 entirely, say so once in the preflight — `config reconciled against 98c02d0 · current cfb3de5 —
 run /tasks-loop --update` — and carry on. A run reports drift; only `--update` fixes it.
 
+**Who runs the loop.** The orchestrator belongs on the strongest model available, at `high`
+effort. Not a preference: its characteristic mistakes have no undo — closing a session that was
+still working, merging on a worker's word, accepting a claimed revert — and they arrive inside
+otherwise mechanical turns, so there is no cheap turn to spend a weaker model on. Workers are
+disposable and re-runnable from their plan; the orchestrator is the run's only long-lived
+context. **Effort is not the context lever it looks like** — measured across one run, per-turn
+thinking moved ~8% between settings while turn *count* accounted for the growth, which is why
+step 3 spends its care on not taking turns rather than on thinking less per turn. If you can
+tell you are running under something weaker, say so in the preflight and carry on; the user
+should know which verifier they have.
+
 ## Config — `.tasks-loop/config.md`
 
 YAML frontmatter, then free-form project overrides.

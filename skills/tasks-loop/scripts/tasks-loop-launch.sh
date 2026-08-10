@@ -8,7 +8,7 @@
 # auto/keep/list become /tasks-loop flags; "remote" instead spawns the orchestrator with Remote
 # Control on, so it is steerable from claude.ai/phone.
 # Then: spawn a fresh claude session through the AGENT DRIVER in the current workspace at the
-# current session's cwd, submit "/tasks-loop <flags>", select the new session.
+# current session's cwd, put it on high effort, submit "/tasks-loop <flags>", select it.
 #
 # The driver is the same one the skill runs on (config.md `agent-driver-cmd`) and it owns what
 # this script used to hand-roll: the prompt-suggestion kill, spawn-blocks-until-ready, and a
@@ -91,6 +91,33 @@ set -- spawn --name "$name" --cwd "$cwd"
 [ "$has_remote" = 1 ] && set -- "$@" --remote "$name"
 
 out=$("$DRIVER" "$@" 2>&1) || drv_fail "spawn failed" "$out"
+
+# The orchestrator runs at HIGH effort — the skill says why, and it is about which mistakes have
+# no undo, not about output length. Sent as a slash command because the driver cannot set it at
+# spawn (`spawn --model M[:effort]` is agent-driver #15); when that lands, this moves into the
+# spawn line above and the model goes with it.
+#
+# Two caveats, both deliberate:
+#  - /effort ALSO rewrites the user's saved default for new sessions. There is no session-scoped
+#    form, and a loop that thinks properly is worth that; it is called out here so it is a known
+#    cost rather than a surprise.
+#  - best effort, and NOT fatal: a run at the session's default effort is worse, not broken.
+#    Aborting a launch over it would be the bigger failure.
+"$DRIVER" say "$name" "/effort high" >/dev/null 2>&1 \
+  || agtermctl notify "effort not set — orchestrator is on the session default" \
+       --title "tasks-loop" 2>/dev/null
+
+# /effort is handled locally and should not make the session busy — but `say` into a BUSY session
+# queues the turn instead of submitting it (driver contract), which would land /tasks-loop late
+# and unreported. Settle on `status`, which is non-blocking; `wait --for idle` would spend its
+# 10s last-recorded grace here for nothing, since a local command records no answer.
+i=0
+while [ "$i" -lt 10 ]; do
+  "$DRIVER" status "$name" 2>/dev/null | grep -q '"state":"busy"' || break
+  sleep 0.5
+  i=$((i + 1))
+done
+
 out=$("$DRIVER" say "$name" "/tasks-loop$flags" 2>&1) \
   || drv_fail "session '$name' is up but /tasks-loop was not submitted" "$out"
 
