@@ -47,7 +47,7 @@ of worker is told.
   Ask too whether they want a custom phase inserted anywhere.
 - **Code review depth**, if that phase is on:
 
-  | Option | Review phases | |
+  | Option | Review legs | |
   |---|---|---|
   | **full** | 1 internal + 2 external + 3 final | needs the `codex` CLI |
   | **standard** | 1 internal + 3 final | no external model |
@@ -102,7 +102,7 @@ meant to be tuned per project. Tell the user they can edit, add or delete any of
 section with one `## <n>. <Phase>` heading per selected phase, then `# Notes`.
 
 - **A skipped phase gets no heading** — absence is the off switch.
-- **Never write an empty `## 8. Deploy`**: it reads as configured when it isn't. Omit it and the
+- **Never write an empty `## 7. Deploy`**: it reads as configured when it isn't. Omit it and the
   loop merges and closes without deploying, and reports that.
 - A heading with an empty body is fine — the workflow's own description applies until someone
   fills it in.
@@ -111,8 +111,8 @@ section with one `## <n>. <Phase>` heading per selected phase, then `# Notes`.
 
 **Migrating from tasks-loop v1:** an existing `.claude/tasks-loop.md` already holds most of
 this — its `implementation` section is a phase list in prose. Split it across the phase headings
-(brainstorm/plan/plan-checkpoint → `## 1.`–`## 3.`, verification commands → `## 6. Test`,
-`deploy` → `## 8. Deploy`), then delete the old file.
+(brainstorm/plan/plan-checkpoint → `## 1.` and `## 2.`, verification commands → `## 5. Test`,
+`deploy` → `## 7. Deploy`), then delete the old file.
 
 ## 7. Finish
 

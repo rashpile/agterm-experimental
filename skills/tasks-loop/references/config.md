@@ -21,27 +21,26 @@ is this project's detail — it sharpens the workflow's description, it does not
 Settle the approach first. Skip for typos and obvious one-liners; say so in the delivery.
 
 ## 2. Plan
-Write the plan to `docs/plans/`; move it to `docs/plans/completed/` in the final commit.
+Write the plan to `docs/plans/` with `### Task N:` sections and a `## Validation Commands`
+section; move it to `docs/plans/completed/` in the final commit. A context that did not write it
+reviews it, then the user approves — commit the plan, open the delivery early (plan only),
+report WAITING with its URL and hold. `--auto` skips the user's approval, never the review.
 
-## 3. Plan Review
-Reviewed by a separate session, then by the user — commit the plan, open the delivery early
-(plan only), report WAITING with its URL and hold. `--auto` skips the user half.
-
-## 4. Execute
+## 3. Execute
 Implement the approved plan. Name any deviation from it — in the commit and back in the plan.
 Inner-loop review follows the plan's own stage boundaries, or runs at the end. Write
 `per task` here to force a review after every task; expect roughly triple the wall time.
 
-## 5. Code Review
+## 4. Code Review
 full          # full (1 internal + 2 external codex + 3 final) · standard (1 + 3) · simple (3 only)
 
-## 6. Test
+## 5. Test
 `cd app && npx tsc --noEmit; npm run lint; npx vitest run`
 
-## 7. Push
+## 6. Push
 Delivery only — the orchestrator merges after the ship approval.
 
-## 8. Deploy
+## 7. Deploy
 Always project-specific. Omit this heading entirely and the loop merges and closes without
 deploying, and says so.
 

@@ -1,7 +1,7 @@
 # Execute — the plan-driven inner loop
 
-Read this **only when phase 4 starts and the plan from phase 2 has task checkboxes.** A task
-with no plan runs phase 4 as a single worker and none of this applies.
+Read this **only when phase 3 starts and the plan from phase 2 has task checkboxes.** A task
+with no plan runs phase 3 as a single worker and none of this applies.
 
 **The orchestrator runs this loop.** Workers never dispatch — see the workflow's phase table.
 
@@ -21,7 +21,7 @@ The loop reads the plan mechanically, so phase 2 has to write it that way:
 - **Checkboxes only inside task sections.** A `- [ ]` in Overview or Success criteria reads as
   unfinished work and buys an extra iteration that implements nothing.
 - **A `## Validation Commands` section** — what must pass before a task counts as done. These
-  are the plan's own checks; the project's live in the config's `## 6. Test`, and an author runs
+  are the plan's own checks; the project's live in the config's `## 5. Test`, and an author runs
   both.
 
 ## State
@@ -40,7 +40,7 @@ first `[ ]` it finds.
 | `## Stage` / `## Group` headings | at each group's last task | that group's diff |
 | a flat task list | once, after the last task | the whole plan's diff |
 
-The config's `## 4. Execute` may force **per task**, and wins over the plan.
+The config's `## 3. Execute` may force **per task**, and wins over the plan.
 
 **Why the end and not per task.** A reviewer plus a fix round roughly triples a task's wall
 time, and tasks cannot run in parallel — a 15-task plan goes from a few hours to most of a day.
@@ -51,15 +51,15 @@ validation, not review** — correctness is caught immediately, design is batche
 Grouping is a judgment about which tasks form a coherent unit, so it belongs to the plan, where
 phase 2 wrote it and phase 3 had a human approve it. Not to this doc, and not to the loop.
 
-Whatever the level, **phase 5 still runs over the whole delivery afterwards.** An in-loop review
-sees what a small diff shows; phase 5 sees what only exists across tasks.
+Whatever the level, **phase 4 still runs over the whole delivery afterwards.** An in-loop review
+sees what a small diff shows; phase 4 sees what only exists across tasks.
 
 ## The loop
 
 Repeat until no `[ ]` remains in any task section:
 
-1. **Re-read the plan.** Take the first task section with unchecked boxes. None left → phase 4
-   is done. **Close the last author** and hand back to the workflow: phase 5's findings span
+1. **Re-read the plan.** Take the first task section with unchecked boxes. None left → phase 3
+   is done. **Close the last author** and hand back to the workflow: phase 4's findings span
    every task, and the session that wrote the last one has no privileged knowledge of the
    rest — only the look of continuity.
 2. **Record the range start** — `git rev-parse HEAD` on the delivery branch. The review is that
@@ -67,8 +67,8 @@ Repeat until no `[ ]` remains in any task section:
 3. **Announce it**: task number, title, and its unchecked items, in one block. The board should
    be readable without opening the plan.
 4. **Spawn a fresh author** `task<N>-<slug>-<id>` in the task's worktree. Its prompt carries
-   this task's items only, the config's `## 4. Execute` detail, and the checks to run **before**
-   committing — the plan's `## Validation Commands` and the project's `## 6. Test`. It commits
+   this task's items only, the config's `## 3. Execute` detail, and the checks to run **before**
+   committing — the plan's `## Validation Commands` and the project's `## 5. Test`. It commits
    its own work and ticks its own boxes.
 5. **Wait, then re-read the plan.** Boxes ticked → continue. Not ticked → **one retry** with a
    fresh session carrying what the last one left behind. Still not ticked → stop the loop and
@@ -78,7 +78,7 @@ Repeat until no `[ ]` remains in any task section:
    over `<start-sha>...HEAD` with one internal leg. Two sessions never share a checkout.
 7. **Fix** — findings go to the author, still parked and alive. It fixes what it confirms
    against the code and disputes the rest with evidence. **Max 2 inner rounds**; anything still
-   unresolved is not an inner-loop problem — leave it for phase 5 and say so.
+   unresolved is not an inner-loop problem — leave it for phase 4 and say so.
 8. **Close both sessions**, then the next task.
 
 **One task at a time. Never spawn two authors.** Plan tasks are ordered and interdependent:
@@ -102,7 +102,7 @@ running one.
 - **Never tick a checkbox yourself.** Authors tick their own; that is the only signal this loop
   reads. An orchestrator that ticks one has destroyed its own evidence.
 - **A failing check is not a finished task.** Each author runs the project's checks before
-  committing, so task N+1 never starts on a red tree. Phase 6 is the final pass over the whole
+  committing, so task N+1 never starts on a red tree. Phase 5 is the final pass over the whole
   delivery, not a substitute for this.
 - **Findings reach the author verbatim** — not summarized, filtered, or pre-judged. The author
   decides what is real, against the code.

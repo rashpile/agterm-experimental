@@ -75,9 +75,9 @@ loop:  discuss → implement|closed · implement → review · review clean → 
 | `progress` | in flight → Recovery, never a fresh dispatch | — |
 | `implement` | yes | phase 1 |
 | `discuss` | yes | phase 1, run **with the user**, then stop |
-| `review` | yes | phase 5 |
+| `review` | yes | phase 4 |
 | `investigate` | yes | outside the pipeline — read-only research, report as a comment, stop |
-| `done` alone | yes | phase 8 — ship. The label is the authorization. |
+| `done` alone | yes | phase 7 — ship. The label is the authorization. |
 | `done`+`pending` | no — ship-ready and frozen; remind the user in the summary | — |
 | `bug` | only together with `implement`; alone it needs triage | — |
 | `priority/*` | modifier — never actionable alone (see Order) | — |

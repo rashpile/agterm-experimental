@@ -54,4 +54,4 @@ the filesystem:
 |---|---|
 | Work done | `git log` / `git diff` on the branch |
 | Delivered | the branch exists and is pushed; the PR too, if the host has them |
-| Tests green | run the project's `## 6. Test` commands yourself |
+| Tests green | run the project's `## 5. Test` commands yourself |

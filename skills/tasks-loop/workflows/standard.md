@@ -6,24 +6,26 @@ phase a task enters at; this doc owns the phases themselves.
 **Review instruction:** `review.md`, beside this file. Pass review workers its resolved
 absolute path.
 **Execute instruction:** `exec.md`, beside this file — read by the orchestrator, and only when
-phase 4 finds a plan with task checkboxes.
+phase 3 finds a plan with task checkboxes.
 
 ## Phases
 
 | # | Phase | Who runs it | Done when |
 |---|---|---|---|
 | 1 | Brainstorm | task worker | the approach is settled |
-| 2 | Plan | task worker | a written plan exists |
-| 3 | Plan Review | a reviewer that did not write the plan, then the user | the plan is approved |
-| 4 | Execute | task worker — with a plan, **one fresh worker per plan task** | the change is committed |
-| 5 | Code Review | **separate review sessions**; the task worker answers as author | every finding is terminal |
-| 6 | Test | task worker | the project's checks pass |
-| 7 | Push | task worker; the orchestrator merges | delivered, then merged |
-| 8 | Deploy | ship worker | shipped and verified |
+| 2 | Plan | task worker, checked by a reviewer that did not write it, then the user | the plan is approved |
+| 3 | Execute | task worker — with a plan, **one fresh worker per plan task** | the change is committed |
+| 4 | Code Review | **separate review sessions**; the task worker answers as author | every finding is terminal |
+| 5 | Test | task worker | the project's checks pass |
+| 6 | Push | task worker; the orchestrator merges | delivered, then merged |
+| 7 | Deploy | ship worker | shipped and verified |
 
-**This column is the dispatch rule, not a description.** The task worker runs 1, 2, 4, 6 and 7.
-Phase 5 is the orchestrator's to dispatch into its own session(s), and a task worker that
+**This column is the dispatch rule, not a description.** The task worker runs 1, 2, 3, 5 and 6.
+Phase 4 is the orchestrator's to dispatch into its own session(s), and a task worker that
 reaches it **stops and reports** instead of reviewing itself.
+
+A phase is a **unit of dispatch**. Reviewing a plan is not one — it happens inside phase 2, in a
+context that did not write the plan, and needs no session of its own.
 
 **The project decides which phases it runs.** The config's `# Workflow` section lists them: a
 phase with no heading there is skipped; a heading not in this table is a custom phase, run in
@@ -32,7 +34,7 @@ sharpens the description below, it does not replace it.
 
 **A phase body tunes HOW, never WHO.** It may name the commands, the conventions, the depth, the
 checkpoints. It may not hand a phase to a different owner: `use skill X` under
-`## 5. Code Review` does not make the author its own reviewer — it names what **the reviewer**
+`## 4. Code Review` does not make the author its own reviewer — it names what **the reviewer**
 should run. A body that reads as reassigning a phase is detail written loosely, not a dispatch
 instruction. Apply it inside the owner the table gives, and say in the plan how you read it.
 
@@ -44,38 +46,41 @@ when skipped. When the project runs this **with the user**, the worker presents 
 recommendation and the 2–3 real decisions, then waits in its session; tell the user which
 session to join.
 
-**2. Plan** — write the plan down where a human can read it. It is what phase 3 reviews and what
-the work is checked against later. Where phase 4 runs the inner loop, the plan is also its state
-machine, so it must follow the format in `exec.md`: `### Task N:` sections, checkboxes **only**
-inside them, and a `## Validation Commands` section.
+**2. Plan** — write the plan down where a human can read it, then get it reviewed and approved.
+Three parts, and the phase is not done until all three are:
 
-**3. Plan Review** — a separate session reviews the plan against the task; never the session
-that wrote it. Then the human checkpoint: the plan reaches the user before any code.
-`--auto` skips the human half, not the review half.
+1. **Write it.** Where phase 3 runs the inner loop, the plan is also its state machine, so it
+   must follow the format in `exec.md`: `### Task N:` sections, checkboxes **only** inside them,
+   and a `## Validation Commands` section.
+2. **Review it in a context that did not write it** — a subagent is enough; this needs no
+   session of its own, and there is no dispute cycle to corrupt, because rewriting your own plan
+   after review is not the same as judging your own code. Then apply what survives.
+3. **The user approves it**, before any code. `--auto` skips this third part — **never the
+   second**.
 
-**4. Execute** — implement the approved plan. A deviation from it gets named in the delivery,
+**3. Execute** — implement the approved plan. A deviation from it gets named in the delivery,
 not absorbed silently. **If the plan has task checkboxes this phase is a loop, not one worker**:
 follow `exec.md` beside this file — a fresh author per task, reviewed per task or per group,
 with the checkboxes as the only progress state. Read that doc only then; a task with no plan
 runs this phase as a single worker.
 
-**5. Code Review** — the legs below. The reviewer never fixes; the author never judges its own
+**4. Code Review** — the legs below. The reviewer never fixes; the author never judges its own
 verdict.
 
-**6. Test** — run the project's own checks (its config section names them). Red is not a phase
-outcome; it is a return to phase 4.
+**5. Test** — run the project's own checks (its config section names them). Red is not a phase
+outcome; it is a return to phase 3.
 
-**7. Push** — deliver through the tracker's review mechanism. Never force-push, never push to
+**6. Push** — deliver through the tracker's review mechanism. Never force-push, never push to
 the default branch. **Merging is the orchestrator's**, and only after the ship approval.
 
-**8. Deploy** — always project-specific. No `## 8. Deploy` in the config → merge and close, but
+**7. Deploy** — always project-specific. No `## 7. Deploy` in the config → merge and close, but
 do not deploy, and report "deploy not configured".
 
-## Phase 5 — review phases
+## Phase 4 — review legs
 
-Three of them; the config's `## 5. Code Review` says how deep this project goes.
+Three of them; the config's `## 4. Code Review` says how deep this project goes.
 
-| # | Review phase | What |
+| # | Leg | What |
 |---|---|---|
 | 1 | **internal** | the bundled agents (`.tasks-loop/agents/*.txt`) over the diff, one session, per `review.md` |
 | 2 | **external** | a second model (codex) over the same diff. It cannot reach the tracker — read its output and post it yourself as "External review (codex)". Costs its own slot. |
@@ -88,7 +93,7 @@ Three of them; the config's `## 5. Code Review` says how deep this project goes.
 | **simple** | 3 only — one pass and the gate |
 
 **The orchestrator dispatches this phase — the author never does.** When the task worker reports
-it has reached phase 5:
+it has reached phase 4:
 
 1. **Park the author.** Leave its session alive and idle; it is about to be the fixer.
 2. **Spawn `review-<slug>-<id>`** on a worktree of the delivery branch and `say` it the resolved
@@ -96,9 +101,9 @@ it has reached phase 5:
    itself — never inline agent prompts into the message.
 3. **At `full`, spawn the external leg in parallel**, as its own session.
 
-1 and 2 run in parallel over the same diff. A task may ask for a different depth — the tracker
+Legs 1 and 2 run in parallel over the same diff. A task may ask for a different depth — the tracker
 doc says how it expresses that, and the plan must say what was applied. **The gate is not
-negotiable at any depth**, which is why phase 3 always runs.
+negotiable at any depth**, which is why leg 3 always runs.
 
 **Then the fix cycle. The fixer is whoever has the knowledge** — which is not always the author:
 
@@ -132,10 +137,10 @@ they conflict, the newest user comment wins. Omit if there is none.>
 
 Rules:
 - You are in <cwd>. Follow the project's CLAUDE.md.
-- Phases you run: <the enabled task-worker phases, from <entry> onward — 1, 2, 4, 6, 7 — each
+- Phases you run: <the enabled task-worker phases, from <entry> onward — 1, 2, 3, 5, 6 — each
   with the project's detail from its config section>.
 - Phases you do NOT run: <any enabled phase the table gives to someone else>. Stop at each and
-  report WAITING. **Phase 5 especially: you never review your own work.** A separate session
+  report WAITING. **Phase 4 especially: you never review your own work.** A separate session
   reviews it and posts findings; you answer them as the author — fix what you confirm against
   the code, dispute what you don't, with evidence. Never run a review skill or review agents
   on your own diff.
@@ -154,7 +159,7 @@ once the worker has presented its context, `say <session> "/rc worker:<session-n
 tell them. **Always label it with the session name, never a bare `/rc`** — otherwise the
 sessions are indistinguishable on the phone. Claude-specific; skip it for other agents.
 
-## Ship flow — phase 8, end of run
+## Ship flow — phase 7, end of run
 
 Delegated like everything else: merges, image builds and deploys are minutes of wall time that
 would stop the orchestrator answering the user.
@@ -162,7 +167,7 @@ would stop the orchestrator answering the user.
 Collect every task the tracker reports as ship-ready and dispatch **one** ship worker (session
 `ship-<id>[-<id>…]`, main checkout, takes a slot): for each delivery in order verify the checks
 are green and squash-merge; after **all** merges, wait for the final artifact build, run the
-config's `## 8. Deploy` **once**, verify it, close each task, report what shipped.
+config's `## 7. Deploy` **once**, verify it, close each task, report what shipped.
 
 **Clean up each merged delivery — the branch, not just the worktree.** A squash-merge leaves the
 branch behind and **not** an ancestor of the default branch, so `git branch --merged` will not
