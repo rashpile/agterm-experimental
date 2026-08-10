@@ -26,6 +26,7 @@ IDLE_SCREEN='{"ok":true,"result":{"text":"some output\n? for shortcuts"}}'
 BUSY_SCREEN='{"ok":true,"result":{"text":"working\nesc to interrupt"}}'
 BLANK_SCREEN='{"ok":true,"result":{"text":""}}'
 BANNER_SCREEN='{"ok":true,"result":{"text":"Claude usage limit reached. Resets at 5pm"}}'
+EXPIRY_SCREEN='{"ok":true,"result":{"text":" ⚠ Your login expires in 2 days · run /login to renew\n⏵⏵ auto mode on (shift+tab to cycle)"}}'
 TRUST_SCREEN='{"ok":true,"result":{"text":"Do you trust this folder?"}}'
 
 setup() {  # setup <tree-json> <response lines...>
@@ -77,6 +78,13 @@ teardown
 setup "$TREE_ALIVE" "$BANNER_SCREEN"
 OUT="$("$CTL" ready "$SID" 10 2>&1)"; rc=$?
 check "usage-limit banner -> exit 3" 3 "$rc"
+teardown
+
+# 4b. "Your login expires in N days · run /login to renew" is a WARNING, not a block: claude is
+#     usable, and treating it as exit 3 silently killed every spawn in the days before expiry.
+setup "$TREE_ALIVE" "$EXPIRY_SCREEN"
+OUT="$("$CTL" ready "$SID" 5 2>&1)"; rc=$?
+check "login-expiry warning is not a block -> exit 0" 0 "$rc"
 teardown
 
 # 5. Readable screen that never gets ready -> plain timeout, NOT 4.

@@ -8,16 +8,20 @@ absolute path.
 
 ## Phases
 
-| # | Phase | Runs in | Done when |
+| # | Phase | Who runs it | Done when |
 |---|---|---|---|
 | 1 | Brainstorm | task worker | the approach is settled |
 | 2 | Plan | task worker | a written plan exists |
-| 3 | Plan Review | separate session, then the user | the plan is approved |
+| 3 | Plan Review | a reviewer that did not write the plan, then the user | the plan is approved |
 | 4 | Execute | task worker | the change is committed |
-| 5 | Code Review | review legs + the author | every finding is terminal |
+| 5 | Code Review | **separate review sessions**; the task worker answers as author | every finding is terminal |
 | 6 | Test | task worker | the project's checks pass |
-| 7 | Push | task worker, then the orchestrator | delivered, then merged |
+| 7 | Push | task worker; the orchestrator merges | delivered, then merged |
 | 8 | Deploy | ship worker | shipped and verified |
+
+**This column is the dispatch rule, not a description.** The task worker runs 1, 2, 4, 6 and 7.
+Phase 5 is the orchestrator's to dispatch into its own session(s), and a task worker that
+reaches it **stops and reports** instead of reviewing itself.
 
 **The project decides which phases it runs.** The config's `# Workflow` section lists them: a
 phase with no heading there is skipped; a heading not in this table is a custom phase, run in
@@ -99,8 +103,13 @@ they conflict, the newest user comment wins. Omit if there is none.>
 
 Rules:
 - You are in <cwd>. Follow the project's CLAUDE.md.
-- Phases for this task: <the enabled phases, from <entry> onward, each with the project's
-  detail from its config section>.
+- Phases you run: <the enabled task-worker phases, from <entry> onward — 1, 2, 4, 6, 7 — each
+  with the project's detail from its config section>.
+- Phases you do NOT run: <any enabled phase the table gives to someone else>. Stop at each and
+  report WAITING. **Phase 5 especially: you never review your own work.** A separate session
+  reviews it and posts findings; you answer them as the author — fix what you confirm against
+  the code, dispute what you don't, with evidence. Never run a review skill or review agents
+  on your own diff.
 - Report WAITING plus what you need at any human checkpoint; do not proceed past it.
 - If you file a new task, freeze it unless the user chose otherwise, and end its body with
   "_Filed by agent while working on <task ref>._" — agents post under the user's account.
