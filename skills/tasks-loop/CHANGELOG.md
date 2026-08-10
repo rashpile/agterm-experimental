@@ -22,5 +22,13 @@ Entry shape:
 
 ---
 
-_No entries yet. The skill has not been released, so nothing has a project to migrate. The first
-entry belongs to whichever change next requires an existing project to do something._
+## 30cc35d — the squash-verify recipe reported clean merges as lost commits
+
+**Action:** if the config's `## 5. Push` (or its deploy/ship section) spells out its own branch
+cleanup with `git diff <branch-tip> <merge-commit>`, replace that check with the workflow doc's
+scoped form, or delete the sentence and let the workflow's own recipe apply.
+
+**Why:** a whole-tree diff between the branch tip and the merge commit measures everything the
+default branch did since the branch was cut, not whether the branch landed. Any project whose
+default branch moves during a run — every batched one — gets a false "lost commit" that halts
+cleanup on a perfectly good merge.
