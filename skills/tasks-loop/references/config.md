@@ -54,6 +54,13 @@ A plan may add its own in `## Validation Commands`; both run.
 
 `cd app && npx tsc --noEmit; npm run lint; npx vitest run`
 
+# Reporting
+
+Optional — omit it and the skill's own reporting rules apply. Present, it replaces them: how
+much this project wants told, what it always wants asked, what it never does.
+
+Ship approvals always come to me, never `--auto`. One line per finished phase, no tables.
+
 # Notes
 
 Anything else a worker or the orchestrator needs: repo quirks, `.worktrees/` already

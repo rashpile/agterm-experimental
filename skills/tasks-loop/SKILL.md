@@ -117,6 +117,21 @@ the user can ask it anything at any moment.
 **Every driver `wait` runs in the background.** A foreground wait blocks the orchestrator for
 its whole duration. This rule has no exceptions.
 
+## Reporting
+
+The user is not watching. Every line they read is load they did not choose.
+
+- **Don't ask what you can decide.** Reversible, small blast radius → do it and report it in one
+  line. Keep questions for the irreversible, the genuinely ambiguous, and the gates the workflow
+  doc names.
+- **A question is a decision card**: what changed · why, one line · options, yours first · what
+  breaks if it goes the other way.
+- **Lead with state, not story** — slots, queue, what waits on the user. Detail on request.
+- **A decision that changes the work goes on the task**, one line, through the tracker. The next
+  worker inherits it; the user should not have to remember it.
+
+A `# Reporting` section in the config body replaces this one.
+
 ## The loop
 
 1. **Snapshot** — list tasks with the tracker doc's command and classify each **by its tracker
