@@ -5,6 +5,8 @@ phase a task enters at; this doc owns the phases themselves.
 
 **Review instruction:** `review.md`, beside this file. Pass review workers its resolved
 absolute path.
+**Execute instruction:** `exec.md`, beside this file — read by the orchestrator, and only when
+phase 4 finds a plan with task checkboxes.
 
 ## Phases
 
@@ -13,7 +15,7 @@ absolute path.
 | 1 | Brainstorm | task worker | the approach is settled |
 | 2 | Plan | task worker | a written plan exists |
 | 3 | Plan Review | a reviewer that did not write the plan, then the user | the plan is approved |
-| 4 | Execute | task worker | the change is committed |
+| 4 | Execute | task worker — with a plan, **one fresh worker per plan task** | the change is committed |
 | 5 | Code Review | **separate review sessions**; the task worker answers as author | every finding is terminal |
 | 6 | Test | task worker | the project's checks pass |
 | 7 | Push | task worker; the orchestrator merges | delivered, then merged |
@@ -50,7 +52,10 @@ that wrote it. Then the human checkpoint: the plan reaches the user before any c
 `--auto` skips the human half, not the review half.
 
 **4. Execute** — implement the approved plan. A deviation from it gets named in the delivery,
-not absorbed silently.
+not absorbed silently. **If the plan has task checkboxes this phase is a loop, not one worker**:
+follow `exec.md` beside this file — a fresh author per task, reviewed per task or per group,
+with the checkboxes as the only progress state. Read that doc only then; a task with no plan
+runs this phase as a single worker.
 
 **5. Code Review** — the legs below. The reviewer never fixes; the author never judges its own
 verdict.

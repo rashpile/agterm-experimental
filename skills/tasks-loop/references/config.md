@@ -29,6 +29,7 @@ Reviewed by a separate session, then by the user — commit the plan, open the d
 
 ## 4. Execute
 Implement the approved plan. Name any deviation from it.
+Review granularity for the inner loop: per task | per group | at the end. (Default: per task.)
 
 ## 5. Code Review
 full          # full (1 internal + 2 external codex + 3 final) · standard (1 + 3) · simple (3 only)
