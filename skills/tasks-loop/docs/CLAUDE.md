@@ -65,17 +65,52 @@ Break one of these and the skill stops being this skill.
 
 ## Verifying a change
 
-There is no test suite. A skill is verified by running it.
+There is no test suite. A skill is verified by running it against a real backlog —
+`/Users/pkoptilin/workspace/repos/agent-driver` has a config and open issues — and reading what
+it did afterwards.
 
-- **Run it against a real backlog.** `/Users/pkoptilin/workspace/repos/agent-driver` has a
-  config and open issues.
-- **Then read the transcript**, don't ask the orchestrator how it went:
-  `~/.claude/projects/<cwd-slug>/<session-id>.jsonl`. Attribute context growth by tool and by
-  intent before proposing a fix.
-- **Thinking text is stripped from the transcript** — only a signature survives. Measure it as
-  `output_tokens` minus visible text and tool inputs, never by reading.
-- **Measure before claiming.** Every rule here that cites a number came from one of those
-  transcripts.
+**A running orchestrator never picks up an edit.** It read `SKILL.md` at startup, so there is no
+hotfix: a change lands on the next `/tasks-loop`.
+
+## Debugging a live run
+
+```bash
+docs/inspect-run.py                  # newest session for the cwd
+docs/inspect-run.py <session-id>     # that one, found across all projects
+```
+
+Transcripts are append-only and readable **while the run is going** —
+`~/.claude/projects/<abs-path, non-alphanumerics as dashes>/<session-id>.jsonl`. A snapshot of a
+running session looks exactly like a stalled one, so check mtime before reading anything into a
+gap.
+
+**Never ask the orchestrator how the run went.** It answers with what it believes. Its narration
+is a claim; its tool calls are the evidence, and the two have disagreed.
+
+Read in this order:
+
+1. **User turns** — every one is something the loop did not handle. A turn spent decoding what
+   the orchestrator said is a reporting bug, not a question.
+2. **The labels on backgrounded waits.** `Resume waiting…`, `Wait for gone only`, `Poll until
+   genuinely idle` — an escalating series is the orchestrator narrating a workaround it invented,
+   and it names the defect without reading a line of driver code.
+3. **Where the context went**, by intent rather than by tool name.
+
+Then classify each finding as exactly one of three. The fixes are not interchangeable, and
+misclassifying means patching the skill around a driver bug forever:
+
+| The orchestrator… | Fix in |
+|---|---|
+| did the wrong thing, and the docs were right | the **skill** |
+| did what the docs said, and the docs were wrong | the **doc** |
+| was lied to by its channel | a **driver issue** |
+
+**Two traps in the JSON**, both of which produced wrong conclusions before `inspect-run.py`
+existed. Thinking text is stripped to a bare signature, so it is derived from `output_tokens`
+minus visible content and never read. And `tool_use` inputs are not uniformly
+`{command, file_path}` — keying on those renders every `AskUserQuestion` blank.
+
+**Measure before claiming.** Every number in this file came from one of those transcripts.
 
 ## Commits and the changelog
 
