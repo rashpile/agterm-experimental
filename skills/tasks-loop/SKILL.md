@@ -61,16 +61,9 @@ your own run state. Dispatch nothing. `--update` also stops after step 4 — fol
 entirely, say so once in the preflight — `config reconciled against 98c02d0 · current cfb3de5 —
 run /tasks-loop --update` — and carry on. A run reports drift; only `--update` fixes it.
 
-**Who runs the loop.** The orchestrator belongs on the strongest model available, at `high`
-effort. Not a preference: its characteristic mistakes have no undo — closing a session that was
-still working, merging on a worker's word, accepting a claimed revert — and they arrive inside
-otherwise mechanical turns, so there is no cheap turn to spend a weaker model on. Workers are
-disposable and re-runnable from their plan; the orchestrator is the run's only long-lived
-context. **Effort is not the context lever it looks like** — measured across one run, per-turn
-thinking moved ~8% between settings while turn *count* accounted for the growth, which is why
-step 3 spends its care on not taking turns rather than on thinking less per turn. If you can
-tell you are running under something weaker, say so in the preflight and carry on; the user
-should know which verifier they have.
+**Who runs the loop.** Strongest model available, `high` effort — the orchestrator's mistakes
+have no undo and arrive inside otherwise mechanical turns, so there is no cheap turn to spend a
+weaker model on. Running under something weaker: say so in the preflight and carry on.
 
 ## Config — `.tasks-loop/config.md`
 
@@ -151,20 +144,16 @@ its whole duration. This rule has no exceptions.
      (`implement-today-screen-13`, `review-ci-tests-12`). Keep the same slug across every
      session of one task.
 3. **Supervise** — one backgrounded driver `wait` per worker:
-   - **Confirm `idle` before you believe it.** A wait returning `idle` tells you the wait
-     returned. Ask `status` — one line — before acting on it: acting on a false `idle` closes a
-     session that is still working, and nothing brings its context back.
-     - **`status` says busy** → the wait was early. **Re-arm it; that is the entire turn.** No
-       `read`, no `last`, no report. It cost one line of JSON and should cost nothing more.
-     - **`status` agrees** → the payload carries the worker's final message. That is what it
-       *said*.
+   - **Confirm `idle` with `status` before believing it** — acting on a false `idle` closes a
+     worker that is still running.
+     - **busy** → the wait was early. Re-arm; that is the entire turn. No `read`, no report.
+     - **idle** → the payload carries the worker's final message. That is what it *said*.
    - `waiting` → judge the request. Approve read-only and reversible ones; anything
      destructive (force-push, `rm`, migrations, prod mutations) goes to the user. Answer by
      the request **id** in the payload, never by a button's text.
    - `gone` → the worker died. Report it; don't silently respawn.
-   - **Re-arms are the stall clock.** Every third consecutive re-arm on one worker, read `last`
-     once — proving the work is still moving is the only thing that earns a read. Two of those
-     in a row with nothing new *is* "no progress across successive waits".
+   - **Re-arms are the stall clock.** Every third in a row on one worker, read `last` once; two
+     such reads with nothing new is "no progress across successive waits".
    - **Stalled or looping** — no progress across successive waits, or the same thing again —
      → close it, clear the task's in-flight mark, and report. Never retry silently.
 4. **Hand off** — a worker that stopped at a phase it does **not** own is **not finished**. Do
