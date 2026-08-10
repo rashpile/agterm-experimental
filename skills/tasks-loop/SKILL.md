@@ -90,7 +90,7 @@ The trade is deliberate: there is no pinning. If a project needs a frozen copy, 
 
 ## Arguments
 
-`/tasks-loop [--slots N] [--keep] [--auto] [--list] [--status]`
+`/tasks-loop [--slots N] [--keep] [--auto] [--list] [--status] [--update]`
 
 | Parameter | Meaning | Default |
 |---|---|---|
