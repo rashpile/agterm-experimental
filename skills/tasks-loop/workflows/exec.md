@@ -12,6 +12,18 @@ context and ends up reviewing its own work at a size where honest review is impo
 session per task keeps each diff small enough to review and each reviewer's job narrow. The
 plan file carries everything a fresh session needs.
 
+## Plan format
+
+The loop reads the plan mechanically, so phase 2 has to write it that way:
+
+- **`### Task N:`** headings (or `### Iteration N:`). `N` need not be an integer — `2.5` and
+  `2a` are how a review round inserts a task without renumbering the rest.
+- **Checkboxes only inside task sections.** A `- [ ]` in Overview or Success criteria reads as
+  unfinished work and buys an extra iteration that implements nothing.
+- **A `## Validation Commands` section** — what must pass before a task counts as done. These
+  are the plan's own checks; the project's live in the config's `## 6. Test`, and an author runs
+  both.
+
 ## State
 
 **The plan's checkboxes are the state**, committed in the repo. Nothing else tracks progress —
@@ -33,6 +45,10 @@ The config's `## 4. Execute` may set the level outright and wins over the plan.
 Whatever the level, **phase 5 still runs over the whole delivery afterwards.** The inner loop
 catches what a small diff shows; phase 5 catches what only appears across tasks.
 
+(The tools this is adapted from — `planning:exec`, ralphex — review only after every task is
+done. Reviewing inside the loop is the trade made here: more sessions, but each reviewer sees a
+diff small enough to judge honestly.)
+
 ## The loop
 
 Repeat until no `[ ]` remains in any task section:
@@ -44,8 +60,9 @@ Repeat until no `[ ]` remains in any task section:
 3. **Announce it**: task number, title, and its unchecked items, in one block. The board should
    be readable without opening the plan.
 4. **Spawn a fresh author** `task<N>-<slug>-<id>` in the task's worktree. Its prompt carries
-   this task's items only, the config's `## 4. Execute` detail, and the project's checks from
-   `## 6. Test` to run **before** committing. It commits its own work and ticks its own boxes.
+   this task's items only, the config's `## 4. Execute` detail, and the checks to run **before**
+   committing — the plan's `## Validation Commands` and the project's `## 6. Test`. It commits
+   its own work and ticks its own boxes.
 5. **Wait, then re-read the plan.** Boxes ticked → continue. Not ticked → **one retry** with a
    fresh session carrying what the last one left behind. Still not ticked → stop the loop and
    report. Never start the next task on top of a half-finished one.
@@ -64,6 +81,12 @@ preference.
 
 **Stop when**: no boxes remain · a task failed its retry · the iteration count exceeds the
 plan's task count plus retries. A loop that outlives its own plan is a bug, not progress.
+
+**The user may edit the plan between iterations** — that is a feature of checkboxes being the
+state, not a race. Every iteration re-reads the file, so an edited task takes effect on the next
+one, and unticking a finished task's boxes re-runs it with a fresh session. If the user asks to
+change something mid-task, finish or stop the current author first; never edit the plan under a
+running one.
 
 ## Rules
 

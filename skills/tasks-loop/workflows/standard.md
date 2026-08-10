@@ -44,8 +44,10 @@ when skipped. When the project runs this **with the user**, the worker presents 
 recommendation and the 2–3 real decisions, then waits in its session; tell the user which
 session to join.
 
-**2. Plan** — write the plan down where a human can read it. It is what phase 3 reviews and
-what the work is checked against later.
+**2. Plan** — write the plan down where a human can read it. It is what phase 3 reviews and what
+the work is checked against later. Where phase 4 runs the inner loop, the plan is also its state
+machine, so it must follow the format in `exec.md`: `### Task N:` sections, checkboxes **only**
+inside them, and a `## Validation Commands` section.
 
 **3. Plan Review** — a separate session reviews the plan against the task; never the session
 that wrote it. Then the human checkpoint: the plan reaches the user before any code.
