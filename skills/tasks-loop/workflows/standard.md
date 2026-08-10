@@ -100,11 +100,18 @@ it has reached phase 5:
 doc says how it expresses that, and the plan must say what was applied. **The gate is not
 negotiable at any depth**, which is why phase 3 always runs.
 
-**Then the fix cycle.** Findings go to the **still-alive author session**: "Findings are on the
-thread. Verify each against the code: fix confirmed ones and push; dispute false positives as
-replies with evidence. No blind obedience." Author gone → spawn a fresh fixer, same protocol,
-weaker skeptic. The reviewer then answers every dispute in-thread (WITHDRAW / MAINTAIN /
-COMPROMISE) and reviews only the new commits. **Max 3 rounds** — still unresolved, stop and
+**Then the fix cycle. The fixer is whoever has the knowledge** — which is not always the author:
+
+- **One worker wrote the whole delivery** → that session, still parked and alive. It is a real
+  advocate: it knows why the code is the way it is.
+- **A plan's inner loop wrote it** → a **fresh fixer**. The last task's author has no privileged
+  knowledge of the other tasks, only the look of continuity, and partial context produces
+  confident wrong disputes. Close it; spawn a reader with a clean slate.
+
+Either way: "Findings are on the thread. Verify each against the code: fix confirmed ones and
+push; dispute false positives as replies with evidence. No blind obedience." **Evidence is the
+code, the plan and the thread — never recall.** The reviewer then answers every dispute in-thread
+(WITHDRAW / MAINTAIN / COMPROMISE) and reviews only the new commits. **Max 3 rounds** — still unresolved, stop and
 hand the thread to the user; agents don't make that call.
 
 **Gate**, decided inside the reviewer's final pass and not by the orchestrator: every finding

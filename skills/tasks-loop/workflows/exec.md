@@ -33,28 +33,35 @@ first `[ ]` it finds.
 
 ## Review granularity
 
-| Level | Review runs | Over |
+**The plan declares its own review points, and the default is the end.**
+
+| The plan has | Review runs | Over |
 |---|---|---|
-| **per task** (default) | after every task | that task's diff |
-| **per group** | after the last task of a group | the group's diff |
-| **at the end** | once, after all tasks | the whole plan's diff |
+| `## Stage` / `## Group` headings | at each group's last task | that group's diff |
+| a flat task list | once, after the last task | the whole plan's diff |
 
-A group is whatever the plan says it is — the tasks under one `## Stage` / `## Group` heading.
-The config's `## 4. Execute` may set the level outright and wins over the plan.
+The config's `## 4. Execute` may force **per task**, and wins over the plan.
 
-Whatever the level, **phase 5 still runs over the whole delivery afterwards.** The inner loop
-catches what a small diff shows; phase 5 catches what only appears across tasks.
+**Why the end and not per task.** A reviewer plus a fix round roughly triples a task's wall
+time, and tasks cannot run in parallel — a 15-task plan goes from a few hours to most of a day.
+Per-task review buys catching a bad pattern at task 2 instead of meeting fifteen copies of it at
+the end: worth paying for on risky work, not by default. **The gate that always runs per task is
+validation, not review** — correctness is caught immediately, design is batched.
 
-(The tools this is adapted from — `planning:exec`, ralphex — review only after every task is
-done. Reviewing inside the loop is the trade made here: more sessions, but each reviewer sees a
-diff small enough to judge honestly.)
+Grouping is a judgment about which tasks form a coherent unit, so it belongs to the plan, where
+phase 2 wrote it and phase 3 had a human approve it. Not to this doc, and not to the loop.
+
+Whatever the level, **phase 5 still runs over the whole delivery afterwards.** An in-loop review
+sees what a small diff shows; phase 5 sees what only exists across tasks.
 
 ## The loop
 
 Repeat until no `[ ]` remains in any task section:
 
 1. **Re-read the plan.** Take the first task section with unchecked boxes. None left → phase 4
-   is done; hand back to the workflow.
+   is done. **Close the last author** and hand back to the workflow: phase 5's findings span
+   every task, and the session that wrote the last one has no privileged knowledge of the
+   rest — only the look of continuity.
 2. **Record the range start** — `git rev-parse HEAD` on the delivery branch. The review is that
    SHA to HEAD, never wider.
 3. **Announce it**: task number, title, and its unchecked items, in one block. The board should
@@ -99,5 +106,10 @@ running one.
   delivery, not a substitute for this.
 - **Findings reach the author verbatim** — not summarized, filtered, or pre-judged. The author
   decides what is real, against the code.
+- **Every author externalizes its reasoning before it closes.** The commit message says why this
+  code is the way it is; a judgment call the plan did not settle goes back into the plan as a
+  note. A session's memory dies with it, and the fix cycle that comes later can only dispute a
+  false positive with what was written down while it was still true. This is what replaces the
+  long-lived author — not a weaker version of it, a durable one.
 - A task that turns out to be wrong, already done, or impossible is **reported, not skipped
   silently**: say so, leave its boxes unticked, and let the user rule.
