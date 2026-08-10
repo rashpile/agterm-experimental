@@ -122,6 +122,11 @@ its whole duration. This rule has no exceptions.
      onward, each carrying its detail from the config's `# Workflow` section. The thread is
      where the user already answered the task's open questions; a worker sent only the body
      re-asks what was decided. Write the prompt to a file: driver `spawn`, then `say --file`.
+   - **Pass the phase's model**, if its config body sets one — but **only when the driver's
+     contract documents the option**. A model override is semantic, not cosmetic: a driver that
+     cannot apply it must reject the spawn rather than swallow it, so never pass it blind.
+     Models configured and the driver has no such option → say so once in the preflight and run
+     its defaults. Silently giving a phase the wrong model is worse than not setting one.
    - **Name the session** `<role>-<slug>-<id>`, where `<slug>` is 2–3 kebab words from the
      title, so the board is readable without opening the tracker
      (`implement-today-screen-13`, `review-ci-tests-12`). Keep the same slug across every

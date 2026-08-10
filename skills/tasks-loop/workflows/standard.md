@@ -38,6 +38,13 @@ checkpoints. It may not hand a phase to a different owner: `use skill X` under
 should run. A body that reads as reassigning a phase is detail written loosely, not a dispatch
 instruction. Apply it inside the owner the table gives, and say in the plan how you read it.
 
+**A phase body may set the model** — `model: opus:xhigh` on a line of its own, `model[:effort]`
+with effort one of `low` `medium` `high` `xhigh` `max`. It is the clearest case of tuning HOW:
+it changes neither who runs the phase nor which gate applies. No line → the driver's default;
+never guess a model. **A session runs its own phase's model** — the inner loop's per-task
+reviewer is a review, so it takes phase 4's, not phase 3's, or a cheap author ends up reviewing
+its own work.
+
 ## What each phase means
 
 **1. Brainstorm** — settle the approach before any code: the real options and their trade-offs.
