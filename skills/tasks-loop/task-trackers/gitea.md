@@ -89,6 +89,13 @@ loop:  discuss → implement|closed · implement → review · review clean → 
 and told the user. Dropping `pending` is the entire approval gesture. So a bare `review` always
 means "review work still owed" — a finished review never leaves `review` behind.
 
+**Naming a task is a triage instruction.** An unlabelled task is not dispatchable on its own,
+but a user who names one — "run 6" — has triaged it by naming it. Infer the label from the
+task's body and thread, apply it, and **say what you inferred and what you rejected**: "#6 →
+`implement`; the thread carries a settled shape, so not `discuss`." Two limits: never infer a
+label for a task the user did not name, and **never infer `done`** — that label alone authorizes
+a merge and a deploy, and no two-word instruction carries that.
+
 - Set: `tea issues edit <idx> --add-labels <new> --remove-labels <old>`
 - Every dispatch adds `progress`; every completion removes it.
 - Transitions the loop performs: `implement` → `review` once the delivery is open ·
