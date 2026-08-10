@@ -37,15 +37,20 @@ Inner-loop review follows the plan's own stage boundaries, or runs at the end. W
 model: opus:high
 full          # full (1 internal + 2 external codex + 3 final) · standard (1 + 3) · simple (3 only)
 
-## 5. Test
-`cd app && npx tsc --noEmit; npm run lint; npx vitest run`
-
-## 6. Push
+## 5. Push
 Delivery only — the orchestrator merges after the ship approval.
 
-## 7. Deploy
+## 6. Deploy
 Always project-specific. Omit this heading entirely and the loop merges and closes without
 deploying, and says so.
+
+# Checks
+
+What must pass before any change counts as done. Not a phase — a predicate the author runs
+before committing, the review gate requires, and the ship worker re-verifies before merging.
+A plan may add its own in `## Validation Commands`; both run.
+
+`cd app && npx tsc --noEmit; npm run lint; npx vitest run`
 
 # Notes
 

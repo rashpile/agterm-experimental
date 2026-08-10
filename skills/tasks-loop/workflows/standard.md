@@ -16,16 +16,20 @@ phase 3 finds a plan with task checkboxes.
 | 2 | Plan | task worker, checked by a reviewer that did not write it, then the user | the plan is approved |
 | 3 | Execute | task worker — with a plan, **one fresh worker per plan task** | the change is committed |
 | 4 | Code Review | **separate review sessions**; the task worker answers as author | every finding is terminal |
-| 5 | Test | task worker | the project's checks pass |
-| 6 | Push | task worker; the orchestrator merges | delivered, then merged |
-| 7 | Deploy | ship worker | shipped and verified |
+| 5 | Push | task worker; the orchestrator merges | delivered, then merged |
+| 6 | Deploy | ship worker | shipped and verified |
 
-**This column is the dispatch rule, not a description.** The task worker runs 1, 2, 3, 5 and 6.
+**This column is the dispatch rule, not a description.** The task worker runs 1, 2, 3 and 5.
 Phase 4 is the orchestrator's to dispatch into its own session(s), and a task worker that
 reaches it **stops and reports** instead of reviewing itself.
 
-A phase is a **unit of dispatch**. Reviewing a plan is not one — it happens inside phase 2, in a
-context that did not write the plan, and needs no session of its own.
+**Every phase produces an artifact or a state change** — a settled approach, a plan, commits, a
+verdict, a delivery, a shipped system. That is the test for whether something belongs in this
+table at all. Two things that look like phases and are not: reviewing a plan (it happens inside
+phase 2, in a context that did not write the plan) and **running the checks** — a predicate over
+the other phases, not a step between them. The checks live in the config's `# Checks` section and
+are run by whoever needs them: the author before committing, the review gate, the ship worker
+before merging.
 
 **The project decides which phases it runs.** The config's `# Workflow` section lists them: a
 phase with no heading there is skipped; a heading not in this table is a custom phase, run in
@@ -93,13 +97,10 @@ runs this phase as a single worker.
 **4. Code Review** — the legs below. The reviewer never fixes; the author never judges its own
 verdict.
 
-**5. Test** — run the project's own checks (its config section names them). Red is not a phase
-outcome; it is a return to phase 3.
-
-**6. Push** — deliver through the tracker's review mechanism. Never force-push, never push to
+**5. Push** — deliver through the tracker's review mechanism. Never force-push, never push to
 the default branch. **Merging is the orchestrator's**, and only after the ship approval.
 
-**7. Deploy** — always project-specific. No `## 7. Deploy` in the config → merge and close, but
+**6. Deploy** — always project-specific. No `## 6. Deploy` in the config → merge and close, but
 do not deploy, and report "deploy not configured".
 
 ## Phase 4 — review legs
@@ -163,7 +164,7 @@ they conflict, the newest user comment wins. Omit if there is none.>
 
 Rules:
 - You are in <cwd>. Follow the project's CLAUDE.md.
-- Phases you run: <the enabled task-worker phases, from <entry> onward — 1, 2, 3, 5, 6 — each
+- Phases you run: <the enabled task-worker phases, from <entry> onward — 1, 2, 3, 5 — each
   with the project's detail from its config section>.
 - Phases you do NOT run: <any enabled phase the table gives to someone else>. Stop at each and
   report WAITING. **Phase 4 especially: you never review your own work.** A separate session
@@ -185,7 +186,7 @@ once the worker has presented its context, `say <session> "/rc worker:<session-n
 tell them. **Always label it with the session name, never a bare `/rc`** — otherwise the
 sessions are indistinguishable on the phone. Claude-specific; skip it for other agents.
 
-## Ship flow — phase 7, end of run
+## Ship flow — phase 6, end of run
 
 Delegated like everything else: merges, image builds and deploys are minutes of wall time that
 would stop the orchestrator answering the user.
@@ -193,7 +194,7 @@ would stop the orchestrator answering the user.
 Collect every task the tracker reports as ship-ready and dispatch **one** ship worker (session
 `ship-<id>[-<id>…]`, main checkout, takes a slot): for each delivery in order verify the checks
 are green and squash-merge; after **all** merges, wait for the final artifact build, run the
-config's `## 7. Deploy` **once**, verify it, close each task, report what shipped.
+config's `## 6. Deploy` **once**, verify it, close each task, report what shipped.
 
 **Clean up each merged delivery — the branch, not just the worktree.** A squash-merge leaves the
 branch behind and **not** an ancestor of the default branch, so `git branch --merged` will not

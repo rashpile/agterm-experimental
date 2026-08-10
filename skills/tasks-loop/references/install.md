@@ -55,6 +55,12 @@ of worker is told.
 
   `codex` missing from step 1 → don't offer `full`; say why. Configuring a leg that cannot run
   is worse than not offering it.
+- **Checks** — the project's typecheck / lint / test commands, for the `# Checks` section. Not a
+  phase: a predicate the author runs before committing, the review gate requires, and the ship
+  worker re-verifies before merging. Read the project's README or Makefile first and propose
+  what you found rather than asking cold.
+- **Deploy** — how this project ships, if it does. **No answer means no `## 6. Deploy` heading**,
+  and the loop merges and closes without deploying, and says so. Never write the heading empty.
 
 ## 3. Driver
 
@@ -99,10 +105,10 @@ meant to be tuned per project. Tell the user they can edit, add or delete any of
 ## 6. Write the config
 
 `.tasks-loop/config.md` from `references/config.md`: the frontmatter, then a `# Workflow`
-section with one `## <n>. <Phase>` heading per selected phase, then `# Notes`.
+section with one `## <n>. <Phase>` heading per selected phase, then `# Checks`, then `# Notes`.
 
 - **A skipped phase gets no heading** — absence is the off switch.
-- **Never write an empty `## 7. Deploy`**: it reads as configured when it isn't. Omit it and the
+- **Never write an empty `## 6. Deploy`**: it reads as configured when it isn't. Omit it and the
   loop merges and closes without deploying, and reports that.
 - A heading with an empty body is fine — the workflow's own description applies until someone
   fills it in.
@@ -111,8 +117,8 @@ section with one `## <n>. <Phase>` heading per selected phase, then `# Notes`.
 
 **Migrating from tasks-loop v1:** an existing `.claude/tasks-loop.md` already holds most of
 this — its `implementation` section is a phase list in prose. Split it across the phase headings
-(brainstorm/plan/plan-checkpoint → `## 1.` and `## 2.`, verification commands → `## 5. Test`,
-`deploy` → `## 7. Deploy`), then delete the old file.
+(brainstorm/plan/plan-checkpoint → `## 1.` and `## 2.`, verification commands → `# Checks`,
+`deploy` → `## 6. Deploy`), then delete the old file.
 
 ## 7. Finish
 

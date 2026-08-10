@@ -21,7 +21,7 @@ The loop reads the plan mechanically, so phase 2 has to write it that way:
 - **Checkboxes only inside task sections.** A `- [ ]` in Overview or Success criteria reads as
   unfinished work and buys an extra iteration that implements nothing.
 - **A `## Validation Commands` section** — what must pass before a task counts as done. These
-  are the plan's own checks; the project's live in the config's `## 5. Test`, and an author runs
+  are the plan's own checks; the project's live in the config's `# Checks`, and an author runs
   both.
 
 ## State
@@ -68,7 +68,7 @@ Repeat until no `[ ]` remains in any task section:
    be readable without opening the plan.
 4. **Spawn a fresh author** `task<N>-<slug>-<id>` in the task's worktree. Its prompt carries
    this task's items only, the config's `## 3. Execute` detail, and the checks to run **before**
-   committing — the plan's `## Validation Commands` and the project's `## 5. Test`. It commits
+   committing — the plan's `## Validation Commands` and the project's `# Checks`. It commits
    its own work and ticks its own boxes.
 5. **Wait, then re-read the plan.** Boxes ticked → continue. Not ticked → **one retry** with a
    fresh session carrying what the last one left behind. Still not ticked → stop the loop and
@@ -102,8 +102,8 @@ running one.
 - **Never tick a checkbox yourself.** Authors tick their own; that is the only signal this loop
   reads. An orchestrator that ticks one has destroyed its own evidence.
 - **A failing check is not a finished task.** Each author runs the project's checks before
-  committing, so task N+1 never starts on a red tree. Phase 5 is the final pass over the whole
-  delivery, not a substitute for this.
+  committing, so task N+1 never starts on a red tree. The review gate re-runs them over the
+  whole delivery later; that is not a substitute for this.
 - **Findings reach the author verbatim** — not summarized, filtered, or pre-judged. The author
   decides what is real, against the code.
 - **Every author externalizes its reasoning before it closes.** The commit message says why this
