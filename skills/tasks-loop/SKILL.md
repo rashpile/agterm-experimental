@@ -133,13 +133,19 @@ its whole duration. This rule has no exceptions.
    - `gone` → the worker died. Report it; don't silently respawn.
    - **Stalled or looping** — no progress across successive waits, or the same thing again —
      → close it, clear the task's in-flight mark, and report. Never retry silently.
-4. **Complete** — **verify the deliverable exists** through the tracker, never on the
+4. **Hand off** — a worker that stopped at a phase it does **not** own is **not finished**. Do
+   not close it and do not drop its workspace. **Park it**: leave the session alive and idle — a
+   parked session costs no slot, and it is the only context that knows why the code is the way
+   it is. Then dispatch that phase's owner into its own session per the workflow doc, and when
+   that session produces a result, hand it to the parked worker and let it resume. Step 5
+   applies only once the last phase the worker owns is done.
+5. **Complete** — **verify the deliverable exists** through the tracker, never on the
    worker's word. Then advance the phase per the workflow doc, close the session, drop its
    workspace, and dispatch the next queued task. A delivery branch is **not** part of the
    workspace — it outlives the worker and is removed only once the work has landed, by whatever
    the workflow doc says. With `--keep`: leave session and workspace, and list them in the
    summary.
-5. **Summary** — per task: what happened, links, what now waits on the user, what needs triage.
+6. **Summary** — per task: what happened, links, what now waits on the user, what needs triage.
 
 ## Slots
 

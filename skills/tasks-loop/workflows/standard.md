@@ -74,6 +74,15 @@ Three of them; the config's `## 5. Code Review` says how deep this project goes.
 | **standard** | 1 + 3 — no external model |
 | **simple** | 3 only — one pass and the gate |
 
+**The orchestrator dispatches this phase — the author never does.** When the task worker reports
+it has reached phase 5:
+
+1. **Park the author.** Leave its session alive and idle; it is about to be the fixer.
+2. **Spawn `review-<slug>-<id>`** on a worktree of the delivery branch and `say` it the resolved
+   absolute path of `review.md`, plus which delivery to review. It reads `.tasks-loop/agents/*.txt`
+   itself — never inline agent prompts into the message.
+3. **At `full`, spawn the external leg in parallel**, as its own session.
+
 1 and 2 run in parallel over the same diff. A task may ask for a different depth — the tracker
 doc says how it expresses that, and the plan must say what was applied. **The gate is not
 negotiable at any depth**, which is why phase 3 always runs.
