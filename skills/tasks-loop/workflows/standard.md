@@ -32,6 +32,25 @@ phase with no heading there is skipped; a heading not in this table is a custom 
 the position its number gives it. A heading's body is the project's detail for that phase — it
 sharpens the description below, it does not replace it.
 
+**The project decides which phases run; the worker decides whether an enabled phase applies to
+this task.** A phase earns its place on the average task, not on every one. Skipping one that
+does not apply is correct work, not a shortcut. Two conditions:
+
+- **Declare it in advance, with the reason** — in the plan if there is one, in the delivery if
+  not. A skipped phase nobody can see is indistinguishable from a forgotten one.
+- **Only ever "does this phase apply?"** Never who runs it, never a gate.
+
+**Never a judgment call**, because these exist precisely because judgment fails under pressure:
+the author never reviews its own work · checks green before a merge · the ship approval · the
+3-round dispute escalation · every Safety rule in the skill.
+
+| Rationalization | Reality |
+|---|---|
+| "The diff is small, I'll review it myself" | Size was never the reason for the separation. |
+| "A reviewer would find nothing here" | Then it costs one session and finds nothing. |
+| "The user is watching anyway" | Watching is not approving. |
+| "This project is different" | The config is where a project says how it differs. If it doesn't say so, it doesn't. |
+
 **A phase body tunes HOW, never WHO.** It may name the commands, the conventions, the depth, the
 checkpoints. It may not hand a phase to a different owner: `use skill X` under
 `## 4. Code Review` does not make the author its own reviewer — it names what **the reviewer**
