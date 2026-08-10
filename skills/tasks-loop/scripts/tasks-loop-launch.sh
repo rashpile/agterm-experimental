@@ -5,11 +5,15 @@
 #   menu 1:  default | auto | keep | list | remote   — "default" runs bare /tasks-loop immediately
 #   pick an item -> next menu: run (with selection so far) | the items not yet added | clear
 #   "run" executes; "clear" resets to menu 1; cancelling any menu aborts silently.
-# auto/keep become /tasks-loop flags; "remote" instead starts claude itself with
-# --remote-control tasks-loop, so the orchestrator is steerable from claude.ai/phone.
-# Then: spawn a fresh claude session in the current workspace at the current session's
-# cwd (via agent-ctl.sh, which carries the prompt-suggestion kill and ready-marker wait),
-# submit "/tasks-loop <flags>", select the new session.
+# auto/keep/list become /tasks-loop flags; "remote" instead spawns the orchestrator with Remote
+# Control on, so it is steerable from claude.ai/phone.
+# Then: spawn a fresh claude session through the AGENT DRIVER in the current workspace at the
+# current session's cwd, submit "/tasks-loop <flags>", select the new session.
+#
+# The driver is the same one the skill runs on (config.md `agent-driver-cmd`) and it owns what
+# this script used to hand-roll: the prompt-suggestion kill, spawn-blocks-until-ready, and a
+# CONFIRMED submit (it re-presses Enter when the `/rc · Enter to view` affordance eats the
+# first one — which is exactly what a --remote orchestrator draws).
 #
 # Keymap line (leader chord, palette name "Tasks loop"):
 #   command "Tasks loop"  ctrl+b>a>l  $HOME/.claude/skills/tasks-loop/scripts/tasks-loop-launch.sh
@@ -17,11 +21,18 @@
 # Failures surface as a desktop notification (a keymap command has no terminal).
 
 PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
-CTL="$HOME/.claude/skills/orchestrating-agterm-agents/scripts/agent-ctl.sh"
+DRIVER="${TASKS_LOOP_DRIVER:-$HOME/.config/agent-driver/bash-claude-agterm/claude-agterm}"
 
 fail() {
   agtermctl notify "$1" --title "tasks-loop" 2>/dev/null
   exit 1
+}
+
+# The driver answers one JSON line; a failure carries {"error":…,"message":…}. A notification has
+# no room for the envelope — lift the message out, fall back to the whole line.
+drv_fail() {  # drv_fail <what> <driver output>
+  msg=$(printf '%s' "$2" | sed -n 's/.*"message":"\([^"]*\)".*/\1/p' | head -1)
+  fail "$1: ${msg:-$2}"
 }
 
 flags=""
@@ -54,18 +65,39 @@ while :; do
   esac
 done
 
-ws="${AGT_WORKSPACE_ID:-active}"
-cwd="${AGT_SESSION_PWD:-$HOME}"
+[ -x "$DRIVER" ] || fail "agent driver not found or not executable: $DRIVER"
 
-if [ "$has_remote" = 1 ]; then
-  # agent-ctl's default spawn command (prompt-suggestion triple-kill) + --remote-control.
-  # Keep in sync with agent-ctl.sh spawn.
-  sid=$("$CTL" spawn "$ws" "tasks-loop" "$cwd" \
-    "zsh -ic 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --settings \"{\\\"promptSuggestionEnabled\\\": false}\" --prompt-suggestions false --remote-control tasks-loop'") \
-    || fail "spawn failed (see agent-ctl.sh)"
-else
-  sid=$("$CTL" spawn "$ws" "tasks-loop" "$cwd") || fail "spawn failed (see agent-ctl.sh)"
-fi
-"$CTL" ready "$sid" >/dev/null || fail "claude not ready in tasks-loop session (usage limit / login?)"
-"$CTL" say "$sid" "/tasks-loop$flags" >/dev/null || fail "could not submit /tasks-loop"
-agtermctl session select "$sid" >/dev/null 2>&1
+# A keymap command is launched by agterm, not by a session's shell, so it gets $AGT_WORKSPACE_ID
+# and NOT the $AGTERM_WORKSPACE_ID the driver defaults to. Pass it when we have it; when this is
+# run from a shell inside a session instead, leave it out and let that default apply.
+ws="${AGT_WORKSPACE_ID:-}"
+cwd="${AGT_SESSION_PWD:-$PWD}"
+
+# The driver addresses a worker by NAME and resolves it across the whole tree, first match wins.
+# One "tasks-loop" session per project is the normal state here, so a fixed name would have sent
+# this run's turn into the OLDEST one — another repo's orchestrator — with nothing on screen to
+# say so. Claim a name no live session answers to.
+name="tasks-loop"
+taken=$(agtermctl tree --json 2>/dev/null | jq -r '.result.tree.workspaces[].sessions[].name' 2>/dev/null)
+n=1
+while printf '%s\n' "$taken" | grep -qxF "$name"; do
+  n=$((n + 1)); name="tasks-loop-$n"
+done
+
+set -- spawn --name "$name" --cwd "$cwd"
+[ -n "$ws" ] && set -- "$@" --workspace "$ws"
+# An explicit label, because the driver's default is worker:<name>: this session ORCHESTRATES
+# workers, and on a phone it has to read apart from the workers it spawns.
+[ "$has_remote" = 1 ] && set -- "$@" --remote "$name"
+
+out=$("$DRIVER" "$@" 2>&1) || drv_fail "spawn failed" "$out"
+out=$("$DRIVER" say "$name" "/tasks-loop$flags" 2>&1) \
+  || drv_fail "session '$name' is up but /tasks-loop was not submitted" "$out"
+
+# spawn hands back the name — agterm ids are the driver's business, not its contract — and
+# agtermctl targets ids only (a name is "no such session"). Resolve the one we just named; it is
+# unique by construction. Best effort: the run is already under way either way.
+sid=$(agtermctl tree --json 2>/dev/null \
+  | jq -r --arg n "$name" '[.result.tree.workspaces[].sessions[] | select(.name == $n) | .id][0] // empty' 2>/dev/null)
+[ -n "$sid" ] && agtermctl session select --target "$sid" >/dev/null 2>&1
+exit 0   # the run is started; a missed lookup is not a failed launch
