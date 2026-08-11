@@ -1,9 +1,8 @@
 # Install — write `.tasks-loop/config.md`
 
-Run this when `./.tasks-loop/config.md` does not exist. **Nothing is copied into the project**
-except the review agents: bundled tracker and workflow docs are read where they live, so the
-project stores only its own config and picks up skill updates for free. Paths below are
-relative to this skill's directory.
+Run this when `./.tasks-loop/config.md` does not exist. Bundled tracker and workflow docs are
+read where they live, so the project stores its config, copied review agents, and an ignored
+local session journal. Paths below are relative to this skill's directory.
 
 ## 1. Discover — exactly this much
 
@@ -121,12 +120,24 @@ this — its `implementation` section is a phase list in prose. Split it across 
 (brainstorm/plan/plan-checkpoint → `## 1.` and `## 2.`, verification commands → `# Checks`,
 `deploy` → `## 6. Deploy`), then delete the old file.
 
-## 7. Record and finish
+## 7. Ignore local session state
+
+Ensure the project root's `.gitignore` contains this exact rooted entry, adding it without
+disturbing existing rules:
+
+```gitignore
+/.tasks-loop/last-session
+```
+
+The journal is created by the first run. Never commit it and never ignore the whole
+`.tasks-loop/` directory: the config and review agents belong in version control.
+
+## 8. Record and finish
 
 Write `skill-rev` into the frontmatter — the topmost `MIGRATIONLOG.md` entry's rev, or the skill's
 current rev if there are none — plus `driver-rev` when the driver is a git checkout rather than
 a symlink into a working tree. That marker is what later lets `--update` know which migration-log
 entries a project has already seen.
 
-Commit `.tasks-loop/` — it is project configuration. Show the user the finished config, then
-resume at Startup step 1.
+Commit the project configuration under `.tasks-loop/` plus the `.gitignore` change; exclude
+`last-session`. Show the user the finished config, then resume at Startup step 1.

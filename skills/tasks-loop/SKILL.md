@@ -1,7 +1,7 @@
 ---
 name: tasks-loop
 description: Use when asked to work a project's task backlog with parallel agents — "run the tasks loop", "tasks-loop", "process the open issues", "dispatch agents on the backlog", "work the backlog". Reads .tasks-loop/config.md for the project's tracker, agent driver and workflow.
-argument-hint: "[--slots N] [--keep] [--auto] [--list] [--status] [--update]"
+argument-hint: "[--slots N] [--keep] [--auto] [--list] [--resume] [--status] [--update]"
 ---
 
 # Tasks Loop
@@ -45,17 +45,21 @@ a config body supplies a phase's detail, never its owner.
 3. Read the driver's contract: `<agent-driver-cmd> skill`. Non-zero exit → stop and tell the
    user the driver is broken; do not fall back to another way of spawning agents.
 4. Read the config body — the project's overrides of anything above.
-5. Print one preflight line, then the dispatch plan — with `--list`, the plan is replaced by
+5. Apply **Session journal** below. Do this on every invocation, including `--status` and
+   `--update`, before reporting or changing task state.
+6. Print one preflight line, then the dispatch plan — with `--list`, the plan is replaced by
    the selection question:
 
-   `slots=N keep=on|off auto=on|off · tracker <name> (bundled|project) · workflow <name> (bundled|project) · driver <name> · deploy: configured|not configured · <the tracker doc's identity fragment> · <usage, if the driver reports it>`
+   `slots=N keep=on|off auto=on|off resume=on|off · tracker <name> (bundled|project) · workflow <name> (bundled|project) · driver <name> · deploy: configured|not configured · <the tracker doc's identity fragment> · <usage, if the driver reports it>`
 
    It doubles as the parameter reference: the user sees what knobs exist and what this run
    will do before it does it.
 
-`--status` stops after step 4: answer from the status instruction the tracker doc names, plus
-your own run state. Dispatch nothing. `--update` also stops after step 4 — follow
-`references/update.md` instead of dispatching.
+`--status` stops after step 5: answer from the status instruction the tracker doc names, plus
+your own run state. Dispatch nothing. `--update` also stops after step 5 — follow
+`references/update.md` instead of dispatching. Before either returns, append `ALL DONE` if this
+invocation started a fresh journal. If it inspected a resumed unfinished run, leave that journal
+unfinished.
 
 **Drift**: if `skill-rev` is recorded and differs from the skill's current rev, or is absent
 entirely, say so once in the preflight — `config reconciled against 98c02d0 · current cfb3de5 —
@@ -87,14 +91,41 @@ session. The loop runs unchanged apart from selection and state — `none.md` sa
 tracker responsibility degrades, in the same sections every tracker doc uses. Ask for a task
 rather than going looking for work.
 
-The project holds **only** `config.md` — plus any doc it chose to write itself. A bundled doc
-is read where it lives, never copied, so fixing a bundled tracker fixes every project at once.
-The trade is deliberate: there is no pinning. If a project needs a frozen copy, it points
-`task-tracker` at its own file.
+The project commits `config.md`, copied review agents, and any doc it chose to write itself.
+`.tasks-loop/last-session` is local runtime state and must be gitignored. A bundled doc is read
+where it lives, never copied, so fixing one fixes every project at once. The trade is deliberate:
+there is no pinning. A project that needs a frozen copy points at its own file.
+
+## Session journal — `.tasks-loop/last-session`
+
+This ignored append-only file is the orchestrator's durable run state. After every successful
+coordination action, append one physical line saying what happened. Record a UTC timestamp, an
+event name, and compact `key=value` fields; never put task bodies, prompts, credentials, or
+multi-line text in it. Every worker event records at least `worker`, `task`, `phase`, `role`,
+`cwd`, and its new state. Record enough events to reconstruct the effective arguments, selected
+queue, task phase, live and parked workers, waits, decisions, cleanup, and completion.
+
+Before every invocation, read its last 10 lines when the file exists:
+
+- Missing, empty, or ending with the exact standalone line `ALL DONE` → truncate it and start a
+  new journal with a `START` line carrying the effective arguments.
+- Unfinished and `--resume` is absent → ask the user to **resume the previous session** or
+  **drop it**. Resume behaves exactly as `--resume`; drop truncates it and starts a fresh journal.
+- Unfinished and `--resume` is present → read the whole file, reconstruct the run, then reconcile
+  every recorded worker name against driver `list`/`status` and every task against the tracker.
+  The journal tells you what to check; the driver and tracker tell you what is true. Continue
+  through Recovery, never blindly respawn. Recorded effective arguments continue unless an
+  explicit argument on this invocation overrides them.
+
+Append only after an action succeeds. A fresh unrecorded worker found during resume is also
+reconciled by task and workspace before any cleanup. When every selected task is terminal, no
+worker is busy, parked, or waiting, and cleanup is complete, append `ALL DONE` with no timestamp
+or text after it. A paused, blocked, crashed, or user-gated run is unfinished and must not write
+that sentinel.
 
 ## Arguments
 
-`/tasks-loop [--slots N] [--keep] [--auto] [--list] [--status] [--update]`
+`/tasks-loop [--slots N] [--keep] [--auto] [--list] [--resume] [--status] [--update]`
 
 | Parameter | Meaning | Default |
 |---|---|---|
@@ -102,6 +133,7 @@ The trade is deliberate: there is no pinning. If a project needs a frozen copy, 
 | `--keep` | Don't close worker sessions or drop their workspaces on completion — leave them for the user to read. Cleaned up on the user's say-so or by the next run's Recovery. | off |
 | `--auto` | Fully-automatic preference. Workflow and config may define human checkpoints and what `--auto` does to them (typically: skip). It never overrides a Safety rule or a gate. Pass its state to workers. | off |
 | `--list` | Don't dispatch automatically: show the actionable tasks and what would be dispatched for each, ask the user which to process, then run only those. Unchosen tasks are left untouched — not claimed, not relabeled. | off |
+| `--resume` | Continue the unfinished run recorded in `.tasks-loop/last-session`, reconciling its workers and tasks before dispatch. | off |
 | `--status` | Answer status from run state and stop. | off |
 | `--update` | Verify the project against the current docs, reconcile what drifted, record what it was reconciled against. Follow `references/update.md`. Dispatches nothing, and refuses while anything is in flight. | off |
 
@@ -188,6 +220,7 @@ A `# Reporting` section in the config body replaces this one.
    the workflow doc says. With `--keep`: leave session and workspace, and list them in the
    summary.
 6. **Summary** — per task: what happened, links, what now waits on the user, what needs triage.
+   If the run meets the session journal's completion condition, append `ALL DONE` last.
 
 ## Slots
 

@@ -19,9 +19,10 @@ own repo, this file moves to the root unchanged.
 | `references/config.md` | installer | install |
 | `MIGRATIONLOG.md` | orchestrator | `--update` |
 | `agents/*.txt` | review worker | copied into the project at install |
+| project `.tasks-loop/last-session` | orchestrator | every invocation; local and gitignored |
 
-The first three are loaded on every run of every project. Length there is a real cost; length
-in the rest is not. **Cut by load frequency, not by size.**
+The first three bundled docs are loaded on every run of every project. Length there is a real
+cost; length in the rest is not. **Cut by load frequency, not by size.**
 
 ## Design invariants
 
@@ -116,6 +117,9 @@ minus visible content and never read. And `tool_use` inputs are not uniformly
 
 - Subject: `tasks-loop: <lowercase, imperative>`. The body carries the reasoning the doc does
   not.
+- **Do not copy a migration action into `references/update.md`.** New-project setup belongs in
+  `references/install.md`; an existing project's action belongs only in `MIGRATIONLOG.md`;
+  `references/update.md` owns the generic mechanism that applies those entries.
 - **A `MIGRATIONLOG.md` entry exists only when an existing project must act.** New wording, better
   reasoning, a clearer example: none of it belongs there. `--update` applies every entry above
   a project's recorded `skill-rev`, so the file is a work list, not a history.

@@ -19,9 +19,10 @@ The loop reads the plan mechanically, so phase 2 has to write it that way:
 
 ## State
 
-**The plan's checkboxes are the state**, committed in the repo. Nothing else tracks progress —
-no signals, no run file, no memory held in the orchestrator. Re-read the plan at the top of
-every iteration, because the last author changed it. A restarted orchestrator resumes at the
+**The plan's checkboxes are the task-progress state**, committed in the repo. The local
+`.tasks-loop/last-session` journal tracks orchestration — worker names, waits and handoffs — but
+never replaces those checkboxes. Re-read the plan at the top of every iteration, because the
+last author changed it. After reconciling the journal, a restarted orchestrator resumes at the
 first `[ ]` it finds.
 
 **Read it from the committed ref, never from a worker's checkout** —
