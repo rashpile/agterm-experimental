@@ -23,6 +23,15 @@ Entry shape:
 
 ---
 
+## 4e124c0 — runs gained a local resumable session journal
+
+**Action:** add `/.tasks-loop/last-session` to the project root's `.gitignore`. Do not ignore
+the whole `.tasks-loop/` directory; its config and review agents remain committed.
+
+**Why:** the orchestrator now records worker names, handoffs, and run progress there so a later
+`/tasks-loop --resume` can reconstruct and continue an interrupted run. The journal is local
+runtime state, not project configuration.
+
 ## 30cc35d — the squash-verify recipe reported clean merges as lost commits
 
 **Action:** if the config's `## 5. Push` (or its deploy/ship section) spells out its own branch
