@@ -788,6 +788,86 @@ fi
 
 rm -rf "$root"
 
+# --- 9. a failed fork must SAY so through a channel that actually works ----
+#     Every failure path in claude-btw.sh used to report only via `agtermctl
+#     notify`, i.e. a macOS notification. When agterm holds no notification
+#     authorization macOS drops those silently -- agterm logs "posting
+#     banner" and nothing ever appears. Observed live: the app was absent
+#     from all 97 entries in com.apple.ncprefs, so a fork that failed for a
+#     real, diagnosable reason ("no Claude registered in this pane") was
+#     indistinguishable from the keybinding never firing at all. That is the
+#     worst possible failure mode for a feature whose whole interface is one
+#     chord.
+#
+#     A HUD goes over the control socket instead, so it needs no macOS
+#     permission, and it is passive -- the session keeps focus and stays
+#     typable. Both channels are posted: the HUD is the one that works today,
+#     notify still reaches anyone who has granted authorization.
+#
+#     BTW_HUD_SECONDS=0 disables the background auto-close so these
+#     assertions see a fixed call log rather than racing a `sleep`.
+print -r -- ""
+print -r -- "failure reporting:"
+
+root=$(mktemp -d); mkdir -p "$root/home"
+h=$root/home
+run_install "$root" >/dev/null
+HOTKEY=$h/.config/agterm-projects/claude-btw.sh
+
+# 9a. the common failure: nothing registered for this tab+pane. Exits 0 on
+#     purpose (agterm shows its own failure banner on a non-zero exit, and
+#     "you pressed this in a tab with no Claude" is not a crash), which is
+#     exactly why it needs to report for itself.
+log=$root/calls-unregistered.log
+out=$(HOME=$h AGTERMCTL=$HERE/fake-agtermctl.sh FAKE_CALL_LOG=$log BTW_HUD_SECONDS=0 \
+        zsh -f "$HOTKEY" sid1 left /tmp/proj myproj 2>&1)
+assert_eq hud-unregistered-exit-0 0 "$?"
+calls=$(<"$log")
+assert_contains hud-unregistered-posts-hud "$calls" "hud"
+assert_contains hud-unregistered-carries-reason "$calls" "no Claude registered in this pane"
+assert_contains hud-unregistered-still-notifies "$calls" "notify"
+# The message must land on the tab the chord was pressed in. Untargeted, it
+# goes to whatever agterm has selected -- which for a background session is
+# someone else's tab entirely.
+assert_contains hud-unregistered-targets-pressed-session "$calls" "sid1"
+
+# 9b. registered, but the transcript is gone -- the other failure observed
+#     live (2 of 13 sessions). This path exits 1 via btw_die, and must still
+#     have said why before it did.
+mkdir -p "$h/.claude/agterm/tabs"
+print -r -- '{"claude_session_id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","cwd":"/tmp/proj"}' \
+  > "$h/.claude/agterm/tabs/sid2.left"
+log=$root/calls-notranscript.log
+HOME=$h AGTERMCTL=$HERE/fake-agtermctl.sh FAKE_CALL_LOG=$log BTW_HUD_SECONDS=0 \
+  zsh -f "$HOTKEY" sid2 left /tmp/proj myproj >/dev/null 2>&1
+assert_eq hud-no-transcript-exit-1 1 "$?"
+calls=$(<"$log")
+assert_contains hud-no-transcript-posts-hud "$calls" "hud"
+assert_contains hud-no-transcript-carries-reason "$calls" "no transcript"
+
+# 9c. a fork that WORKS must stay quiet -- a HUD on every successful fork
+#     would be noise over the tab the user is about to leave.
+mkdir -p "$h/.claude/projects/proj"
+: > "$h/.claude/projects/proj/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl"
+log=$root/calls-success.log
+HOME=$h AGTERMCTL=$HERE/fake-agtermctl.sh FAKE_CALL_LOG=$log BTW_HUD_SECONDS=0 \
+  zsh -f "$HOTKEY" sid2 left /tmp/proj myproj >/dev/null 2>&1
+assert_eq hud-success-exit-0 0 "$?"
+calls=$(<"$log")
+assert_contains hud-success-creates-session "$calls" "new"
+assert_not_contains hud-success-posts-no-hud "$calls" "hud"
+
+# 9d. --dry-run must not post anything at all: printing what you would do has
+#     to mean the HUD too, not just the notification.
+log=$root/calls-dryrun.log
+out=$(HOME=$h AGTERMCTL=$HERE/fake-agtermctl.sh FAKE_CALL_LOG=$log BTW_HUD_SECONDS=0 \
+        zsh -f "$HOTKEY" --dry-run sid1 left /tmp/proj myproj 2>&1)
+assert_contains hud-dryrun-prints-reason "$out" "no Claude registered in this pane"
+if [[ ! -s $log ]]; then ok hud-dryrun-posts-nothing
+else bad hud-dryrun-posts-nothing "agtermctl was called under --dry-run: $(<"$log")"; fi
+
+rm -rf "$root"
+
 print -r -- ""
 print -r -- "$PASS passed, $FAIL failed"
 (( FAIL == 0 ))

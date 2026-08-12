@@ -39,6 +39,14 @@ case "${1:-}:${2:-}" in
       jq -n '{result: {tree: {workspaces: [{sessions: []}]}}}'
     fi
     ;;
+  session:new)
+    # claude-btw.sh reads `.result.id` and treats an empty one as "could not
+    # create the fork tab", so the generic `{"result":"ok"}` below would make
+    # every fork look like a failure. $FAKE_NEW_ID lets a test force that
+    # failure explicitly by setting it empty.
+    jq -n --arg i "${FAKE_NEW_ID-11111111-2222-3333-4444-555555555555}" \
+          '{result: {id: $i}}'
+    ;;
   session:text)
     if [[ -n ${FAKE_PANE_TEXT_SEQ:-} ]]; then
       [[ -n ${FAKE_PANE_TEXT_SEQ_STATE:-} ]] \

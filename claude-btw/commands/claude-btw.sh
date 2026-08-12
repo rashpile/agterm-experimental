@@ -28,14 +28,55 @@ pane=${2:-left}
 base_pwd=${3:-$HOME}
 base_name=${4:-session}
 
+# Tell the user why a fork didn't happen, over BOTH available channels.
+#
+# This used to be `agtermctl notify` alone, which is a macOS notification —
+# and macOS drops those on the floor when agterm holds no notification
+# authorization. Observed live: agterm was absent from all 97 entries in
+# com.apple.ncprefs, agterm's own log cheerfully said "posting banner", and
+# nothing ever reached the screen. So every diagnosable failure ("no Claude
+# registered in this pane", "no transcript for <id>") looked identical to the
+# keybinding being dead — which is a miserable thing to debug when the entire
+# interface is one chord and the common failure path deliberately exits 0
+# (agterm posts its own banner on a non-zero exit, and pressing this in a tab
+# with no Claude in it is not a crash).
+#
+# The HUD goes over the control socket, so it needs no macOS permission and
+# cannot be silently suppressed. It is also passive — the session keeps focus
+# and stays typable underneath it — which matters because this fires while
+# the base Claude may be mid-turn. `notify` is kept alongside it: it costs one
+# call and still reaches anyone who HAS granted authorization.
+#
+# Both are targeted at $sid, the tab the chord was pressed in. Untargeted they
+# default to whatever agterm currently has selected, which is not necessarily
+# this tab.
+#
 # Under --dry-run this prints instead of posting: a desktop notification is a
 # real side effect, and "print what you would do" has to mean all of it.
 notify() {
   if (( dry )); then
     print -r -- "notify: $1"
-  else
-    [[ -x $AGTERMCTL ]] && "$AGTERMCTL" notify "$1" --title "claude-btw" >/dev/null 2>&1
+    return
   fi
+  [[ -x $AGTERMCTL ]] || return
+  "$AGTERMCTL" notify "$1" --title "claude-btw" --target "$sid" >/dev/null 2>&1
+  "$AGTERMCTL" session hud "claude-btw" --detail "$1" \
+      --target "$sid" --position top >/dev/null 2>&1
+
+  # A HUD has no timeout of its own and this one is an error message, not
+  # furniture — take it down after a beat. Detached, because the whole point
+  # of a passive panel is that the user carries on immediately; the script
+  # must not sit here holding the keybinding open. BTW_HUD_SECONDS=0 skips
+  # the auto-close entirely (the test suite wants a fixed call log, not a
+  # race against a sleep).
+  local secs=${BTW_HUD_SECONDS:-6}
+  (( secs > 0 )) || return
+  # Closes whatever HUD is up at that point, which in principle could be one
+  # posted by something else in the meantime. Bounded and self-inflicted:
+  # `hud close` leaves a program overlay in the same slot alone, so the worst
+  # case is dismissing another passive message a few seconds early.
+  ( sleep "$secs"
+    "$AGTERMCTL" session hud close --target "$sid" >/dev/null 2>&1 ) &!
 }
 
 btw_need jq
