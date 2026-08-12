@@ -129,10 +129,16 @@ case "$cmd" in
         printf '\r' | "$AGT" session type --stdin --target "$id" >/dev/null 2>&1
         trusted=1; continue
       fi
-      # Surface a usage-limit / login banner instead of timing out on it.
-      if printf '%s' "$txt" | grep -qiE 'usage limit reached|Run /login|Please log in'; then
+      # Surface a usage-limit / login banner instead of timing out on it. But "⚠ Your login expires
+      # in 2 days · run /login to renew" is a NOTICE, not a block: claude is logged in and fully
+      # usable, and it sits on the boot screen for days. Matching it made `ready` exit 3 on every
+      # healthy spawn in the run-up to expiry, so callers that gate on `ready` (tasks-loop-launch)
+      # aborted before submitting anything — a live, empty session and no error on screen.
+      # Drop the notice lines first, then look for a real block in what is left.
+      blocking="$(printf '%s\n' "$txt" | grep -viE 'login expires in|/login to renew')"
+      if printf '%s\n' "$blocking" | grep -qiE 'usage limit reached|Run /login|Please log in'; then
         echo "ready: $id is up but claude is BLOCKED (usage limit / login):"
-        printf '%s\n' "$txt" | grep -iE 'usage limit|log ?in' | head -3
+        printf '%s\n' "$blocking" | grep -iE 'usage limit|log ?in' | head -3
         exit 3
       fi
       # Ready markers, oldest UI to newest: shortcuts hint, "for agents" footer, token counter,
