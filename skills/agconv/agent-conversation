@@ -129,8 +129,8 @@ info() {
 cat <<INFO
 # Two-agent conversation
 
-Two agents talk by typing into each other's agterm sessions. This command is the whole
-protocol — no file to read, no skill, no orchestrator, no polling.
+One agent asks another and keeps talking to it. They type into each other's agterm sessions;
+this command is the whole protocol — no file to read, no skill, no orchestrator, no polling.
 
 **This script:** \`$ABS\`
 Run it by that absolute path; it is not assumed to be on your PATH.
@@ -155,8 +155,11 @@ Run it by that absolute path; it is not assumed to be on your PATH.
 
 ## Sending
 
-    printf '%s' "topic: ...
-    your stance: ..." | $ABS hello <name> <peer>
+    printf '%s' "<your question>
+
+    what I know: ...
+    what I am assuming: ...
+    where to check: <paths, commands>" | $ABS hello <name> <peer>
 
     cat reply.txt | $ABS say <name> <peer>
 
@@ -186,27 +189,43 @@ Run it by that absolute path; it is not assumed to be on your PATH.
 
 - Strict alternation: one message, then wait. Never two in a row.
 - Answer what the peer actually said before adding anything new.
-- Every message must move toward the goal. Agreement that adds nothing is a wasted turn:
-  say what you would change, or say DONE.
+- "Yes, that holds" is a real answer. So is "I checked and it does not." Say which you did —
+  an opinion you verified and one you merely formed are worth different amounts.
 
-## Starter
+## Starter — asking
 
-- Your user gives you the companion's address (or \`$ABS spawn codex|claude\` makes one), the
-  topic, and the stance to assign.
-- **Assign a stance that is not yours** — skeptic, advocate, the user's perspective. Two
-  agents without opposed stances agree in two turns and produce nothing.
-- Count your own messages. **At 10, you must end it.**
+- \`$ABS spawn codex|claude\` makes a companion, or your user gives you an address.
+- **Ask the question, not the answer you want confirmed.** A companion handed your conclusion
+  will agree with it, and that agreement carries no information.
+- **Say which parts you know and which you are assuming**, and point at files or commands it can
+  check. An opinion grounded outside both of you is the only kind that adds anything.
+- Count your own messages. **At 10, end it.** That is a budget, not a criterion — it cannot tell
+  a turn doing work from one agreeing at greater length. The criterion is below.
 
-## Companion
+## Companion — answering
 
 - Run \`$ABS info\` (this text), pick a name, then answer with \`say\`.
-- Hold the stance you were given for the whole conversation, even where you would argue
-  otherwise.
+- **Check before you agree.** If a claim is checkable, check it and say what you did. The asker
+  cannot tell a verified answer from a plausible one unless you tell them.
+- Disagree plainly where you disagree. You were asked because one view was not enough.
+
+## Is another turn worth it
+
+Send one when it will do at least **one** of these:
+
+- **bring in checked evidence** — something you ran, read or reproduced since the last turn;
+- **attack a newly proposed remedy** — a fix named in the last turn that has not been tested yet;
+- **change the governing criterion** — show that the standard being argued over is the wrong one.
+
+**Convergence alone earns nothing.** Agreeing at greater length, restating a position more
+carefully, or summarising what you both now think is a turn that cost two contexts and added
+nothing. When none of the three applies, you are done — say so.
 
 ## Ending
 
 - Either side may **propose**: \`propose DONE . <why>\`.
-- **Only the starter declares it**: \`DONE . <one-line outcome>\`.
+- **Only the starter declares it**: \`DONE . <one-line outcome>\` — when it has what it needed,
+  not when agreement is reached. Unresolved is a legitimate outcome; say so.
 - On receiving \`DONE\`: **do not reply.** Report the outcome to your user and stop.
 - The starter reports: what was decided, what stayed open, how many turns it took.
 
@@ -243,13 +262,15 @@ wait_ready() {
 # that `type` is not a launcher, and typing `claude\r` only works if a shell happens to
 # be sitting there — which is the same assumption this script refuses to make elsewhere.
 #
-# It goes through a LOGIN shell because an agent is not necessarily an executable:
-# `claude` is a shell function here, so a bare `--command claude` exits instantly and
-# takes the session with it. `--command` splits its argument, so this runs zsh -lc <kind>.
+# It goes through an INTERACTIVE LOGIN shell because an agent may be neither on the
+# default PATH nor an executable at all: `claude` is a function defined in .zprofile
+# (login), while `codex` is on a PATH set in .zshrc (interactive). -l alone finds one and
+# not the other; -i alone the reverse. `--command` splits its argument, so this runs
+# `zsh -ilc <kind>`.
 new_session() {
   local kind="$1" out sid
   out="$(agtermctl session new --name "agconv-$kind" --cwd "$PWD" --no-select \
-          --command "${SHELL:-/bin/zsh} -lc $kind" --json 2>&1)" \
+          --command "${SHELL:-/bin/zsh} -ilc $kind" --json 2>&1)" \
     || die "could not create a session: $out"
   sid="$(printf '%s' "$out" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"
   [ -n "$sid" ] || die "could not read the new session id from: $out"
