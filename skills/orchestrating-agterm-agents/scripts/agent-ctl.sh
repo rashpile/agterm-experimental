@@ -201,8 +201,11 @@ case "$cmd" in
     case "$1" in enter|esc) "$(dirname "$0")/agterm-clear-status.sh" "$id" 2>/dev/null || true ;; esac ;;
   type|say)
     text="$*"; [ -n "$text" ] || { echo "missing text"; exit 1; }
-    # clear any queued text (200 backspaces) then type ours
-    { printf '\x7f%.0s' $(seq 1 200); printf '%s' "$text"; } \
+    # clear any queued text (200 backspaces) then type ours, as a bracketed paste (ESC[200~ … ESC[201~):
+    # session.type turns every newline into Return and a multi-line message would be submitted line by
+    # line. Inside a paste the editor (pi, Claude Code) keeps a Return as a newline; the submit is the
+    # separate \r below.
+    { printf '\x7f%.0s' $(seq 1 200); printf '\x1b[200~%s\x1b[201~' "$text"; } \
       | "$AGT" session type --stdin --target "$id" >/dev/null
     if [ "$cmd" = say ]; then
       sleep 1
