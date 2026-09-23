@@ -35,6 +35,20 @@ my_addr() {
   esac
 }
 
+# The agterm tree, or a die that names the real cause. agtermctl's own stderr is the
+# evidence: a sandboxed agent (codex) gets EPERM on the socket while agterm is running
+# fine, and "is it running?" sends it off checking the wrong thing.
+agterm_tree() {
+  local err
+  agtermctl tree --json 2>/dev/null && return 0
+  err="$(agtermctl tree --json 2>&1 >/dev/null || true)"
+  case "$err" in
+    *"Operation not permitted"*)
+      die "your sandbox blocks the agterm socket (agterm itself is running). Rerun this exact command outside the sandbox / with escalated permissions. [$err]" ;;
+    *) die "cannot reach agterm: ${err:-agtermctl tree failed with no output}" ;;
+  esac
+}
+
 # Existence probe. Deliberately NOT `session text`: that dumps the target's whole
 # scrollback, which is slow and can fail on a busy session with a long transcript.
 #
@@ -45,7 +59,7 @@ my_addr() {
 # allow-listing agent families — an agent nobody has heard of still works.
 check_addr() {
   local tree out
-  tree="$(agtermctl tree --json 2>/dev/null)" || die "cannot reach agterm (is it running?)"
+  tree="$(agterm_tree)" || exit 1
   out="$(printf '%s' "$tree" | python3 -c '
 import sys, json
 sid, pane = sys.argv[1], sys.argv[2]
@@ -134,6 +148,10 @@ this command is the whole protocol — no file to read, no skill, no orchestrato
 
 **This script:** \`$ABS\`
 Run it by that absolute path; it is not assumed to be on your PATH.
+
+**Sandboxed agent (codex):** every command here talks to the agterm socket and writes
+\`$LOGDIR\`, and a sandbox blocks both. Run it outside the sandbox (escalated) from the
+first call — do not wait for it to fail.
 
 ## Which side are you
 
@@ -299,7 +317,7 @@ spawn() {
   me="$(my_addr)"
   [ -n "${AGTERM_SESSION_ID:-}" ] || die "not in an agterm session"
 
-  tree="$(agtermctl tree --json 2>/dev/null)" || die "cannot reach agterm (is it running?)"
+  tree="$(agterm_tree)" || exit 1
   case "$tree" in
     *"surface:$AGTERM_SESSION_ID:right"*)
       # already split — the right pane is spoken for, so give the companion its own session
