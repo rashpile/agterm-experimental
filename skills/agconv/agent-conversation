@@ -285,9 +285,13 @@ wait_ready() {
 # (login), while `codex` is on a PATH set in .zshrc (interactive). -l alone finds one and
 # not the other; -i alone the reverse. `--command` splits its argument, so this runs
 # `zsh -ilc <kind>`.
+#
+# `--after` puts it right below the caller in the caller's own workspace; without it
+# agterm uses the frontmost window's current workspace, which may not be ours.
 new_session() {
   local kind="$1" out sid
   out="$(agtermctl session new --name "agconv-$kind" --cwd "$PWD" --no-select \
+          --after "$AGTERM_SESSION_ID" \
           --command "${SHELL:-/bin/zsh} -ilc $kind" --json 2>&1)" \
     || die "could not create a session: $out"
   sid="$(printf '%s' "$out" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')"

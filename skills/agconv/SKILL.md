@@ -17,7 +17,7 @@ here — read it once and follow it.
 1. **Get the companion's address.**
    - First argument is `codex` or `claude` → `<script> spawn codex|claude`, which prints one
      address. It takes the right pane when this session is not split and it is free, otherwise a
-     new session.
+     new session placed right after this one, in the same workspace.
    - Anything else → that argument **is** the address. Do not spawn.
 2. **Read `<script> info`** — turn taking, waiting, ending, safety. What follows assumes you have.
 3. **Pick your name** — one word, lowercase, not `claude` or `codex`.
