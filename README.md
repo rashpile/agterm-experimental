@@ -106,6 +106,50 @@ the latest GitHub release; if you're behind, it renders the changelog for **ever
   and the y/N prompt needs a persistent TTY. Depends on the `run-in-processes` helper and `glow` +
   `jq`.
 
+### webmd — read the last message rendered, in the terminal
+
+Take the last message of the claude running in this session and read it as rendered markdown
+without leaving the terminal. `webmd.sh` converts it to a self-contained HTML page and shows it
+with [terminal-browser](https://terminal-browser.sh), which draws a real Chromium into a pane.
+Files: [`commands/webmd/`](commands/webmd/).
+
+**Usage**
+
+| Chord | Action |
+|-------|--------|
+| `ctrl+b` `c` `w` | Last message in a **95% overlay** over this session |
+| `ctrl+b` `c` `W` or `opt+a` | Last message in the **right split pane**. A webmd page already there is refreshed in place; a pane busy with anything else gets a new session named `<this session> last` |
+
+It also renders any file: `webmd.sh file <path.md> [session-id] [--new]`.
+
+- **Same lookup as the rest of the `c` group.** `agterm-claude-session` resolves the live claude
+  from `~/.claude/sessions/<pid>.json`, so `/clear` is handled and a split pane running its own
+  claude resolves to the right one.
+- **Overlay, pane, session.** The overlay dies with its command, which is what you want for a
+  quick read. `>W` puts the page in the right split pane instead, creating or revealing that
+  pane, so the document sits beside the conversation and stays there. A pane already running
+  something is never disturbed: the page goes to a new session named `<this session> last`,
+  placed right after the current one. That name comes from the sidebar name in the tree, not
+  `$AGT_SESSION_NAME`, which carries the pane's terminal title and can be set by a remote
+  shell over OSC. Because a running overlay is never replaced, `>w` closes whatever overlay
+  is up before opening its own.
+- **A pane it created closes with the browser.** The typed line ends in `; exit`, so quitting
+  the page ends that shell and the split goes away, leaving the session as it was found. A pane
+  that already existed keeps its shell: its cwd and history belong to you, not to webmd.
+- **Two thirds of the width**, set with `session resize --split-ratio 0.34` right after the pane
+  is created. Prose needs the width more than a prompt does. Change `SIDE_PRIMARY` at the top
+  of `webmd.sh` to move the divider; it is the fraction the *left* pane keeps. An existing
+  pane is never resized.
+- **Pressing it again refreshes the pane** instead of piling up sessions. If the pane already
+  shows a page from `~/.local/share/agterm/webmd/`, the new document is loaded into that same
+  browser with `terminal-browser action -- open`. The browser is found by the pane's tty, not
+  by the tab's url: launch argv never changes, but the tab does, so a url match would miss it
+  from the second press onward.
+- **One pair of files per press** in `~/.local/share/agterm/webmd/msg-<stamp>.{md,html}`, so an
+  earlier message stays readable after the next one.
+- **Read-only**, unlike `ctrl+b c t` (Last message Typora), which opens the same markdown in a real
+  editor that saves in place. Stopgap until the Go `webmd` exists.
+
 ### claude-btw
 
 Fork the Claude session running in the current tab into a new tab beside it, so a side question

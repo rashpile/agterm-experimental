@@ -45,6 +45,8 @@ notification badge). The verbs below keep the whole loop allow-listed.
 | ask the human to approve a **worker** (Telegram buttons) | `scripts/wask.sh <worker-id> [note]` — posts adaptive ✅ Yes / ♾️ Always / 🚫 No buttons that approve **that** worker via the `wapprove` bot command (needs a one-time `/reload`) |
 | register THIS session as `/o` target (**only when the user explicitly asks**) | `scripts/register.sh` — or the user presses **`cmd+shift+r`** in any session (toggles: again in the bound one = unbind) |
 | (inbound) Telegram `/o <msg>` injects `[tg] <msg>` here | handled by pako-telegram → `scripts/inject.sh` |
+| (inbound) Telegram `<name>: <msg>` goes to session `tavern-<name>` | same script; the per-character re-route bypasses the registration and never changes it |
+| (inbound) Telegram `<name>!: <msg>` — same, **and** rebinds `/o` to it | same script; `<name>!:` with no message is the bare switch |
 | (rare) bring a session to the foreground | `scripts/agent-ctl.sh select <id>` — steals focus; `read`/`status` populate the buffer without it, so you rarely need this |
 
 Always target by the quoted `--target <id>`, and call `agtermctl` by absolute path in scripts.
@@ -222,6 +224,16 @@ decisions that aren't a yes/always/no menu (open questions, blocked-on-info, don
   when you're **idle**. If you're **busy** it tells the user "resend in a moment"; if a **prompt/menu** is
   up it tells them what's being asked instead of firing text into the menu. So a `[tg]` message you
   receive means you were idle — a clean new turn, never a mid-render keystroke.
+- **Per-character re-route (tavern only).** A message whose first word is followed by a colon is checked
+  against the live session names: `raluka: what's new` is delivered to `tavern-raluka` even while another
+  tavern is the registered target, with the `raluka: ` stripped and no `[tg] ` prefix. The registration is
+  left untouched — a one-off aside cannot hijack the thread. If no session matches, the whole line is
+  passed through unchanged, so `note: buy milk` still reaches you as usual.
+- **`<name>!:` is the same delivery plus a rebind**: `raluka!: what's new` moves the default target to
+  `tavern-raluka` through `register.sh`, the same "newer wins" path `/tavern-select` and `cmd+shift+r` use,
+  so the conversation continues without the prefix. `raluka!:` with nothing after it is just the switch.
+  This is the one way a plain Telegram message can take the `/o` target away from you — and only ever to a
+  `tavern-*` session, never to another agent.
 
 ## Graceful shutdown (responding to `/oclose`)
 `/oclose` (Telegram) posts `[tg] Graceful shutdown requested…` instead of hard-killing you — so wind
