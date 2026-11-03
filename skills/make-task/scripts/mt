@@ -1,0 +1,4334 @@
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["markdown-it-py>=3", "pyyaml>=6"]
+# ///
+"""mt - run state, journal and agterm UI for the make-task skill.
+
+The make-task orchestrator calls mt at every step boundary. mt owns the run
+directory (state.json, state.js for the dashboard, artifacts, cards) and is the
+only thing that talks to agtermctl. Every command loads the state fresh, changes
+it and saves it atomically right away.
+
+Usage:
+    mt [--run DIR] init --title T --profile-dir DIR
+    mt [--run DIR] status
+    mt [--run DIR] set KEY=VALUE ...
+    mt [--run DIR] phase ID [--activity A] [--note N] [--skipped]
+    mt [--run DIR] activity A [--wait]
+    mt [--run DIR] assume TEXT --why W
+    mt [--run DIR] decide Q A
+    mt [--run DIR] event TEXT
+    mt [--run DIR] checkpoint begin KEY [--resume]
+    mt [--run DIR] checkpoint end KEY [--result R]
+    mt [--run DIR] fail MSG
+    mt [--run DIR] dirty [--exclude PATH ...]
+    mt [--run DIR] plan PATH [--progress P]
+    mt [--run DIR] refresh
+    mt [--run DIR] artifact ID PATH [--hint H]
+    mt [--run DIR] artifact changes [--hint H]
+    mt [--run DIR] review start --round N --run NAME --round-dir D
+    mt [--run DIR] review wait --round N [--deadline S]
+    mt [--run DIR] review result FILE --round N [--not-gating ID=REASON ...]
+                                [--deferred ID=REASON ...] [--confirming]
+    mt [--run DIR] review verify-final
+    mt [--run DIR] ask CARD.json
+    mt [--run DIR] done --status S [--note N]
+    mt [--run DIR] revmux aside --state-dir DIR --toplevel DIR
+    mt [--run DIR] revmux put-back --state-dir DIR --toplevel DIR
+    mt profile resolve|check|status|install-default [--profile NAME | --dir DIR]
+    mt profile import ID --source S [--replace] [--profile NAME | --dir DIR]
+    mt profile outdated [--network] [--profile NAME | --dir DIR]
+    mt profile fetch ID [--profile NAME | --dir DIR]
+    mt profile accept ID --expect HASH [--profile NAME | --dir DIR]
+
+Run lookup: --run DIR, else the pointer file
+<state root>/current-<AGTERM_SESSION_ID or "default">, written by init.
+State root: $MT_STATE_HOME, else ${XDG_STATE_HOME:-~/.local/state}/make-task.
+Config root: $MT_CONFIG_HOME, else ${XDG_CONFIG_HOME:-~/.config}/make-task.
+
+Environment:
+    MT_STATE_HOME     state root override
+    MT_CONFIG_HOME    config root override (profiles live in <config root>/profiles/<name>/)
+    MT_PLUGINS_JSON   installed_plugins.json, read for plugin: profile sources only
+                      (default ~/.claude/plugins/installed_plugins.json)
+    MT_VIEW           markdown renderer (default ~/.claude/skills/view/scripts/view.py);
+                      called as `MT_VIEW SRC -o OUT` when executable, else through `uv run -q --script`
+    MT_PGREP          process matcher for `review wait` (default pgrep; called as `MT_PGREP -f -- PATTERN`)
+    MT_REVIEW_POLL    seconds between `review wait` polls (default 2)
+    MT_ASK_DEADLINE   seconds `ask` waits for a card before closing it (default 540)
+    MT_PROFILE_LOCK_WAIT
+                      seconds a profile command waits for another one changing the same profile (default 60)
+    MT_NO_CARDS       set (to anything but 0) to turn question cards off: init reports cards false
+                      and `ask` exits 3, so questions go to AskUserQuestion; the dashboard stays
+    AGTERM_ENABLED, AGTERM_SESSION_ID, AGTERM_PANE_ID
+                      agterm is used only when the first two are set; nothing calls agtermctl otherwise
+
+Init: `init --profile-dir DIR` runs `profile check` on DIR (without the update lookups) before
+anything is written and fails with its errors, creating no run; a `template: true` profile is
+refused too. It stores the profile's resolved values as flat run-state keys, printed by init and
+`status`: profile_name, profile_dir, autonomy, gates (the profile's or its autonomy preset's),
+defaults, brainstorm_entry, plan_entry, plan_reviewer, plan_reviewer_model (the reviewer's
+frontmatter `model`), exec_root (the exec companion), exec_scripts, exec_rules, exec_data
+(<profile>/data/<exec companion>), review_entry, review_scripts, review_data; paths are absolute
+and a skipped phase's keys are null. default_branch is the last line <exec_scripts>/detect-branch.sh
+prints within 60 s (else local git steps). The check warnings (a review `requires` command missing
+on PATH among them) and one for a review phase that is `skip` join init's warnings. `status` warns
+on a run whose state has none of these keys (started before profiles).
+
+Dashboard: init copies assets/dashboard.html into the run dir. In agterm it shows the
+split when none is shown (created_split records a split mt made), opens the page with
+`--cwd <run> --js --chromeless` over the pane the agent does not run in, and hands the
+focus back. Any failing agtermctl call there leaves `agterm: false` and init goes on.
+`phase` and `activity` (not `--wait`) re-assert the sidebar status `active`, `fail`
+sets `blocked`; these are best-effort and only warn on failure.
+
+Artifacts render to <run>/artifacts/<id>.html, again only when the source mtime
+changed (on `artifact`, `plan` and `refresh`). Rendering is best-effort: a
+renderer failure prints a warning and keeps the previous html.
+
+Review rounds: `review start` (note: its --run is the revmux run name; the global
+--run DIR goes before the command) records the round's `head` (HEAD of cwd's toplevel: what the
+round reviews) and prints the round's report path,
+<run>/revmux/round-<n>.json, where the launch writes revmux's stdout. `review wait`
+prints `done`, `failed` or `running` (deadline reached). `review result` records a
+round; state `unresolved` and `not_gating` are the latest round's, `deferred` collects
+every round's deferred findings since the last `--confirming` round (the leftovers fix
+round settles them). `review verify-final` prints `unchanged` or `changed`, sets
+review_stale and stamps verified_sha: HEAD's tree must equal reviewed_sha's tree
+replayed onto HEAD's merge-base with origin/<default> (or <default>); a conflicting
+replay is `changed`, and with no rebase target the trees are compared as they are.
+Uncommitted changes outside `.revmux/` are `changed` too, and so are changes to the
+stash_paths until `stash_restored` records that the restore put them back.
+
+Dirty paths: `dirty` re-reads `git status` (every untracked file listed on its own),
+drops `.revmux/` and the --exclude paths, stores the rest as stash_paths and prints
+{"paths": [...], "quoted": "<shell-quoted paths>", "unstage": [...], "unstage_quoted": "..."}
+for the in-place stash; `unstage` are the paths in HEAD the index no longer has (staged
+deletions, rename sources), the only ones the stash recipe unstages.
+
+Question cards: `ask` validates the card (1-4 options, unique ids other than `other`
+and `delegate`, exactly one recommended), writes cards/<n>.json and cards/<n>.html,
+sets the status blocked with a sound, opens the card with `--block` and waits up to
+MT_ASK_DEADLINE seconds (then closes it); the whole call stays under the Bash tool's
+600 s limit. It prints {"choice": "<id>"},
+{"choice": "other", "text": "..."} or {"choice": "delegate", "id": "<recommended>"}
+and records a decision (an assumption for delegate), exit 0; {"choice": null} with
+exit 2 when the card was dismissed, expired or gave an unusable answer, and with
+exit 3 when it cannot be shown (not in agterm, a run without agterm, MT_NO_CARDS set,
+agtermctl failed).
+
+Completion: `done --status S` (clean, "not clean", "review skipped", "review stale",
+stopped) stamps the run and its running phase finished (an `error` phase keeps its
+status), sets now_kind done and the sidebar status completed. `clean` is refused while
+findings are unresolved or deferred, the review is stale, skipped, never ran, has no
+recorded round, its latest round has no result or was degraded, reviewed_sha is not the
+`head` of the latest finished round (commits after it were never reviewed), verify-final
+has not checked reviewed_sha, the finalize checkpoint did not end `ok`, or an error is set.
+`set reviewed_sha` is write-once: a second, different value is refused.
+A second call keeps the first finish time.
+
+.revmux/ working copies (in place, Finalize and Completion): `revmux aside` saves every
+tracked .revmux/ path whose working copy differs, in bytes, type or executable bit, from
+what `git checkout-index` writes: its `ls-files -s -z` record goes to
+<state-dir>/revmux-tree/list, a raw copy (a symlink as a symlink) to revmux-tree/files/,
+made in revmux-tree.new/ and renamed once every copy compares equal; then it removes the
+listed paths and checks .revmux out from the index. A rerun keeps the first save: before
+anything is removed, every saved record must still be in the index whole and its path hold
+the index version, the saved copy or nothing, and every path edited now must be saved;
+anything else is differs.
+`revmux put-back` copies the saved files back, all or nothing, once every listed record
+is still in the index whole and each path holds HEAD's version, the saved copy or
+nothing; then renames revmux-tree/ to revmux-tree.restored/. Paths, records and symlink
+targets are handled as bytes. A symlink or other non-directory in a parent component of
+a path under the toplevel or under revmux-tree/ is refused before anything is touched:
+aside prints unsafe, put-back conflict. Both print one line revmux_tree=<outcome>: aside prints
+aside or none (exit 0), differs, unsafe or failed (exit 1); put-back prints ok, none,
+conflict or failed, always exit 0. Neither reads the run state.
+
+Profiles: `profile` commands take --profile NAME (default `default`, under
+<config root>/profiles/) or --dir DIR (any profile dir, e.g. the template), never --run, and
+print one JSON line. `resolve` prints {"name", "dir", "status": "ok"|"missing"} (ok: profile.md
+exists). `check` validates profile.md (schema, phases, skip rules, entries, the exec and review
+companion contracts, the plan reviewer's frontmatter, autonomy, gates, defaults, tokens left in
+the copies and profile.md, and UPDATE.md's `rewritten_for`) and prints {"ok", "errors",
+"warnings", "updates"}, exit 1 when not ok. A token no run fills in is an error: a path variable
+the install did not rewrite (${CLAUDE_PLUGIN_ROOT}, ${CLAUDE_SKILL_DIR}, ${CLAUDE_PLUGIN_DATA},
+their $VAR forms, a ${VAR:-x}-style form) or ${user_config.…}; a `template: true` profile is
+scanned as an install would leave it. Any other $CLAUDE_… variable is a warning. `rewritten_for`
+(the dir install-default, import and accept rewrote the copies for) other than the profile's dir
+is an error: the profile was copied or moved. A review `requires` command missing on PATH is a
+warning (`requires` is a review field only); `updates` are outdated's for the make-task: and
+plugin: sources (one it cannot read is a warning). `status` prints autonomy, gates (resolved),
+defaults, phases and every companion with its source, version and `modified` (companions/<id>
+differs from upstream/<id>; null without an upstream/<id>).
+`install-default` installs the skill's template assets/profiles/default (profile.md must say
+`template: true`) as the profile (or into --dir DIR), which must not exist: companions/<id> and
+upstream/<id> both from the template's companions/<id>, rewritten as `import` does (the template's
+own upstream/ and UPDATE.md are not copied); UPDATE.md records the target as `rewritten_for` and
+each companion as make-task:default/<id> with its sha256: tree hash under empty ## Preferences,
+## Changes and ## Wanted; profile.md is the template's with `template: false`; LICENSES/ is
+copied; data/<id>/ starts empty. It is built in a temp dir next to the target and renamed into
+place, so a failure leaves no profile behind. It prints {"name", "dir", "template", "companions":
+{<id>: {"source", "version"}}}.
+`import ID --source S` copies a source to companions/ID and upstream/ID and records
+{source, version} in UPDATE.md's frontmatter (the file is created when missing; an UPDATE.md it
+cannot read fails the import before anything is copied; `rewritten_for` is set when a rewritten
+import finds none); an existing companion needs --replace. A subpath that resolves outside its
+source (a symlink) fails. Sources and their version: make-task:<profile>/<id> (the skill's
+assets/profiles/<profile>/companions/<id>; sha256: of that tree), plugin:<name>@<marketplace>
+[:<subpath>] (installPath from MT_PLUGINS_JSON; <version>+<gitCommitSha[:12]>),
+git:<url>#<ref>[:<subpath>] (fetched at depth 1 into a temp dir, the subpath is the plugin root;
+the commit sha; `#` and the last `:` after it split the spec), local (companions/ID written by
+the user; version null, no upstream/ID). Left out of a copy: .git and .DS_Store at any depth,
+.in_use/ and hooks/ at its root. A symlink is copied as what it points to; one that leaves the
+source, dangles or loops fails the import. Unless profile.md says `template: true`, every UTF-8
+text file gets ${CLAUDE_PLUGIN_ROOT} -> <profile>/companions/ID, ${CLAUDE_SKILL_DIR} -> the
+nearest ancestor dir holding a SKILL.md (else the companion root), ${CLAUDE_PLUGIN_DATA} ->
+<profile>/data/ID (braced, or unbraced up to a word boundary), always for the final companions/ID
+location; other files are copied byte for byte, modes kept. ${CLAUDE_PLUGIN_ROOT} in a plugin
+subtree fails: the plugin root is above the copy.
+`outdated` compares each recorded version with the source's version now and prints
+{"updates": [{"id", "source", "version", "available", "modified"}], "current": [ids],
+"skipped": [{"id", "source", "reason"}], "errors": [{"id", "source", "error"}]} (exit 0); git:
+sources are looked up (a shallow fetch of the ref, the commit import would record) only with
+--network; local ones and copies with no recorded source are skipped. `fetch ID` copies the
+source as it is now to .staging/ID/tree, rewritten for companions/ID like `import` (its source
+and version in .staging/ID/fetch.json; an earlier fetch is replaced) and prints {"id", "source",
+"version", "available", "staging", "tree", "changed", "modified", "diff"}, staging being the
+staged tree, tree its sha256: hash and diff the unified diff upstream/ID -> .staging/ID/tree.
+A fetch is made whole in a private dir and renamed into place, so what it prints is its own.
+`accept ID --expect HASH` claims .staging/ID with one rename, moves its tree to upstream/ID,
+and copies it to companions/ID when that copy is unmodified (or missing), records the fetched
+version, removes the staging and prints {"id", "source", "version", "previous",
+"copy": "updated"|"kept", "modified"}; it refuses without a fetch, when the claimed tree is not
+HASH (the `tree` of the fetch that was reviewed: a later fetch, from another session too,
+replaced it; the staging is put back), or when UPDATE.md records another source since. An
+`import` drops a pending fetch of that companion.
+`raise-schema` sets profile.md's `schema` line (nothing else in the file changes) to the schema
+this make-task reads, once every make-task: companion records its template's current version, and
+prints {"dir", "schema", "previous", "raised"} (raised false: it was current already). It refuses
+a template, a newer schema, and, naming them, make-task: companions not at that version yet:
+an older schema fails `check`, and `/make-task --update` takes those updates, then runs this.
+install-default, import, fetch (once its copy is made), accept and raise-schema hold the
+profile's lock, an flock on its dir (install-default: on the dir it installs into), for the whole
+change, so two sessions never interleave them; one that finds the lock held waits up to MT_PROFILE_LOCK_WAIT
+seconds, then fails with `another make-task command is changing profile <name>` (install-default:
+`... the profiles in <dir>`), changing nothing. resolve, check, status, outdated and init take no lock.
+A profile's path must be one plain shell word, with no whitespace and none of
+' " ` $ & | ; < > ( ) [ ] { } * ? ! # ~ \\ ^: the rewritten paths and SKILL.md's script calls
+use it unquoted, so install-default, a rewriting import or fetch refuse any other target, and
+`check` (so `init` too) reports it as an error. So must every part of those paths: `check`
+reports a phases path that is not one, and a rewrite refuses a ${CLAUDE_SKILL_DIR} whose skill
+dir is not.
+
+Exit codes: 0 ok, 1 failure (message on stderr); `ask` also uses 2 and 3.
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import fcntl
+import hashlib
+import json
+import os
+import re
+import shlex
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any, Literal, NamedTuple, overload
+
+import yaml
+
+PHASES = [
+    ("brainstorm", "Brainstorm"),
+    ("plan", "Plan"),
+    ("exec", "Execute"),
+    ("review", "Review"),
+    ("finalize", "Finalize"),
+]
+PHASE_IDS = [p[0] for p in PHASES]
+
+SET_KEYS = (
+    "mode",
+    "revmux_task",
+    "revmux_tasks_dir",
+    "review_base",
+    "loop_start_sha",
+    "reviewed_sha",
+    "stop_reason",
+    "stash_ref",
+    "stash_restored",
+    "worktree_path",
+)
+# keys an empty VALUE may clear; for the others an empty value is a failed $(...) and is refused
+CLEARABLE_KEYS = ("stash_ref", "worktree_path")
+# keys set once: a second, different value is refused (reviewed_sha set again after finalize would vouch
+# for the finalizer's own commits)
+WRITE_ONCE_KEYS = ("reviewed_sha",)
+SET_CHOICES = {
+    "mode": ("worktree", "inplace"),
+    "stop_reason": ("clean", "not-converging", "round-cap", "degraded", "skipped"),
+    # the Completion step 3 restore outcome that put the user's stash_paths back (`conflict` puts nothing back)
+    "stash_restored": ("ok", "gone", "none"),
+}
+# a checkpoint key, profile name, companion id, or a plugin's name or marketplace
+ID = r"[A-Za-z0-9][A-Za-z0-9._-]*"
+ID_RULE = "letters, digits, '.', '_' and '-', starting with a letter or digit"
+
+ARTIFACT_IDS = ("design", "plan", "progress", "review", "stats", "changes")
+MARKDOWN_SUFFIXES = {".md", ".markdown", ".mdown", ".mkd"}
+RENDER_TIMEOUT = 120
+
+ASSETS = Path(__file__).resolve().parent.parent / "assets"
+AGTERM_TIMEOUT = 15.0
+# `mt ask` and `mt review wait` run under the Bash tool's limit (timeout: 600000); both waits end before it
+BASH_LIMIT = 600.0
+REVIEW_DEADLINE = 570.0
+ASK_DEADLINE = 540.0
+# the agtermctl calls around a card's wait; short, so `mt ask` stays well under BASH_LIMIT
+ASK_CALL_TIMEOUT = 5.0
+# detect-branch.sh's last step asks the remote (`git remote show origin`), and the script is the profile's copy
+DETECT_BRANCH_TIMEOUT = 60.0
+
+
+class MtError(Exception):
+    """A failure reported to the caller as `mt: error: ...` with exit 1."""
+
+
+# ---------------------------------------------------------------- paths
+
+
+def state_root() -> Path:
+    if os.environ.get("MT_STATE_HOME"):
+        return Path(os.environ["MT_STATE_HOME"])
+    xdg = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
+    return Path(xdg) / "make-task"
+
+
+def config_root() -> Path:
+    if os.environ.get("MT_CONFIG_HOME"):
+        return Path(os.environ["MT_CONFIG_HOME"])
+    xdg = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(xdg) / "make-task"
+
+
+def pointer_path() -> Path:
+    return state_root() / f"current-{os.environ.get('AGTERM_SESSION_ID') or 'default'}"
+
+
+def plugins_json_path() -> Path:
+    if os.environ.get("MT_PLUGINS_JSON"):
+        return Path(os.environ["MT_PLUGINS_JSON"])
+    return Path.home() / ".claude" / "plugins" / "installed_plugins.json"
+
+
+def renderer_path() -> str | None:
+    if os.environ.get("MT_VIEW"):
+        p = Path(os.environ["MT_VIEW"]).expanduser()
+        return str(p) if p.exists() else None
+    p = Path.home() / ".claude" / "skills" / "view" / "scripts" / "view.py"
+    return str(p) if p.exists() else None
+
+
+def renderer_argv(renderer: str, src: str, out: str) -> list[str]:
+    """MT_VIEW runs directly when executable; view.py (and anything else) through `uv run -q --script`."""
+    if os.environ.get("MT_VIEW") and os.access(renderer, os.X_OK):
+        return [renderer, src, "-o", out]
+    return ["uv", "run", "-q", "--script", renderer, src, "-o", out]
+
+
+def resolve_run(flag: str | None) -> Path:
+    if flag:
+        run = Path(flag).expanduser().resolve()
+        if not (run / "state.json").is_file():
+            raise MtError(f"--run {flag}: no state.json in {run}")
+        return run
+    ptr = pointer_path()
+    if not ptr.is_file():
+        raise MtError(f"no active run: no --run and no pointer at {ptr} (run `mt init` first)")
+    run = Path(ptr.read_text().strip())
+    if not (run / "state.json").is_file():
+        raise MtError(f"pointer {ptr} names {run}, which has no state.json")
+    return run
+
+
+# ---------------------------------------------------------------- state io
+
+
+def atomic_write(path: Path, text: str) -> None:
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def state_js(state: dict[str, Any]) -> str:
+    body = json.dumps(state, ensure_ascii=False).replace("</", "<\\/")
+    return f"window.mtState({body});\n"
+
+
+def load(run: Path) -> dict[str, Any]:
+    try:
+        return json.loads((run / "state.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise MtError(f"cannot read {run / 'state.json'}: {e}") from e
+
+
+def save(run: Path, state: dict[str, Any]) -> None:
+    try:
+        atomic_write(run / "state.json", json.dumps(state, ensure_ascii=False, indent=1) + "\n")
+        atomic_write(run / "state.js", state_js(state))
+    except OSError as e:
+        raise MtError(f"cannot write state in {run}: {e}") from e
+
+
+def now() -> float:
+    return time.time()
+
+
+def clock() -> str:
+    return time.strftime("%H:%M:%S")
+
+
+def add_event(state: dict[str, Any], text: str) -> None:
+    state.setdefault("events", []).append({"t": clock(), "text": text})
+
+
+# ---------------------------------------------------------------- git and plugins
+
+
+@overload
+def git(*args: str, cwd: str | Path | None = None, check: Literal[True] = True) -> str: ...
+@overload
+def git(*args: str, cwd: str | Path | None = None, check: bool) -> str | None: ...
+def git(*args: str, cwd: str | Path | None = None, check: bool = True) -> str | None:
+    """Run git; return stdout without the trailing newline, or None on failure when check is False."""
+    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, check=False)
+    if r.returncode != 0:
+        if check:
+            raise MtError(f"git {' '.join(args)} failed: {r.stderr.strip()}")
+        return None
+    return r.stdout.rstrip("\n")
+
+
+def dirty_paths(toplevel: str) -> list[str]:
+    """Paths from `git status --porcelain -z --untracked-files=all`; a rename or copy contributes both paths.
+
+    Untracked files are listed one by one, never as their directory, so a stash of these paths cannot
+    sweep up a file written later into the same untracked directory (the plan, for one).
+    """
+    fields = git("status", "--porcelain", "-z", "--untracked-files=all", cwd=toplevel).split("\0")
+    paths: list[str] = []
+    i = 0
+    while i < len(fields):
+        entry = fields[i]
+        i += 1
+        if len(entry) < 4:
+            continue
+        xy, path = entry[:2], entry[3:]
+        paths.append(path)
+        if "R" in xy or "C" in xy:
+            if i < len(fields) and fields[i]:
+                paths.append(fields[i])
+            i += 1
+    return list(dict.fromkeys(paths))
+
+
+def under_revmux(path: str) -> bool:
+    return path == ".revmux" or path.startswith(".revmux/")
+
+
+def find_main_checkout(cwd: str, toplevel: str, common_dir: str, linked: bool) -> tuple[str, str | None]:
+    """(main checkout, warning or None).
+
+    Not linked: the toplevel itself (dirname of the common dir is wrong for submodules and
+    --separate-git-dir repos). Linked: dirname of a `.git` common dir; else the common dir's
+    core.worktree (a submodule's); else, with a warning, the linked worktree itself, because git
+    records no main checkout for a --separate-git-dir repo (`worktree list` names the git dir).
+    """
+    if not linked:
+        return toplevel, None
+    if os.path.basename(common_dir) == ".git":
+        return os.path.dirname(common_dir), None
+    core_wt = git("--git-dir", common_dir, "config", "--get", "core.worktree", cwd=cwd, check=False)
+    if core_wt:
+        path = os.path.realpath(os.path.join(common_dir, core_wt))
+        if os.path.isdir(path):
+            return path, None
+    return toplevel, f"main checkout of {toplevel} not found (git dir {common_dir}); using this worktree"
+
+
+def load_plugins() -> tuple[Path, dict[str, Any]]:
+    """(installed_plugins.json path, its `plugins` map)."""
+    pj = plugins_json_path()
+    try:
+        plugins = json.loads(pj.read_text(encoding="utf-8")).get("plugins", {})
+    except (OSError, ValueError, AttributeError) as e:
+        raise MtError(f"cannot read installed plugins from {pj}: {e}") from e
+    return pj, plugins if isinstance(plugins, dict) else {}
+
+
+def plugin_entry(plugins: dict[str, Any], key: str) -> dict[str, Any] | None:
+    """A user-scope entry, else any; entries with a stale installPath are skipped (a profile import has no project)."""
+    entries = [
+        e
+        for e in plugins.get(key) or []
+        if isinstance(e, dict) and e.get("installPath") and Path(e["installPath"]).is_dir()
+    ]
+    if not entries:
+        return None
+    for e in entries:
+        if e.get("scope") == "user":
+            return e
+    return entries[0]
+
+
+def default_branch(toplevel: str, exec_scripts: str) -> str:
+    """The last line `<exec_scripts>/detect-branch.sh` prints in toplevel within DETECT_BRANCH_TIMEOUT; else
+    the same local steps without it."""
+    script = Path(exec_scripts) / "detect-branch.sh"
+    if script.is_file():
+        try:
+            r = subprocess.run(
+                ["bash", str(script)],
+                cwd=toplevel,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=DETECT_BRANCH_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            pass
+        else:
+            out = r.stdout.strip().splitlines()
+            if r.returncode == 0 and out:
+                return out[-1].strip()
+    # same local steps as detect-branch.sh, without the network call
+    head = git("symbolic-ref", "refs/remotes/origin/HEAD", cwd=toplevel, check=False)
+    if head:
+        return head.removeprefix("refs/remotes/origin/")
+    for cand in ("main", "master", "trunk", "develop"):
+        if git("show-ref", "--verify", "--quiet", f"refs/heads/{cand}", cwd=toplevel, check=False) is not None:
+            return cand
+    return "main"
+
+
+def slugify(title: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    return slug[:40].rstrip("-") or "task"
+
+
+def tilde(path: str) -> str:
+    home = str(Path.home())
+    return "~" + path[len(home) :] if path == home or path.startswith(home + os.sep) else path
+
+
+# ---------------------------------------------------------------- agterm
+
+
+def warn(text: str) -> None:
+    print(f"mt: warning: {text}", file=sys.stderr)
+
+
+class AgCall:
+    """Outcome of one agtermctl call. `code` is None when it could not run or timed out."""
+
+    def __init__(self, code: int | None, out: str, err: str, timed_out: bool = False) -> None:
+        self.code, self.out, self.err, self.timed_out = code, out, err, timed_out
+
+    @property
+    def ok(self) -> bool:
+        return self.code == 0
+
+    def why(self) -> str:
+        if self.timed_out:
+            return "timed out"
+        return (self.err or self.out).strip() or f"exit {self.code}"
+
+
+def agterm_session() -> str | None:
+    """This shell's agterm session id, or None outside agterm (AGTERM_ENABLED or AGTERM_SESSION_ID unset)."""
+    if not os.environ.get("AGTERM_ENABLED") or not os.environ.get("AGTERM_SESSION_ID"):
+        return None
+    return os.environ["AGTERM_SESSION_ID"]
+
+
+def cards_disabled() -> bool:
+    """MT_NO_CARDS turns question cards off (any value but empty or 0); the dashboard is not affected."""
+    return os.environ.get("MT_NO_CARDS", "").strip() not in ("", "0")
+
+
+def agtermctl(*args: str, timeout: float | None = None) -> AgCall:
+    """The one place mt runs agtermctl (default timeout AGTERM_TIMEOUT). Outside agterm nothing runs."""
+    if agterm_session() is None:
+        return AgCall(None, "", "not in agterm")
+    exe = shutil.which("agtermctl")
+    if exe is None:
+        return AgCall(None, "", "agtermctl is not on PATH")
+    try:
+        r = subprocess.run([exe, *args], capture_output=True, text=True, timeout=timeout or AGTERM_TIMEOUT, check=False)
+    except subprocess.TimeoutExpired:
+        return AgCall(None, "", "", timed_out=True)
+    except OSError as e:
+        return AgCall(None, "", str(e))
+    return AgCall(r.returncode, r.stdout, r.stderr)
+
+
+def set_status(state: dict[str, Any], status: str, sound: str | None = None, timeout: float | None = None) -> None:
+    """Best-effort sidebar status for this pane; only when the run has agterm. A failure only warns."""
+    sid = agterm_session()
+    if not state.get("agterm") or sid is None:
+        return
+    argv = ["session", "status", status, "--target", sid]
+    if sound:
+        argv += ["--sound", sound]
+    if os.environ.get("AGTERM_PANE_ID"):
+        argv += ["--pane-id", os.environ["AGTERM_PANE_ID"]]
+    r = agtermctl(*argv, timeout=timeout)
+    if not r.ok:
+        warn(f"agtermctl session status {status}: {r.why()}")
+
+
+def find_session(node: Any, sid: str) -> dict[str, Any] | None:
+    """The session node with id `sid` anywhere in a `tree --json` reply."""
+    if isinstance(node, dict):
+        if node.get("id") == sid:
+            return node
+        for v in node.values():
+            found = find_session(v, sid)
+            if found is not None:
+                return found
+    elif isinstance(node, list):
+        for v in node:
+            found = find_session(v, sid)
+            if found is not None:
+                return found
+    return None
+
+
+def own_pane(session: dict[str, Any]) -> str:
+    """`left` or `right`: the pane this shell runs in, from its AGTERM_PANE_ID surface (default left)."""
+    pane_id = os.environ.get("AGTERM_PANE_ID")
+    for s in session.get("surfaces") or []:
+        if isinstance(s, dict) and pane_id and s.get("paneID") == pane_id and s.get("kind") in ("left", "right"):
+            return s["kind"]
+    return "left"
+
+
+def open_dashboard(run: Path, state: dict[str, Any]) -> None:
+    """In agterm: show the split if needed and open the dashboard over the other pane.
+
+    Any failing agtermctl call leaves `agterm: false` (with a warning) and the run goes on without
+    the dashboard; a split mt created is closed again when the page cannot open.
+    """
+    sid = agterm_session()
+    if sid is None:
+        return
+    page = run / "dashboard.html"
+
+    def give_up(what: str) -> None:
+        state["agterm"] = False
+        state["warnings"].append(f"agterm: {what}; running without the dashboard")
+
+    if not page.is_file():
+        return give_up("dashboard.html could not be copied into the run dir")
+
+    r = agtermctl("tree", "--json")
+    if not r.ok:
+        return give_up(f"agtermctl tree failed: {r.why()}")
+    try:
+        session = find_session(json.loads(r.out), sid)
+    except ValueError:
+        session = None
+    if session is None:
+        return give_up(f"session {sid} not found in agtermctl tree")
+
+    mine = own_pane(session)
+    pane = "left" if mine == "right" else "right"
+    created = False
+    if not session.get("split"):
+        argv = ["session", "split", "on", "--target", sid]
+        if not session.get("hasSplit"):
+            argv += ["--axis", "vertical"]
+        r = agtermctl(*argv)
+        if not r.ok:
+            return give_up(f"agtermctl session split on failed: {r.why()}")
+        created = not session.get("hasSplit")
+
+    r = agtermctl(
+        "session", "overlay", "open", "--html", str(page), "--cwd", str(run),
+        "--js", "--chromeless", "--pane", pane, "--target", sid,
+    )  # fmt: skip
+    if not r.ok:
+        if created:
+            agtermctl("session", "split", "close", "--target", sid)
+        return give_up(f"agtermctl session overlay open failed: {r.why()}")
+
+    state.update(agterm=True, created_split=created, agterm_session=sid, dashboard_pane=pane)
+    if not session.get("split"):
+        # a split that appears takes the keyboard focus; hand it back to the pane the agent runs in
+        f = agtermctl("session", "focus", mine, "--target", sid)
+        if not f.ok:
+            warn(f"agtermctl session focus {mine}: {f.why()}")
+
+
+# ---------------------------------------------------------------- commands
+
+
+def cmd_init(args: argparse.Namespace) -> int:
+    cwd = os.getcwd()
+    if git("rev-parse", "--is-inside-work-tree", cwd=cwd, check=False) != "true":
+        raise MtError(f"{cwd} is not inside a git work tree")
+    toplevel = git("rev-parse", "--show-toplevel", cwd=cwd)
+    dirs = git("rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir", cwd=cwd).splitlines()
+    git_dir, common_dir = os.path.realpath(dirs[0]), os.path.realpath(dirs[1])
+    linked = git_dir != common_dir
+    main_checkout, checkout_warning = find_main_checkout(cwd, toplevel, common_dir, linked)
+
+    title = args.title.strip()
+    if not title:
+        raise MtError("--title must not be empty")
+    # the profile is checked before anything is written: a profile with errors leaves no run behind
+    profile, warnings = run_profile(profile_path(args.profile_dir, "--profile-dir"))
+    if checkout_warning:
+        warnings.append(checkout_warning)
+
+    root = state_root()
+    # the run dir's name is the run id SKILL.md writes into shell strings, a stash message, an awk value and a
+    # ref name: keep the checkout's name to characters none of them treats specially (a backslash or a `"`
+    # in it would change the message the lookup searches for)
+    checkout_name = re.sub(r"[^A-Za-z0-9_-]+", "-", os.path.basename(main_checkout)).strip("-") or "repo"
+    base = f"{checkout_name}-{slugify(title)}-{time.strftime('%Y%m%d-%H%M')}"
+    run = root / base
+    n = 2
+    while run.exists():
+        run = root / f"{base}-{n}"
+        n += 1
+    try:
+        run.mkdir(parents=True)
+    except OSError as e:
+        raise MtError(f"cannot create run dir {run}: {e}") from e
+
+    branch = git("branch", "--show-current", cwd=toplevel, check=False) or None
+    renderer = renderer_path()
+    state: dict[str, Any] = {
+        **dict.fromkeys(SET_KEYS),  # the explicit entries below override these
+        "title": title,
+        "repo": tilde(main_checkout),
+        "main_checkout": main_checkout,
+        "toplevel": toplevel,
+        "branch": branch,
+        "default_branch": default_branch(toplevel, profile["exec_scripts"]),
+        "has_origin": git("remote", "get-url", "origin", cwd=toplevel, check=False) is not None,
+        "linked_worktree": linked,
+        "worktree": linked,
+        "worktree_path": toplevel if linked else None,
+        "dirty_paths": dirty_paths(toplevel),
+        "stash_paths": None,
+        "stash_ref": None,
+        "start_cwd": cwd,
+        "agterm": False,
+        "cards": False,
+        "created_split": False,
+        "agterm_session": None,
+        "dashboard_pane": None,
+        "state_dir": str(run),
+        **profile,
+        "renderer": renderer,
+        "revdiff": shutil.which("revdiff") is not None,
+        "warnings": warnings,
+        "started": now(),
+        "finished": None,
+        "final_status": None,
+        "error": None,
+        "activity": "Starting",
+        "now_kind": "",
+        "phases": [
+            {"id": pid, "label": label, "status": "pending", "started": None, "finished": None, "note": ""}
+            for pid, label in PHASES
+        ],
+        "plan_rel": None,
+        "plan_path": None,
+        "progress_path": None,
+        "review_stale": False,
+        "verified_sha": None,
+        "not_gating": [],
+        "deferred": [],
+        "unresolved": [],
+        "tasks": [],
+        "review": [],
+        "checkpoints": [],
+        "assumptions": [],
+        "decisions": [],
+        "artifacts": [],
+        "events": [],
+    }
+    add_event(state, "make-task started")
+    save(run, state)
+    try:
+        atomic_write(pointer_path(), str(run) + "\n")
+    except OSError as e:
+        raise MtError(f"cannot write run pointer {pointer_path()}: {e}") from e
+    try:
+        shutil.copyfile(ASSETS / "dashboard.html", run / "dashboard.html")
+    except OSError as e:
+        state["warnings"].append(f"cannot copy dashboard.html: {e}")
+        save(run, state)
+    if agterm_session() is not None:
+        open_dashboard(run, state)
+        if not state["agterm"]:
+            add_event(state, "No dashboard: agterm is not available")
+        save(run, state)
+    state["cards"] = bool(state["agterm"]) and not cards_disabled()
+    save(run, state)
+
+    out_keys = (
+        "state_dir",
+        "title",
+        "repo",
+        "main_checkout",
+        "toplevel",
+        "branch",
+        "default_branch",
+        "has_origin",
+        "linked_worktree",
+        "worktree",
+        "worktree_path",
+        "dirty_paths",
+        "start_cwd",
+        "agterm",
+        "cards",
+        "created_split",
+        "dashboard_pane",
+        *PROFILE_STATE_KEYS,
+        "renderer",
+        "revdiff",
+        "warnings",
+    )
+    print(json.dumps({k: state[k] for k in out_keys}, ensure_ascii=False))
+    return 0
+
+
+def running_phase(state: dict[str, Any]) -> dict[str, Any] | None:
+    return next((p for p in state["phases"] if p["status"] in ("run", "error")), None)
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    run = resolve_run(args.run)
+    state = load(run)
+    cur = running_phase(state)
+    keys = (
+        "title",
+        "branch",
+        "default_branch",
+        "has_origin",
+        "toplevel",
+        "main_checkout",
+        "worktree",
+        "worktree_path",
+        "dirty_paths",
+        "stash_paths",
+        "plan_rel",
+        "plan_path",
+        "progress_path",
+        *PROFILE_STATE_KEYS,
+        *SET_KEYS,
+        "review_stale",
+        "verified_sha",
+        "final_status",
+    )
+    warnings: list[str] = []
+    if not any(k in state for k in PROFILE_STATE_KEYS):
+        warnings.append(
+            f"run {run} was started before make-task profiles: its state has no profile keys "
+            "(profile_dir, exec_scripts, ...); finish it with the make-task version that started it, "
+            "or start a new run"
+        )
+        warn(warnings[-1])
+    round_keys = (
+        "round",
+        "run",
+        "round_dir",
+        "report",
+        "head",
+        "verdict",
+        "milestone",
+        "confirming",
+        "started",
+        "finished",
+    )
+    cps = state.get("checkpoints") or []
+    out = {
+        "run": str(run),
+        "phase": cur["id"] if cur else None,
+        "phase_status": cur["status"] if cur else None,
+        "phases": {p["id"]: p["status"] for p in state["phases"]},
+        "activity": state.get("activity"),
+        "error": state.get("error"),
+        "warnings": warnings,
+        "values": {k: state.get(k) for k in keys},
+        "begun": [{"key": c.get("key"), "at": c.get("at")} for c in cps if c.get("state") == "begun"],
+        "ended": [{"key": c.get("key"), "result": c.get("result")} for c in cps if c.get("state") == "ended"],
+        "rounds": [{k: r.get(k) for k in round_keys} for r in state.get("review") or []],
+        "unresolved": len(state.get("unresolved") or []),
+        "deferred": len(state.get("deferred") or []),
+        "assumptions": state.get("assumptions") or [],
+        "decisions": state.get("decisions") or [],
+    }
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_set(args: argparse.Namespace) -> int:
+    pairs: list[tuple[str, str | None]] = []
+    for item in args.pairs:
+        key, sep, value = item.partition("=")
+        if not sep:
+            raise MtError(f"set: expected KEY=VALUE, got {item!r}")
+        if key not in SET_KEYS:
+            raise MtError(f"set: unknown key {key!r}; allowed: {', '.join(SET_KEYS)}")
+        if not value and key not in CLEARABLE_KEYS:
+            raise MtError(
+                f"set: empty value for {key} (a failed $(...)?); only {', '.join(CLEARABLE_KEYS)} can be cleared"
+            )
+        if value and key in SET_CHOICES and value not in SET_CHOICES[key]:
+            raise MtError(f"set: {key} must be one of {', '.join(SET_CHOICES[key])}, got {value!r}")
+        pairs.append((key, value or None))
+    run = resolve_run(args.run)
+    state = load(run)
+    for key, value in pairs:
+        if key in WRITE_ONCE_KEYS and state.get(key) and value != state[key]:
+            raise MtError(f"set: {key} is already {state[key]}; it is written once; a rerun keeps the first value")
+    for key, value in pairs:
+        state[key] = value
+        if key == "worktree_path" and value:
+            state["worktree"] = True
+    save(run, state)
+    return 0
+
+
+def clear_error(state: dict[str, Any]) -> None:
+    state["error"] = None
+    if state.get("now_kind") == "error":
+        state["now_kind"] = ""
+
+
+def cmd_phase(args: argparse.Namespace) -> int:
+    if args.id not in PHASE_IDS:
+        raise MtError(f"phase: unknown id {args.id!r}; known: {', '.join(PHASE_IDS)}")
+    run = resolve_run(args.run)
+    state = load(run)
+    t = now()
+    target = next(p for p in state["phases"] if p["id"] == args.id)
+    cur = running_phase(state)
+    if cur is not None and cur is not target:
+        cur["status"], cur["finished"] = "done", t
+    event = None
+    if args.skipped:
+        if target["status"] != "skipped":
+            event = f"{target['label']} skipped"
+        target.update(status="skipped", started=None, finished=None)
+    elif target["status"] == "error":
+        target["status"] = "run"
+    elif target["status"] != "run":
+        target.update(status="run", started=t, finished=None)
+        event = f"{target['label']} started"
+    if args.note is not None:
+        target["note"] = args.note
+    clear_error(state)
+    if args.activity is not None:
+        state["activity"] = args.activity
+        state["now_kind"] = ""
+    if event:
+        add_event(state, event)
+    save(run, state)
+    set_status(state, "active")
+    return 0
+
+
+def cmd_activity(args: argparse.Namespace) -> int:
+    run = resolve_run(args.run)
+    state = load(run)
+    clear_error(state)
+    for p in state["phases"]:
+        if p["status"] == "error":
+            p["status"] = "run"
+    state["activity"] = args.text
+    state["now_kind"] = "wait" if args.wait else ""
+    save(run, state)
+    if not args.wait:
+        set_status(state, "active")
+    return 0
+
+
+def cmd_assume(args: argparse.Namespace) -> int:
+    run = resolve_run(args.run)
+    state = load(run)
+    state.setdefault("assumptions", []).append({"text": args.text, "why": args.why})
+    save(run, state)
+    return 0
+
+
+def cmd_decide(args: argparse.Namespace) -> int:
+    run = resolve_run(args.run)
+    state = load(run)
+    state.setdefault("decisions", []).append({"q": args.q, "a": args.a})
+    save(run, state)
+    return 0
+
+
+def cmd_event(args: argparse.Namespace) -> int:
+    run = resolve_run(args.run)
+    state = load(run)
+    add_event(state, args.text)
+    save(run, state)
+    return 0
+
+
+# ---------------------------------------------------------------- checkpoints and errors
+
+CHECKPOINT_KEY = re.compile(rf"^{ID}$")
+
+
+def cmd_checkpoint(args: argparse.Namespace) -> int:
+    """Journal an external side effect: `begin` before it starts, `end` when it finishes.
+
+    `begin` on a key that is `begun` fails unless --resume; `begin` on an `ended` key starts a
+    new attempt. `end` on an unknown key fails; `end` on an
+    already `ended` key is a no-op except that --result replaces the stored result.
+    """
+    key = args.key
+    if not CHECKPOINT_KEY.match(key):
+        raise MtError(f"checkpoint: invalid key {key!r} ({ID_RULE})")
+    run = resolve_run(args.run)
+    state = load(run)
+    cps = state.setdefault("checkpoints", [])
+    cp = next((c for c in cps if c.get("key") == key), None)
+    t = now()
+    if args.action == "begin":
+        if cp is not None and cp.get("state") == "begun":
+            if not args.resume:
+                raise MtError(f"checkpoint {key} is already begun; reconcile it first, or pass --resume to continue it")
+            cp["at"] = t
+        elif cp is not None:
+            cp.update(state="begun", result=None, at=t, ended=None)
+        else:
+            if args.resume:
+                raise MtError(f"checkpoint {key}: --resume given but no such checkpoint is begun")
+            cps.append({"key": key, "state": "begun", "result": None, "at": t, "ended": None})
+    else:
+        if cp is None:
+            raise MtError(f"checkpoint end: unknown key {key!r} (never begun)")
+        if cp.get("state") != "ended":
+            cp.update(state="ended", ended=t)
+        if args.result is not None:
+            cp["result"] = args.result
+    save(run, state)
+    return 0
+
+
+def cmd_fail(args: argparse.Namespace) -> int:
+    """Put the run into the error state; the next `phase` or `activity` resumes it."""
+    msg = args.msg.strip()
+    if not msg:
+        raise MtError("fail: MSG must not be empty")
+    run = resolve_run(args.run)
+    state = load(run)
+    state["error"] = msg
+    state["now_kind"] = "error"
+    cur = running_phase(state)
+    if cur is not None:
+        cur["status"] = "error"
+    add_event(state, f"Error: {msg}")
+    save(run, state)
+    set_status(state, "blocked")
+    return 0
+
+
+def cmd_dirty(args: argparse.Namespace) -> int:
+    """Re-read the dirty paths now (not the init snapshot) and store the ones to stash.
+
+    `.revmux/` (the review needs the profile in place) and each --exclude path (the plan) are left
+    out. Prints {"paths": [...], "quoted": "<each path shell-quoted>", "unstage": [...], "unstage_quoted": "..."}.
+    """
+    run = resolve_run(args.run)
+    state = load(run)
+    toplevel = cwd_toplevel(state)
+    real_top = os.path.realpath(toplevel)
+    excluded: set[str] = set()
+    for item in args.exclude or []:
+        path = os.path.realpath(os.path.abspath(item))
+        try:
+            excluded.add(Path(path).relative_to(real_top).as_posix())
+        except ValueError:
+            raise MtError(f"dirty: --exclude {item} is outside the checkout {toplevel}") from None
+    paths = [p for p in dirty_paths(toplevel) if not under_revmux(p) and p.rstrip("/") not in excluded]
+    unstage = absent_from_index(toplevel, paths)
+    state["stash_paths"] = paths
+    save(run, state)
+    out = {
+        "paths": paths,
+        "quoted": " ".join(shlex.quote(p) for p in paths),
+        "unstage": unstage,
+        "unstage_quoted": " ".join(shlex.quote(p) for p in unstage),
+    }
+    print(json.dumps(out, ensure_ascii=False))
+    return 0
+
+
+def absent_from_index(toplevel: str, paths: list[str]) -> list[str]:
+    """The paths in HEAD that the index no longer has: staged deletions and the sources of staged renames.
+
+    `git stash push -- <paths>` runs `git add -- <paths>`, which fails on such a path (in neither the index
+    nor the tree) after the stash is saved. `git reset -- <path>` puts HEAD's version back in the index;
+    the index had nothing there, so nothing staged is lost. Every other path keeps its staged content.
+    """
+    if not paths:
+        return []
+
+    def names(*cmd: str) -> set[str]:
+        out = git("--literal-pathspecs", *cmd, "--", *paths, cwd=toplevel, check=False) or ""
+        return {name for name in out.split("\0") if name}
+
+    in_head = names("ls-tree", "-r", "-z", "--name-only", "HEAD")  # empty on an unborn branch
+    in_index = names("ls-files", "-z")
+    return [p for p in paths if p in in_head and p not in in_index]
+
+
+# ---------------------------------------------------------------- run completion
+
+FINAL_STATUSES = ("clean", "not clean", "review skipped", "review stale", "stopped")
+
+
+def clean_blockers(state: dict[str, Any]) -> list[str]:
+    """Why the run cannot end as `clean` (empty when it can)."""
+    why: list[str] = []
+    if state.get("unresolved"):
+        why.append(f"{len(state['unresolved'])} unresolved gating finding(s)")
+    if state.get("deferred"):
+        why.append(f"{len(state['deferred'])} deferred finding(s)")
+    if state.get("review_stale"):
+        why.append("the review is stale (the branch changed after review)")
+    review = next((p for p in state["phases"] if p["id"] == "review"), None)
+    if review is not None and review["status"] == "skipped":
+        why.append("the review phase was skipped")
+    elif review is not None and review["status"] == "pending":
+        why.append("the review phase never ran")
+    else:
+        rounds = state.get("review") or []
+        finished = [r for r in rounds if r.get("finished")]
+        latest = max(finished, key=lambda r: r["round"]) if finished else None
+        if latest is None:
+            why.append("no review round has a result")
+        elif latest.get("degraded"):
+            why.append("the last review round was degraded")
+        if latest is not None and state.get("reviewed_sha"):
+            head = latest.get("head")
+            if not head:
+                why.append(f"review round {latest['round']} recorded no head")
+            elif head != state["reviewed_sha"]:
+                why.append(
+                    f"reviewed_sha {state['reviewed_sha'][:12]} is not the HEAD review round {latest['round']} "
+                    f"reviewed ({head[:12]}): the commits after that round were never reviewed"
+                )
+        if rounds:
+            last = max(rounds, key=lambda r: r.get("round", 0))
+            if not last.get("finished"):
+                why.append(f"review round {last.get('round')} has no result")
+    if state.get("stop_reason") == "skipped":
+        why.append("stop_reason is skipped")
+    reviewed = state.get("reviewed_sha")
+    if not reviewed:
+        why.append("reviewed_sha is not set (finalize has not run)")
+    elif state.get("verified_sha") != reviewed:
+        why.append("review verify-final has not checked reviewed_sha")
+    fin = next((c for c in state.get("checkpoints") or [] if c.get("key") == "finalize"), None)
+    if fin is None or fin.get("state") != "ended" or fin.get("result") != "ok":
+        got = "never begun" if fin is None else f"{fin.get('state')}, result {fin.get('result')!r}"
+        why.append(f"the finalize checkpoint did not end ok ({got})")
+    if state.get("error"):
+        why.append(f"the run is in the error state ({state['error']})")
+    return why
+
+
+def cmd_done(args: argparse.Namespace) -> int:
+    """Finish the run with a final status; a second call keeps the first finish time."""
+    status = args.status
+    if status not in FINAL_STATUSES:
+        raise MtError(f"done: unknown status {status!r}; known: {', '.join(FINAL_STATUSES)}")
+    run = resolve_run(args.run)
+    state = load(run)
+    if status == "clean":
+        why = clean_blockers(state)
+        if why:
+            raise MtError(f"done: cannot finish as clean: {'; '.join(why)}")
+    t = now()
+    first = not state.get("finished")
+    if first:
+        state["finished"] = t
+        for p in state["phases"]:
+            if p["status"] == "run":
+                p["status"], p["finished"] = "done", t
+            elif p["status"] == "error":
+                p["finished"] = t  # keep where the run stopped visible
+    changed = state.get("final_status") != status
+    state["final_status"] = status
+    if args.note is not None:
+        state["final_note"] = args.note
+    state["now_kind"] = "done"
+    state["activity"] = state.get("final_note") or f"Finished · {status}"
+    if first or changed or args.note is not None:
+        note = f" · {args.note}" if args.note else ""
+        add_event(state, f"Run finished: {status}{note}" if first else f"Final status: {status}{note}")
+    save(run, state)
+    set_status(state, "completed")
+    return 0
+
+
+# ---------------------------------------------------------------- plan parsing
+
+TASK_HEADER = re.compile(r"^### (Task|Iteration) (\d+): (.+)$")
+SECTION_END = re.compile(r"^#{1,3} ")
+CHECKBOX = re.compile(r"^\s*- \[( |x|X)\]")
+FENCE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
+
+
+def parse_plan(text: str) -> list[dict[str, Any]]:
+    """Task sections of a plan: [{"n", "title", "done", "total"}] in file order.
+
+    A section starts at `### Task N: title` or `### Iteration N: title` and ends at the
+    next `#`, `##` or `###` header (a `####` subsection does not end it). Lines inside
+    fenced code blocks are neither headers nor checkboxes. As in CommonMark, a fence closes
+    only at a line of the same character, at least as long as the opening run, with nothing
+    after it: a ```` fence may show a ``` example, headers and boxes included.
+    """
+    tasks: list[dict[str, Any]] = []
+    cur: dict[str, Any] | None = None
+    fence: str | None = None
+    for line in text.splitlines():
+        m = FENCE.match(line)
+        if fence is not None:
+            delim, rest = m.groups() if m else ("", "")
+            if delim[:1] == fence[0] and len(delim) >= len(fence) and not rest.strip():
+                fence = None
+            continue
+        # a backtick run followed by more backticks on the line is inline code, not a fence
+        if m and not (m.group(1)[0] == "`" and "`" in m.group(2)):
+            fence = m.group(1)
+            continue
+        h = TASK_HEADER.match(line)
+        if h:
+            cur = {"n": int(h.group(2)), "title": h.group(3).strip(), "done": 0, "total": 0}
+            tasks.append(cur)
+            continue
+        if SECTION_END.match(line):
+            cur = None
+            continue
+        if cur is not None:
+            c = CHECKBOX.match(line)
+            if c:
+                cur["total"] += 1
+                if c.group(1) in "xX":
+                    cur["done"] += 1
+    return tasks
+
+
+def merge_tasks(state: dict[str, Any], parsed: list[dict[str, Any]], t: float) -> None:
+    """Replace state["tasks"] with the parsed sections, keeping and stamping times.
+
+    The current task (first section with an unchecked box) is `run` and gets `started`
+    the first time it is seen current; a section with no unchecked box is `done` and
+    gets `finished` when it becomes done after being seen open (cleared again if a box is
+    added later). A section already done when first seen gets no stamps.
+    """
+    previous: dict[int, dict[str, Any]] = {}
+    for old in state.get("tasks") or []:
+        previous.setdefault(old.get("n"), old)
+    current_seen = False
+    tasks: list[dict[str, Any]] = []
+    for p in parsed:
+        old = previous.pop(p["n"], None) or {}
+        task = {
+            "n": p["n"],
+            "title": p["title"],
+            "done": p["done"],
+            "total": p["total"],
+            "status": "pending",
+            "started": old.get("started"),
+            "finished": old.get("finished"),
+        }
+        label = f"Task {p['n']}"
+        if p["done"] == p["total"]:
+            task["status"] = "done"
+            if task["finished"] is None and old and old.get("status") != "done":
+                task["finished"] = t
+                add_event(state, f"{label} done · {p['title']}")
+        else:
+            task["finished"] = None
+            if not current_seen:
+                current_seen = True
+                task["status"] = "run"
+                if task["started"] is None:
+                    task["started"] = t
+                if old.get("status") != "run":
+                    add_event(state, f"{label} started · {p['title']}")
+        tasks.append(task)
+    state["tasks"] = tasks
+
+
+def register_artifact(state: dict[str, Any], aid: str, source: str, hint: str | None = None) -> dict[str, Any]:
+    """Add or update an artifact entry (rendering is done separately)."""
+    arts = state.setdefault("artifacts", [])
+    art = next((a for a in arts if a.get("id") == aid), None)
+    if art is None:
+        art = {"id": aid, "hint": hint, "html": None, "command": None, "cwd": None, "source": None}
+        art.update(mtime=0, updated=0)
+        arts.append(art)
+    if art.get("source") != source:
+        art.update(source=source, mtime=0)
+    if hint is not None:
+        art["hint"] = hint
+    elif not art.get("hint"):
+        art["hint"] = tilde(source)
+    return art
+
+
+def text_as_markdown(name: str, text: str) -> str:
+    """A text file as markdown: a heading with its name, then the text in a fence longer than any inside."""
+    longest = max((len(m) for m in re.findall(r"`{3,}", text)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return f"# {name}\n\n{fence}text\n{text.rstrip(chr(10))}\n{fence}\n"
+
+
+def render_artifact(run: Path, art: dict[str, Any]) -> str | None:
+    """Render art's source to <run>/artifacts/<id>.html when its mtime changed; return a warning or None.
+
+    No renderer: the entry keeps html None (its dashboard button stays disabled). A renderer
+    failure leaves html and mtime as they were, so the previous page stays and the next
+    call retries.
+    """
+    aid, src = art["id"], Path(art["source"])
+    try:
+        mtime = src.stat().st_mtime
+    except OSError as e:
+        return f"artifact {aid}: cannot stat {src}: {e.strerror or e}"
+    renderer = renderer_path()
+    have_html = bool(art.get("html")) and Path(art["html"]).is_file()
+    if art.get("mtime") == mtime and (have_html or renderer is None):
+        return None
+    if renderer is None:
+        art.update(mtime=mtime, updated=now())
+        return None
+    out = run / "artifacts" / f"{aid}.html"
+    tmp_out: str | None = None
+    tmp_md: str | None = None
+    try:
+        out.parent.mkdir(exist_ok=True)
+        fd, tmp_out = tempfile.mkstemp(dir=out.parent, prefix=f".{aid}.", suffix=".html")
+        os.close(fd)
+        input_path = str(src)
+        if src.suffix.lower() not in MARKDOWN_SUFFIXES:
+            text = src.read_text(encoding="utf-8", errors="replace")
+            fd, tmp_md = tempfile.mkstemp(dir=out.parent, prefix=f".{aid}.", suffix=".md")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(text_as_markdown(src.name, text))
+            input_path = tmp_md
+        r = subprocess.run(
+            renderer_argv(renderer, input_path, tmp_out),
+            capture_output=True,
+            text=True,
+            timeout=RENDER_TIMEOUT,
+            check=False,
+        )
+        if r.returncode != 0 or os.path.getsize(tmp_out) == 0:
+            detail = (r.stderr.strip() or r.stdout.strip())[-300:]
+            return f"artifact {aid}: renderer failed (exit {r.returncode}){': ' + detail if detail else ''}"
+        os.chmod(tmp_out, 0o644)  # mkstemp makes it 0600
+        os.replace(tmp_out, out)
+        tmp_out = None
+    except subprocess.TimeoutExpired:
+        return f"artifact {aid}: renderer timed out after {RENDER_TIMEOUT}s"
+    except OSError as e:
+        return f"artifact {aid}: cannot render {src}: {e}"
+    finally:
+        for leftover in (tmp_out, tmp_md):
+            if leftover:
+                try:
+                    os.unlink(leftover)
+                except OSError:
+                    pass
+    art.update(html=str(out), mtime=mtime, updated=now())
+    return None
+
+
+def render_changed(run: Path, state: dict[str, Any]) -> None:
+    """Re-render every artifact with a source whose mtime changed; warnings go to stderr."""
+    for art in state.get("artifacts") or []:
+        if not art.get("source"):
+            continue
+        if not Path(art["source"]).exists():
+            continue  # e.g. the progress log before the first task writes it
+        warning = render_artifact(run, art)
+        if warning:
+            warn(warning)
+
+
+def cwd_toplevel(state: dict[str, Any]) -> str:
+    """Toplevel of the current cwd; in worktree mode it must be the stored worktree_path."""
+    cwd = os.getcwd()
+    toplevel = git("rev-parse", "--show-toplevel", cwd=cwd, check=False)
+    if not toplevel:
+        raise MtError(f"{cwd} is not inside a git work tree")
+    wt = state.get("worktree_path")
+    if state.get("worktree") and wt and os.path.realpath(toplevel) != os.path.realpath(wt):
+        raise MtError(
+            f"cwd {cwd} is in the checkout {toplevel}, but this run works in the worktree {wt}; run mt from inside {wt}"
+        )
+    return toplevel
+
+
+def locate_plan(toplevel: str, plan_rel: str) -> Path | None:
+    """The plan under toplevel, or its copy moved into the sibling completed/ directory."""
+    direct = Path(toplevel) / plan_rel
+    if direct.is_file():
+        return direct
+    moved = direct.parent / "completed" / direct.name
+    if direct.parent.name != "completed" and moved.is_file():
+        return moved
+    return None
+
+
+def sync_plan(state: dict[str, Any], toplevel: str) -> None:
+    """Re-resolve plan_path under toplevel and re-parse its task sections."""
+    plan_rel = state.get("plan_rel")
+    if not plan_rel:
+        return
+    plan = locate_plan(toplevel, plan_rel)
+    if plan is None:
+        raise MtError(f"plan {plan_rel} not found under {toplevel} (nor in its completed/ directory)")
+    state["plan_path"] = str(plan)
+    register_artifact(state, "plan", str(plan), "implementation plan")
+    try:
+        text = plan.read_text(encoding="utf-8")
+    except OSError as e:
+        raise MtError(f"cannot read plan {plan}: {e}") from e
+    merge_tasks(state, parse_plan(text), now())
+
+
+def set_changes(state: dict[str, Any], toplevel: str, base: str, hint: str | None = None) -> None:
+    """Register the Changes button: revdiff of BASE against the tree, run in TOPLEVEL."""
+    revdiff = shutil.which("revdiff")
+    arts = state.setdefault("artifacts", [])
+    art = next((a for a in arts if a.get("id") == "changes"), None)
+    if art is None:
+        art = {"id": "changes"}
+        arts.append(art)
+    art.update(
+        hint=hint or (f"revdiff {base[:12]}" if revdiff else "revdiff is not installed"),
+        html=None,
+        command=f"{shlex.quote(revdiff)} {shlex.quote(base)}" if revdiff else None,
+        cwd=toplevel,
+        source=None,
+        mtime=0,
+        updated=now(),
+    )
+
+
+def changes_early(state: dict[str, Any], toplevel: str) -> None:
+    """Once review_base is set (Exec step 1), Changes shows the task's work in progress; register it once."""
+    base = state.get("review_base")
+    if base and not any(a.get("id") == "changes" for a in state.get("artifacts", [])):
+        set_changes(state, toplevel, base)
+
+
+def cmd_plan(args: argparse.Namespace) -> int:
+    run = resolve_run(args.run)
+    state = load(run)
+    toplevel = cwd_toplevel(state)
+    plan = Path(os.path.abspath(args.path))
+    if not plan.is_file():
+        raise MtError(f"plan: no such file {plan}")
+    real_top = os.path.realpath(toplevel)
+    try:
+        plan_rel = Path(os.path.realpath(plan)).relative_to(real_top).as_posix()
+    except ValueError:
+        raise MtError(f"plan: {plan} is outside the checkout {toplevel}") from None
+    state["toplevel"] = toplevel
+    state["branch"] = git("branch", "--show-current", cwd=toplevel, check=False) or None
+    state["plan_rel"] = plan_rel
+    if args.progress:
+        progress = os.path.abspath(args.progress)
+        state["progress_path"] = progress
+        register_artifact(state, "progress", progress, "progress log")
+    sync_plan(state, toplevel)
+    render_changed(run, state)
+    changes_early(state, toplevel)
+    add_event(state, f"Plan {plan_rel}")
+    save(run, state)
+    return 0
+
+
+def cmd_refresh(args: argparse.Namespace) -> int:
+    run = resolve_run(args.run)
+    state = load(run)
+    toplevel = cwd_toplevel(state)
+    state["toplevel"] = toplevel
+    state["branch"] = git("branch", "--show-current", cwd=toplevel, check=False) or None
+    sync_plan(state, toplevel)
+    render_changed(run, state)
+    changes_early(state, toplevel)
+    save(run, state)
+    return 0
+
+
+def default_branch_refs(state: dict[str, Any]) -> list[str]:
+    """The default branch's refs to try, in order: origin/<default> (with origin), then <default>."""
+    default = state["default_branch"]
+    return ([f"origin/{default}"] if state.get("has_origin") else []) + [default]
+
+
+def merge_base(state: dict[str, Any], toplevel: str) -> str:
+    """Merge-base of HEAD with the default branch (origin/<default>, else local <default>)."""
+    refs = default_branch_refs(state)
+    for ref in refs:
+        base = git("merge-base", ref, "HEAD", cwd=toplevel, check=False)
+        if base:
+            return base
+    raise MtError(f"artifact changes: no review_base and no merge-base of HEAD with {' or '.join(refs)}")
+
+
+def cmd_artifact(args: argparse.Namespace) -> int:
+    aid = args.id
+    if aid not in ARTIFACT_IDS:
+        raise MtError(f"artifact: unknown id {aid!r}; known: {', '.join(ARTIFACT_IDS)}")
+    if aid == "changes" and args.path:
+        raise MtError("artifact changes takes no PATH (it diffs review_base, or the merge-base, against the tree)")
+    if aid != "changes" and not args.path:
+        raise MtError(f"artifact {aid}: PATH is required")
+    run = resolve_run(args.run)
+    state = load(run)
+    if aid == "changes":
+        toplevel = cwd_toplevel(state)
+        set_changes(state, toplevel, state.get("review_base") or merge_base(state, toplevel), args.hint)
+    else:
+        src = Path(os.path.abspath(args.path))
+        if not src.is_file():
+            raise MtError(f"artifact {aid}: no such file {src}")
+        art = register_artifact(state, aid, str(src), args.hint)
+        warning = render_artifact(run, art)
+        if warning:
+            warn(warning)
+    save(run, state)
+    return 0
+
+
+# ---------------------------------------------------------------- review rounds
+
+GATING = ("critical", "major")
+SEVERITIES = ("critical", "major", "minor")
+ERE_SPECIAL = set(r"\.[]()*+?{}|^$")
+MD_SPECIAL = set("\\`*_[]<>&|~")
+
+
+def ere_escape(text: str) -> str:
+    """Escape text for pgrep's POSIX extended regex."""
+    return "".join("\\" + ch if ch in ERE_SPECIAL else ch for ch in text)
+
+
+def md_escape(text: Any) -> str:
+    """Reviewer text as inline markdown: specials backslash-escaped, newlines folded to spaces."""
+    flat = " ".join(str(text or "").split())
+    return "".join("\\" + ch if ch in MD_SPECIAL else ch for ch in flat)
+
+
+def review_round(state: dict[str, Any], n: int) -> dict[str, Any] | None:
+    return next((r for r in state.get("review") or [] if r.get("round") == n), None)
+
+
+def positive_round(n: int) -> int:
+    if n < 1:
+        raise MtError(f"review: --round must be 1 or more, got {n}")
+    return n
+
+
+def report_path(run: Path, n: int) -> Path:
+    return run / "revmux" / f"round-{n}.json"
+
+
+def cmd_review_start(args: argparse.Namespace) -> int:
+    n = positive_round(args.round)
+    name = args.name.strip()
+    if not name:
+        raise MtError("review start: --run NAME must not be empty")
+    run = resolve_run(args.run)
+    state = load(run)
+    head = git("rev-parse", "HEAD", cwd=cwd_toplevel(state))
+    round_dir = os.path.abspath(args.round_dir)
+    report = report_path(run, n)
+    try:
+        report.parent.mkdir(exist_ok=True)
+    except OSError as e:
+        raise MtError(f"review start: cannot create {report.parent}: {e}") from e
+    rounds = state.setdefault("review", [])
+    entry = review_round(state, n)
+    t = now()
+    if entry is not None and entry.get("finished"):
+        raise MtError(f"review start: round {n} already has a result (run {entry.get('run')}); start round {n + 1}")
+    if entry is not None and entry.get("started") and entry.get("run") != name:
+        raise MtError(
+            f"review start: round {n} is already started as {entry.get('run')}; a re-run is a new round {n + 1}"
+        )
+    if entry is None:
+        entry = {"round": n}
+        rounds.append(entry)
+        rounds.sort(key=lambda r: r.get("round", 0))
+    if not entry.get("started"):
+        entry.update(
+            run=name,
+            round_dir=round_dir,
+            report=str(report),
+            head=head,
+            critical=0,
+            major=0,
+            minor=0,
+            open_questions=0,
+            degraded=[],
+            verdict=None,
+            milestone="starting",
+            started=t,
+            finished=None,
+            duration=None,
+        )
+        add_event(state, f"Review round {n} started · {name}")
+    else:
+        entry.update(round_dir=round_dir, report=str(report))
+    state["activity"] = f"Review round {n} · starting"
+    state["now_kind"] = ""
+    save(run, state)
+    print(json.dumps({"round": n, "run": name, "round_dir": round_dir, "report": str(report)}))
+    return 0
+
+
+def read_events(path: Path) -> list[dict[str, Any]]:
+    """Complete, parseable lines of a revmux events.jsonl (a line still being written is skipped)."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    events = []
+    for line in text.split("\n")[:-1]:
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(ev, dict):
+            events.append(ev)
+    return events
+
+
+def milestone(events: list[dict[str, Any]]) -> str:
+    """`<stage> <finished>/<started>` agents of the latest stage, plus degraded sources so far."""
+    stage = None
+    started: set[str] = set()
+    finished: set[str] = set()
+    degraded: set[str] = set()
+    for ev in events:
+        kind, agent = ev.get("kind"), ev.get("agent") or ""
+        if kind == "stage":
+            stage, started, finished = ev.get("stage") or "?", set(), set()
+        elif kind == "agent_started":
+            started.add(agent)
+        elif kind in ("agent_done", "agent_degraded"):
+            finished.add(agent)
+            if kind == "agent_degraded":
+                degraded.add(agent)
+    if stage is None:
+        return "starting"
+    text = f"{stage} {len(finished & started)}/{len(started)}"
+    return text + (f" · {len(degraded)} degraded" if degraded else "")
+
+
+def process_alive(task: str, name: str) -> bool:
+    """Is a revmux launched as `revmux --task <task> --run <name> ...` still running?"""
+    pattern = f"--task {ere_escape(task)} --run {ere_escape(name)}( |$)"
+    pgrep = os.environ.get("MT_PGREP") or "pgrep"
+    try:
+        r = subprocess.run([pgrep, "-f", "--", pattern], capture_output=True, text=True, check=False)
+    except OSError as e:
+        raise MtError(f"review wait: cannot run {pgrep}: {e}") from e
+    if r.returncode > 1:
+        raise MtError(f"review wait: {pgrep} failed (exit {r.returncode}): {r.stderr.strip()}")
+    return r.returncode == 0
+
+
+def load_report(path: Path) -> dict[str, Any]:
+    """A revmux JSON report; MtError when it is missing, empty or not a report."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as e:
+        raise MtError(f"cannot read revmux report {path}: {e.strerror or e}") from e
+    except ValueError as e:
+        raise MtError(f"revmux report {path} is not valid JSON: {e}") from e
+    if not isinstance(data, dict) or not isinstance(data.get("findings"), list):
+        raise MtError(f"revmux report {path} has no findings list")
+    for f in data["findings"]:
+        if not isinstance(f, dict) or not f.get("id"):
+            raise MtError(f"revmux report {path}: a finding without an id")
+    return data
+
+
+def review_poll() -> float:
+    raw = os.environ.get("MT_REVIEW_POLL")
+    if not raw:
+        return 2.0
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 0
+    if value <= 0:
+        raise MtError(f"review wait: MT_REVIEW_POLL must be a positive number of seconds, got {raw!r}")
+    return value
+
+
+def cmd_review_wait(args: argparse.Namespace) -> int:
+    n = positive_round(args.round)
+    if args.deadline < 0:
+        raise MtError("review wait: --deadline must not be negative")
+    run = resolve_run(args.run)
+    state = load(run)
+    entry = review_round(state, n)
+    if entry is None:
+        raise MtError(f"review wait: round {n} was never started (run `mt review start --round {n}` first)")
+    task = state.get("revmux_task")
+    if not task:
+        raise MtError("review wait: revmux_task is not set (mt set revmux_task=<id>)")
+    name, report = entry["run"], Path(entry["report"])
+    events_file = Path(entry["round_dir"]) / "events.jsonl"
+    poll = review_poll()
+    end = time.monotonic() + args.deadline
+    last = entry.get("milestone")
+    while True:
+        alive = process_alive(task, name)
+        mark = milestone(read_events(events_file))
+        outcome = None
+        if not alive:
+            try:
+                load_report(report)
+                outcome, mark = "done", "report ready"
+            except MtError:
+                outcome, mark = "failed", "failed"
+        if mark != last:
+            state = load(run)
+            entry = review_round(state, n)
+            if entry is None:
+                raise MtError(f"review wait: round {n} disappeared from the state")
+            entry["milestone"] = mark
+            state["activity"] = f"Review round {n} · {mark}"
+            state["now_kind"] = ""
+            if outcome == "failed":
+                add_event(state, f"Review round {n} failed · no report from {name}")
+            save(run, state)
+            last = mark
+        if outcome:
+            print(outcome)
+            return 0
+        left = end - time.monotonic()
+        if left <= 0:
+            print("running")
+            return 0
+        time.sleep(min(poll, left))
+
+
+def finding_summary(f: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(f.get("id")),
+        "severity": f.get("severity"),
+        "file": f.get("file") or "",
+        "line": f.get("line") or 0,
+        "end_line": f.get("end_line") or 0,
+        "title": f.get("title") or "",
+    }
+
+
+def parse_reasons(items: list[str] | None, flag: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for item in items or []:
+        fid, sep, reason = item.partition("=")
+        if not sep or not fid.strip() or not reason.strip():
+            raise MtError(f"review result: expected {flag} ID=REASON, got {item!r}")
+        out[fid.strip()] = reason.strip()
+    return out
+
+
+def location(f: dict[str, Any]) -> str:
+    loc = f.get("file") or "(no file)"
+    if f.get("line"):
+        loc += f":{f['line']}"
+        if f.get("end_line") and f["end_line"] != f["line"]:
+            loc += f"-{f['end_line']}"
+    return loc
+
+
+def code_span(text: str) -> str:
+    return f"`{text}`" if "`" not in text else md_escape(text)
+
+
+def duration_text(seconds: float | None) -> str:
+    if seconds is None:
+        return "n/a"
+    s = round(seconds)
+    return f"{s // 60}m{s % 60:02d}s" if s >= 60 else f"{s}s"
+
+
+def review_markdown(state: dict[str, Any]) -> str:
+    """review.md: one section per recorded round, latest round first."""
+    lines = [f"# Review · {md_escape(state.get('title'))}", ""]
+    base = state.get("review_base")
+    if base:
+        lines += [f"Scope: `{base[:12]}..HEAD`, the cumulative branch diff, in every round.", ""]
+    for r in sorted(state.get("review") or [], key=lambda x: -x.get("round", 0)):
+        if not r.get("finished"):
+            continue
+        confirming = " · confirming round" if r.get("confirming") else ""
+        lines += [f"## Round {r['round']} · {md_escape(r.get('run'))} · {md_escape(r.get('verdict'))}{confirming}", ""]
+        oq = r.get("open_questions", 0)
+        lines.append(
+            f"{r.get('critical', 0)} critical, {r.get('major', 0)} major, {r.get('minor', 0)} minor, "
+            f"{oq} open question{'' if oq == 1 else 's'}; duration {duration_text(r.get('duration'))}; "
+            f"degraded sources: {md_escape(', '.join(r.get('degraded') or [])) or 'none'}."
+        )
+        lines.append("")
+        not_gating = {x["id"]: x["reason"] for x in r.get("not_gating") or []}
+        deferred = {x["id"]: x["reason"] for x in r.get("deferred") or []}
+        findings = r.get("findings") or []
+        lines += ["### Findings", ""]
+        if not findings:
+            lines += ["None.", ""]
+        for f in findings:
+            mark = ""
+            if f["id"] in not_gating:
+                mark = f" — not gating: {md_escape(not_gating[f['id']])}"
+            elif f["id"] in deferred:
+                mark = f" — deferred: {md_escape(deferred[f['id']])}"
+            elif f.get("severity") in GATING:
+                mark = " — unresolved"
+            lines.append(
+                f"- **{md_escape(f.get('severity'))}** {code_span(location(f))} {md_escape(f.get('title'))} "
+                f"({md_escape(f['id'])}){mark}"
+            )
+        lines.append("")
+        questions = r.get("questions") or []
+        if questions:
+            lines += ["### Open questions", ""]
+            lines += [f"- {code_span(location(q))} {md_escape(q.get('title'))}" for q in questions]
+            lines.append("")
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def derive_findings(state: dict[str, Any]) -> None:
+    """State-level lists from the recorded rounds (the dashboard and `done` read these).
+
+    `unresolved` and `not_gating` are the latest finished round's. `deferred` collects the deferred
+    findings of every finished round from the last `confirming` round on: a prose-only major deferred
+    in round 1 stays open even when round 2's reviewers do not report it again, until the leftovers
+    fix and its confirming round settle it. One entry per (file, line, title), the latest kept.
+    """
+    done = sorted((r for r in state.get("review") or [] if r.get("finished")), key=lambda r: r["round"])
+    latest = done[-1] if done else {}
+    state["unresolved"] = list(latest.get("unresolved") or [])
+    state["not_gating"] = list(latest.get("not_gating") or [])
+    since = max((r["round"] for r in done if r.get("confirming")), default=0)
+    carried: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for r in done:
+        if r["round"] >= since:
+            for d in r.get("deferred") or []:
+                carried[(d.get("file"), d.get("line"), d.get("title"))] = d
+    state["deferred"] = list(carried.values())
+
+
+def cmd_review_result(args: argparse.Namespace) -> int:
+    n = positive_round(args.round)
+    not_gating = parse_reasons(args.not_gating, "--not-gating")
+    deferred = parse_reasons(args.deferred, "--deferred")
+    both = sorted(set(not_gating) & set(deferred))
+    if both:
+        raise MtError(f"review result: {', '.join(both)} given as both --not-gating and --deferred")
+    run = resolve_run(args.run)
+    state = load(run)
+    entry = review_round(state, n)
+    if entry is None:
+        raise MtError(f"review result: round {n} was never started (run `mt review start --round {n}` first)")
+    report = load_report(Path(os.path.abspath(args.file)))
+    findings = [finding_summary(f) for f in report["findings"]]
+    ids = {f["id"] for f in findings}
+    unknown = sorted((set(not_gating) | set(deferred)) - ids)
+    if unknown:
+        raise MtError(f"review result: no finding {', '.join(unknown)} in {args.file}")
+    severity = {f["id"]: f["severity"] for f in findings}
+    minor = sorted(i for i in set(not_gating) | set(deferred) if severity[i] not in GATING)
+    if minor:
+        raise MtError(
+            f"review result: {', '.join(minor)} not critical or major; only gating findings go in --not-gating/--deferred"
+        )
+    sources = report.get("sources") if isinstance(report.get("sources"), dict) else {}
+    degraded = [str(d) for d in sources.get("degraded") or []]
+    questions = [finding_summary(q) for q in report.get("open_questions") or [] if isinstance(q, dict)]
+    counts = {s: sum(1 for f in findings if f["severity"] == s) for s in SEVERITIES}
+    gating = [f for f in findings if f["severity"] in GATING]
+    unresolved = [
+        {k: f[k] for k in ("id", "severity", "file", "line", "title")}
+        for f in gating
+        if f["id"] not in not_gating and f["id"] not in deferred
+    ]
+    deferred_list = [
+        {**{k: f[k] for k in ("id", "severity", "file", "line", "title")}, "reason": deferred[f["id"]], "round": n}
+        for f in findings
+        if f["id"] in deferred
+    ]
+    if degraded:
+        verdict = "degraded"
+    elif unresolved:
+        verdict = f"{len(unresolved)} gating"
+    else:
+        verdict = "clean"
+    stats = report.get("stats") if isinstance(report.get("stats"), dict) else {}
+    duration_ms = stats.get("duration_ms")
+    t = now()
+    entry.update(
+        **counts,
+        open_questions=len(questions),
+        degraded=degraded,
+        verdict=verdict,
+        milestone="done",
+        finished=t,
+        duration=duration_ms / 1000 if isinstance(duration_ms, (int, float)) else t - (entry.get("started") or t),
+        findings=findings,
+        questions=questions,
+        not_gating=[{"id": k, "reason": v} for k, v in not_gating.items()],
+        deferred=deferred_list,
+        unresolved=unresolved,
+        confirming=bool(args.confirming),
+    )
+    derive_findings(state)
+    state["activity"] = f"Review round {n} · {verdict}"
+    state["now_kind"] = ""
+    add_event(state, f"Review round {n}: {verdict}")
+    md = run / "review.md"
+    try:
+        atomic_write(md, review_markdown(state))
+    except OSError as e:
+        raise MtError(f"review result: cannot write {md}: {e}") from e
+    art = register_artifact(state, "review", str(md), "revmux review rounds")
+    warning = render_artifact(run, art)
+    if warning:
+        warn(warning)
+    save(run, state)
+    return 0
+
+
+def commit_of(ref: str, toplevel: str) -> str | None:
+    return git("rev-parse", "--verify", "-q", f"{ref}^{{commit}}", cwd=toplevel, check=False)
+
+
+def tree_of(ref: str, toplevel: str) -> str:
+    return git("rev-parse", f"{ref}^{{tree}}", cwd=toplevel)
+
+
+def replay_tree(toplevel: str, old_base: str, new_base: str, reviewed: str) -> str | None:
+    """The tree a clean rebase of old_base..reviewed onto new_base gives (`git merge-tree`, git 2.40+).
+
+    Returns the tree id, "" when the replay conflicts, None when this git cannot replay (no `--write-tree`
+    or `--merge-base`).
+    """
+    r = subprocess.run(
+        ["git", "merge-tree", "--write-tree", "--no-messages", f"--merge-base={old_base}", new_base, reviewed],
+        cwd=toplevel,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if r.returncode == 1:
+        return ""
+    lines = r.stdout.split()
+    if r.returncode != 0 or not lines:
+        return None
+    return lines[0]
+
+
+def diff_fingerprint(toplevel: str, base: str, tip: str) -> str:
+    """sha256 of `git diff --binary -U0 base tip` without what a rebase moves: `index` lines (preimage blob
+    ids) and the line numbers and function context of `@@` headers. Whitespace and binary content count.
+    The user's git config does not reach the diff: no textconv, external diff, color, prefix choice or
+    rename/copy detection (whose source set differs between the two bases).
+
+    Only the fallback for a git without `merge-tree --merge-base`: an identical line moved within its
+    file compares equal.
+    """
+    diff = subprocess.run(
+        [
+            "git",
+            *("-c", "diff.noprefix=false", "-c", "diff.mnemonicPrefix=false", "-c", "diff.relative=false"),
+            "diff",
+            *("--binary", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "-U0"),
+            *("--src-prefix=a/", "--dst-prefix=b/", base, tip),
+        ],
+        cwd=toplevel,
+        capture_output=True,
+        check=False,
+    )
+    if diff.returncode != 0:
+        raise MtError(f"git diff {base} {tip} failed: {diff.stderr.decode(errors='replace').strip()}")
+    digest = hashlib.sha256()
+    for line in diff.stdout.splitlines(keepends=True):
+        if line.startswith(b"index "):
+            continue
+        digest.update(b"@@\n" if line.startswith(b"@@ ") else line)
+    return digest.hexdigest()
+
+
+def rebase_target(state: dict[str, Any], toplevel: str) -> tuple[str | None, list[str]]:
+    """The first of origin/<default> (with origin) and <default> that resolves, and the names tried."""
+    tried = default_branch_refs(state)
+    for name in tried:
+        if commit_of(name, toplevel):
+            return name, tried
+    return None, tried
+
+
+def reviewed_content_changed(state: dict[str, Any], toplevel: str, reviewed: str) -> tuple[bool, str]:
+    """Is HEAD's content anything but the reviewed content, rebased? Returns (changed, how it was checked).
+
+    Same merge-base with the rebase target (no rebase, a squash) → compare the trees. A moved base →
+    replay old_base..reviewed onto the new base and compare that tree with HEAD's; a conflicting replay
+    counts as changed (the finalizer resolved content nobody reviewed). No rebase target or no common
+    history → nothing could be rebased, so compare the trees.
+    """
+    head_tree = tree_of("HEAD", toplevel)
+    target, tried = rebase_target(state, toplevel)
+    if target is None:
+        warn(f"review verify-final: no rebase target ({' or '.join(tried)}); compared the trees")
+        return tree_of(reviewed, toplevel) != head_tree, f"no rebase target ({' or '.join(tried)}), trees"
+    old_base = git("merge-base", target, reviewed, cwd=toplevel, check=False)
+    new_base = git("merge-base", target, "HEAD", cwd=toplevel, check=False)
+    if not old_base or not new_base or old_base == new_base:
+        return tree_of(reviewed, toplevel) != head_tree, f"trees, base {target}"
+    replayed = replay_tree(toplevel, old_base, new_base, reviewed)
+    if replayed == "":
+        return True, f"replay onto {target} conflicts"
+    if replayed is not None:
+        return replayed != head_tree, f"replay onto {target}"
+    warn("review verify-final: this git has no `merge-tree --merge-base`; compared diff fingerprints")
+    changed = diff_fingerprint(toplevel, old_base, reviewed) != diff_fingerprint(toplevel, new_base, "HEAD")
+    return changed, f"diff fingerprints, base {target}"
+
+
+def uncommitted_task_paths(state: dict[str, Any], toplevel: str) -> list[str]:
+    """What `git status` lists that is the task's, not the user's: everything but `.revmux/` (in place its
+    untracked files stay through the run, and Completion puts the user's edits back) and, once
+    `stash_restored` records the restore, the `stash_paths` it put back. Until then those paths are clean
+    (stashed, or left clean by the reset), so a change to one is the task's. An empty `stash_ref` is no
+    such record: a push that stashed nothing leaves it empty for the whole run.
+    """
+    restored = set(state.get("stash_paths") or []) if state.get("stash_restored") else set()
+    return [p for p in dirty_paths(toplevel) if not under_revmux(p) and p not in restored]
+
+
+def cmd_review_verify_final(args: argparse.Namespace) -> int:
+    """Did finalize change the reviewed content? Uncommitted task changes count as changed: HEAD alone is not
+    what the finalizer tested. Otherwise see reviewed_content_changed.
+    """
+    run = resolve_run(args.run)
+    state = load(run)
+    reviewed = state.get("reviewed_sha")
+    if not reviewed:
+        raise MtError("review verify-final: reviewed_sha is not set (mt set reviewed_sha=$(git rev-parse HEAD))")
+    toplevel = cwd_toplevel(state)
+    if commit_of(reviewed, toplevel) is None:
+        raise MtError(f"review verify-final: reviewed_sha {reviewed} is not a commit here")
+    head = git("rev-parse", "HEAD", cwd=toplevel)
+    uncommitted = uncommitted_task_paths(state, toplevel)
+    if uncommitted:
+        listed = ", ".join(uncommitted[:5]) + (f" and {len(uncommitted) - 5} more" if len(uncommitted) > 5 else "")
+        warn(f"review verify-final: uncommitted changes after finalize: {listed}")
+        stale, how = True, f"uncommitted changes: {listed}"
+    else:
+        stale, how = reviewed_content_changed(state, toplevel, reviewed)
+    state = load(run)
+    state["review_stale"] = stale
+    state["verified_sha"] = reviewed
+    if stale:
+        add_event(
+            state, f"Review stale: content after finalize ({head[:12]}) differs from reviewed {reviewed[:12]} ({how})"
+        )
+    else:
+        add_event(state, f"Reviewed content unchanged after finalize ({head[:12]}; {how})")
+    save(run, state)
+    print("changed" if stale else "unchanged")
+    return 0
+
+
+# ---------------------------------------------------------------- question cards
+
+MAX_OPTIONS = 4  # the AskUserQuestion fallback carries at most 4
+RESERVED_OPTION_IDS = ("other", "delegate")
+
+
+def card_text(card: dict[str, Any], key: str, where: str, required: bool = False) -> str:
+    value = card.get(key)
+    if value is None and not required:
+        return ""
+    if not isinstance(value, str) or (required and not value.strip()):
+        raise MtError(f"ask: {where}{key} must be a {'non-empty ' if required else ''}string")
+    return value.strip() if required else value
+
+
+def validate_card(data: Any) -> dict[str, Any]:
+    """The card with defaults filled in; MtError names the first problem.
+
+    1-4 options, unique non-empty ids (not `other` or `delegate`, which the answer uses),
+    non-empty labels, exactly one recommended; pro, con, context and phase are optional strings.
+    """
+    if not isinstance(data, dict):
+        raise MtError("ask: the card must be a JSON object")
+    card: dict[str, Any] = {
+        "phase": card_text(data, "phase", ""),
+        "title": card_text(data, "title", "", required=True),
+        "context": card_text(data, "context", ""),
+    }
+    allow_other = data.get("allow_other", True)
+    if not isinstance(allow_other, bool):
+        raise MtError("ask: allow_other must be true or false")
+    card["allow_other"] = allow_other
+    options = data.get("options")
+    if not isinstance(options, list) or not 1 <= len(options) <= MAX_OPTIONS:
+        count = len(options) if isinstance(options, list) else "no"
+        raise MtError(f"ask: a card needs 1 to {MAX_OPTIONS} options, got {count}")
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for i, o in enumerate(options, 1):
+        where = f"option {i}: "
+        if not isinstance(o, dict):
+            raise MtError(f"ask: {where}must be a JSON object")
+        oid = card_text(o, "id", where, required=True)
+        if oid in RESERVED_OPTION_IDS:
+            raise MtError(f"ask: {where}id {oid!r} is reserved ({', '.join(RESERVED_OPTION_IDS)})")
+        if oid in seen:
+            raise MtError(f"ask: duplicate option id {oid!r}")
+        seen.add(oid)
+        rec = o.get("recommended", False)
+        if not isinstance(rec, bool):
+            raise MtError(f"ask: {where}recommended must be true or false")
+        out.append(
+            {
+                "id": oid,
+                "label": card_text(o, "label", where, required=True),
+                "pro": card_text(o, "pro", where),
+                "con": card_text(o, "con", where),
+                "recommended": rec,
+            }
+        )
+    recommended = sum(o["recommended"] for o in out)
+    if recommended != 1:
+        raise MtError(f"ask: exactly one option must be recommended, got {recommended}")
+    card["options"] = out
+    return card
+
+
+def render_context(text: str) -> str:
+    """Markdown to HTML with raw HTML disabled (markdown-it also refuses javascript: links)."""
+    from markdown_it import MarkdownIt
+
+    return MarkdownIt("commonmark", {"html": False}).render(text) if text.strip() else ""
+
+
+def script_json(data: Any) -> str:
+    """JSON safe inside a <script> element: every `<`, `>` and `&` as a \\u escape (covers `</` and `<!--`)."""
+    body = json.dumps(data, ensure_ascii=False)
+    return body.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+
+
+def card_page(card: dict[str, Any], n: int, run_title: str) -> str:
+    """cards/<n>.html: assets/card.html with its title and the embedded card JSON filled in."""
+    try:
+        template = (ASSETS / "card.html").read_text(encoding="utf-8")
+    except OSError as e:
+        raise MtError(f"ask: cannot read {ASSETS / 'card.html'}: {e}") from e
+    labels = dict(PHASES)
+    who = labels.get(card["phase"], card["phase"]) or "make-task"
+    embedded = {
+        "n": n,
+        "from": f"{who} needs your call",
+        "run_title": run_title,
+        "title": card["title"],
+        "context_html": render_context(card["context"]),
+        "options": card["options"],
+        "allow_other": card["allow_other"],
+    }
+    page = template.replace("{{TITLE}}", f"make-task question {n}")
+    return page.replace("{{CARD}}", script_json(embedded))
+
+
+def next_card_number(cards: Path) -> int:
+    numbers = [int(p.stem) for p in cards.glob("*.json") if p.stem.isdigit()] if cards.is_dir() else []
+    return max(numbers, default=0) + 1
+
+
+def ask_deadline() -> float:
+    raw = os.environ.get("MT_ASK_DEADLINE")
+    if not raw:
+        return ASK_DEADLINE
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 0
+    if value <= 0:
+        raise MtError(f"ask: MT_ASK_DEADLINE must be a positive number of seconds, got {raw!r}")
+    return value
+
+
+def block_outcome(out: str) -> tuple[str | None, Any]:
+    """(outcome, value) from `overlay open --block` output; (None, None) when it does not parse."""
+    try:
+        reply = json.loads(out.strip().splitlines()[-1]) if out.strip() else None
+    except ValueError:
+        return None, None
+    if isinstance(reply, dict) and "outcome" not in reply and isinstance(reply.get("result"), dict):
+        reply = reply["result"]
+    if not isinstance(reply, dict):
+        return None, None
+    return reply.get("outcome"), reply.get("value")
+
+
+def normalize_answer(card: dict[str, Any], value: Any) -> dict[str, Any] | None:
+    """The page's submitted value as mt's answer, or None when it is not a valid answer to this card."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return None
+    if not isinstance(value, dict):
+        return None
+    choice = value.get("choice")
+    if choice == "delegate":
+        rec = next(o for o in card["options"] if o["recommended"])
+        return {"choice": "delegate", "id": rec["id"]}
+    if choice == "other":
+        text = value.get("text")
+        if card["allow_other"] and isinstance(text, str) and text.strip():
+            return {"choice": "other", "text": text.strip()}
+        return None
+    if any(o["id"] == choice for o in card["options"]):
+        return {"choice": choice}
+    return None
+
+
+def cmd_ask(args: argparse.Namespace) -> int:
+    """Show a question card, wait for it, print the normalized answer.
+
+    0 + the answer (a decision is recorded, or an assumption for delegate); 2 + {"choice": null}
+    when the card was dismissed, the deadline passed or the answer was unusable; 3 + {"choice": null}
+    when the card cannot be shown (not in agterm, the run has no agterm, MT_NO_CARDS, or agtermctl failed).
+    """
+    path = Path(args.card).expanduser()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as e:
+        raise MtError(f"ask: cannot read {path}: {e.strerror or e}") from e
+    except ValueError as e:
+        raise MtError(f"ask: {path} is not valid JSON: {e}") from e
+    card = validate_card(data)
+    deadline = ask_deadline()
+    run = resolve_run(args.run)
+    state = load(run)
+    none = json.dumps({"choice": None})
+
+    if cards_disabled():
+        warn("ask: question cards are off (MT_NO_CARDS); ask in the terminal")
+        print(none)
+        return 3
+    sid = agterm_session()
+    if sid is None or not state.get("agterm"):
+        print(none)
+        return 3
+
+    cards = run / "cards"
+    try:
+        cards.mkdir(exist_ok=True)
+        n = next_card_number(cards)
+        page = cards / f"{n}.html"
+        atomic_write(cards / f"{n}.json", json.dumps(card, ensure_ascii=False, indent=1) + "\n")
+        atomic_write(page, card_page(card, n, state.get("title") or ""))
+    except OSError as e:
+        raise MtError(f"ask: cannot write the card in {cards}: {e}") from e
+
+    prev_activity, prev_kind = state.get("activity"), state.get("now_kind") or ""
+    waiting = f"Waiting for your answer · {card['title']}"
+    state["activity"], state["now_kind"] = waiting, "wait"
+    add_event(state, f"Question {n}: {card['title']}")
+    save(run, state)
+    set_status(state, "blocked", sound="default", timeout=ASK_CALL_TIMEOUT)
+
+    r = agtermctl(
+        "session", "overlay", "open", "--html", str(page), "--js", "--chromeless",
+        "--size-percent", "85", "--block", "--follow", "--target", sid,
+        timeout=deadline,
+    )  # fmt: skip
+    if r.timed_out:
+        c = agtermctl("session", "overlay", "close", "--target", sid, timeout=ASK_CALL_TIMEOUT)
+        if not c.ok:
+            warn(f"agtermctl session overlay close: {c.why()}")
+    set_status(state, "active", timeout=ASK_CALL_TIMEOUT)
+
+    outcome, value = (None, None) if r.timed_out else block_outcome(r.out)
+    answer: dict[str, Any] | None = None
+    code = 2
+    if r.timed_out:
+        note = f"Question {n} expired after {deadline:g}s"
+    elif r.code == 2 or outcome == "dismissed":
+        note = f"Question {n} dismissed"
+    elif r.ok and outcome == "submitted":
+        answer = normalize_answer(card, value)
+        note = f"Question {n}: unusable answer {value!r}"
+        if answer is None:
+            warn(f"card {n} returned an answer that does not fit the card: {value!r}")
+    else:
+        code = 3
+        note = f"Question {n} could not be shown"
+        warn(f"agtermctl session overlay open: {r.why()}")
+
+    state = load(run)
+    if state.get("activity") == waiting:
+        state["activity"], state["now_kind"] = prev_activity, prev_kind
+    if answer is not None:
+        code = 0
+        if answer["choice"] == "other":
+            text = answer["text"]
+            state.setdefault("decisions", []).append({"q": card["title"], "a": text})
+        else:
+            oid = answer["id"] if answer["choice"] == "delegate" else answer["choice"]
+            text = next(o["label"] for o in card["options"] if o["id"] == oid)
+            if answer["choice"] == "delegate":
+                why = "delegated on the card (Decide for me): took the recommended option"
+                state.setdefault("assumptions", []).append({"text": f"{card['title']} → {text}", "why": why})
+            else:
+                state.setdefault("decisions", []).append({"q": card["title"], "a": text})
+        note = f"Answer {n}: {text}"
+    add_event(state, note)
+    save(run, state)
+    print(json.dumps(answer, ensure_ascii=False) if answer is not None else none)
+    return code
+
+
+# ---------------------------------------------------------------- .revmux/ working copies
+#
+# Everything here is bytes: paths come from `git ls-files -s -z` as raw NUL-delimited records and are never
+# decoded, symlink targets are read and written with os.readlink/os.symlink on bytes, and records are
+# compared whole. No shell sees a path, a target or a record.
+
+CHUNK = 1 << 16
+
+
+class RevmuxOutcome(NamedTuple):
+    """How `revmux aside` or `revmux put-back` ends: it prints revmux_tree=<outcome> and exits with code."""
+
+    outcome: str
+    code: int
+
+
+def git_raw(top: bytes, *args: str | bytes, stdin: bytes | None = None) -> bytes | None:
+    """Run `git -C top ...` with raw bytes in and out; None when git fails."""
+    r = subprocess.run(["git", "-C", top, *args], input=stdin, capture_output=True, check=False)
+    return r.stdout if r.returncode == 0 else None
+
+
+def nul_records(data: bytes) -> list[bytes]:
+    return [rec for rec in data.split(b"\0") if rec]
+
+
+def record_path(rec: bytes) -> bytes:
+    """The path of a `git ls-files -s` record: everything after the first tab."""
+    return rec.split(b"\t", 1)[1]
+
+
+def lstat_or_none(path: bytes) -> os.stat_result | None:
+    try:
+        return os.lstat(path)
+    except FileNotFoundError:
+        return None
+
+
+def same_bytes(a: bytes, b: bytes) -> bool:
+    try:
+        with open(a, "rb") as fa, open(b, "rb") as fb:
+            while True:
+                ca, cb = fa.read(CHUNK), fb.read(CHUNK)
+                if ca != cb:
+                    return False
+                if not ca:
+                    return True
+    except OSError:
+        return False
+
+
+def same_entry(a: bytes, b: bytes) -> bool:
+    """Both missing, both symlinks with the same target bytes, or both regular files with the same bytes and
+    the same executable bit."""
+    sa, sb = lstat_or_none(a), lstat_or_none(b)
+    if sa is None or sb is None:
+        return sa is None and sb is None
+    if stat.S_ISLNK(sa.st_mode) or stat.S_ISLNK(sb.st_mode):
+        if not (stat.S_ISLNK(sa.st_mode) and stat.S_ISLNK(sb.st_mode)):
+            return False
+        try:
+            return os.readlink(a) == os.readlink(b)
+        except OSError:
+            return False
+    if not (stat.S_ISREG(sa.st_mode) and stat.S_ISREG(sb.st_mode)):
+        return False
+    if bool(sa.st_mode & stat.S_IXUSR) != bool(sb.st_mode & stat.S_IXUSR):
+        return False
+    return same_bytes(a, b)
+
+
+def copy_entry(src: bytes, dst: bytes) -> None:
+    """Copy a symlink as a symlink (same target bytes), anything else as a file with its mode and times."""
+    if os.path.islink(src):
+        os.symlink(os.readlink(src), dst)
+    else:
+        shutil.copy2(src, dst)
+
+
+def remove_entry(path: bytes) -> None:
+    """`rm -f`: a missing path is fine, a directory is a failure."""
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+
+
+def remove_tree(path: bytes) -> None:
+    """`rm -rf`."""
+    if os.path.islink(path) or os.path.isfile(path):
+        os.unlink(path)
+    elif os.path.isdir(path):
+        shutil.rmtree(path)
+
+
+def real_parents(root: bytes, rel: bytes) -> bool:
+    """Every directory between root and rel's last component is a real directory, or missing (and so is the rest,
+    which a later makedirs creates as real directories). False for a symlink or other non-directory there, and for
+    an empty, `.` or `..` component, so no read, copy, unlink or write under root/rel goes through a link to a
+    place outside root. root itself may be reached through symlinks; only what lies below it is checked."""
+    parts = rel.split(b"/")
+    if any(part in (b"", b".", b"..") for part in parts):
+        return False
+    path = root
+    for part in parts[:-1]:
+        path = os.path.join(path, part)
+        st = lstat_or_none(path)
+        if st is None:
+            return True
+        if not stat.S_ISDIR(st.st_mode):
+            return False
+    return True
+
+
+def revmux_paths_safe(top: bytes, d: bytes, rels: list[bytes]) -> bool:
+    """The tree path top/<rel> and the saved copy d/files/<rel> of every rel, and d itself (below the state dir),
+    have no symlinked or non-directory parent component."""
+    state, name = os.path.split(d)
+    if not real_parents(state, name + b"/list"):
+        return False
+    return all(real_parents(top, rel) and real_parents(state, name + b"/files/" + rel) for rel in rels)
+
+
+def read_records(path: bytes) -> list[bytes]:
+    """The NUL-delimited records of a list file; a missing file has none."""
+    try:
+        with open(path, "rb") as f:
+            return nul_records(f.read())
+    except FileNotFoundError:
+        return []
+
+
+def revmux_aside(top: bytes, d: bytes, tmp: bytes) -> RevmuxOutcome:
+    fail = RevmuxOutcome("failed", 1)
+    unmerged = git_raw(top, "ls-files", "-u", "-z", "--", ".revmux")
+    if unmerged is None:
+        return fail
+    if unmerged:
+        return RevmuxOutcome("unsafe", 1)
+    index = git_raw(top, "ls-files", "-s", "-z", "--", ".revmux")
+    if index is None:
+        return fail
+    records = nul_records(index)
+    earlier = read_records(os.path.join(d, b"list")) if os.path.isdir(d) else []
+    if not revmux_paths_safe(top, d, [record_path(rec) for rec in records + earlier]):
+        return RevmuxOutcome("unsafe", 1)
+    head = os.path.join(tmp, b"head") + b"/"
+    paths = b"".join(record_path(rec) + b"\0" for rec in records)
+    if git_raw(top, "checkout-index", "-z", "--stdin", b"--prefix=" + head, stdin=paths) is None:
+        return fail
+    changed = [
+        rec
+        for rec in records
+        if not rec.startswith(b"160000 ")
+        and not same_entry(os.path.join(top, record_path(rec)), os.path.join(head, record_path(rec)))
+    ]
+    if os.path.isdir(d):
+        # A rerun keeps the first save, and the unlink below covers every path in it, not only those edited now:
+        # each saved record must still be in the index whole (so the checkout writes the version the save was
+        # taken against), and its path must hold that version, the saved copy, or nothing. Anything else (an
+        # edit the save does not hold, a path dropped from or restaged in the index) is differs, untouched.
+        saved = read_records(os.path.join(d, b"list"))
+        saved_set, current, edited = set(saved), set(records), set(changed)
+        if any(rec not in saved_set for rec in changed):
+            return RevmuxOutcome("differs", 1)
+        for rec in saved:
+            if rec not in current:
+                return RevmuxOutcome("differs", 1)
+            tree = os.path.join(top, record_path(rec))
+            if (
+                rec in edited
+                and lstat_or_none(tree) is not None
+                and not same_entry(tree, os.path.join(d, b"files", record_path(rec)))
+            ):
+                return RevmuxOutcome("differs", 1)
+    else:
+        new, unsafe = d + b".new", d + b".unsafe"
+        remove_tree(new)
+        os.makedirs(os.path.join(new, b"files"))
+        with open(os.path.join(new, b"list"), "wb") as f:
+            f.write(b"".join(rec + b"\0" for rec in changed))
+        for rec in changed:
+            tree, copy = os.path.join(top, record_path(rec)), os.path.join(new, b"files", record_path(rec))
+            if lstat_or_none(tree) is None:
+                continue
+            try:
+                os.makedirs(os.path.dirname(copy), exist_ok=True)
+                copy_entry(tree, copy)
+                ok = same_entry(tree, copy)
+            except OSError:
+                ok = False
+            if not ok:
+                remove_tree(unsafe)
+                os.rename(new, unsafe)
+                return RevmuxOutcome("unsafe", 1)
+        os.rename(new, d)
+    listed = read_records(os.path.join(d, b"list"))
+    if not listed:
+        return RevmuxOutcome("none", 0)
+    for rec in listed:
+        remove_entry(os.path.join(top, record_path(rec)))
+    if git_raw(top, "checkout", "-q", "--", ".revmux") is None:
+        return fail
+    return RevmuxOutcome("aside", 0)
+
+
+def revmux_put_back(top: bytes, d: bytes, tmp: bytes) -> RevmuxOutcome:
+    fail = RevmuxOutcome("failed", 0)
+    listed = read_records(os.path.join(d, b"list"))
+    if not listed:
+        return RevmuxOutcome("none", 0)
+    index = git_raw(top, "ls-files", "-s", "-z", "--", ".revmux")
+    if index is None:
+        return fail
+    current = set(nul_records(index))
+    if not revmux_paths_safe(top, d, [record_path(rec) for rec in listed]):
+        return RevmuxOutcome("conflict", 0)
+    head = os.path.join(tmp, b"head") + b"/"
+    paths = b"".join(record_path(rec) + b"\0" for rec in listed)
+    git_raw(top, "checkout-index", "-z", "--stdin", b"--prefix=" + head, stdin=paths)
+    for rec in listed:
+        rel = record_path(rec)
+        tree = os.path.join(top, rel)
+        if rec not in current:
+            return RevmuxOutcome("conflict", 0)
+        if not (
+            lstat_or_none(tree) is None
+            or same_entry(tree, os.path.join(d, b"files", rel))
+            or same_entry(tree, os.path.join(head, rel))
+        ):
+            return RevmuxOutcome("conflict", 0)
+    for rec in listed:
+        rel = record_path(rec)
+        tree, saved = os.path.join(top, rel), os.path.join(d, b"files", rel)
+        try:
+            if lstat_or_none(saved) is not None:
+                if same_entry(tree, saved):
+                    continue
+                remove_entry(tree)
+                os.makedirs(os.path.dirname(tree), exist_ok=True)
+                copy_entry(saved, tree)
+                if not same_entry(tree, saved):
+                    return fail
+            else:
+                remove_entry(tree)
+        except OSError:
+            return fail
+    restored = d + b".restored"
+    remove_tree(restored)
+    os.rename(d, restored)
+    return RevmuxOutcome("ok", 0)
+
+
+def cmd_revmux(args: argparse.Namespace) -> int:
+    top = os.fsencode(args.toplevel)
+    d = os.path.join(os.fsencode(args.state_dir), b"revmux-tree")
+    step = revmux_aside if args.action == "aside" else revmux_put_back
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = step(top, d, os.fsencode(tmp))
+    except OSError as e:
+        print(f"mt: error: revmux {args.action}: {e}", file=sys.stderr)
+        result = RevmuxOutcome("failed", 1 if args.action == "aside" else 0)
+    print(f"revmux_tree={result.outcome}")
+    return result.code
+
+
+# ---------------------------------------------------------------- frontmatter
+
+FRONTMATTER = re.compile(r"\A---[ \t]*\r?\n(.*?)^---[ \t]*(?:\r?\n|\Z)", re.DOTALL | re.MULTILINE)
+
+
+def read_frontmatter(text: str) -> tuple[dict[str, Any] | None, str]:
+    """(YAML frontmatter as a dict, body as it is); (None, text) when the text has no frontmatter.
+
+    An empty frontmatter is {}; a frontmatter that is not valid YAML or not a mapping is an MtError.
+    """
+    m = FRONTMATTER.match(text)
+    if not m:
+        return None, text
+    try:
+        data = yaml.safe_load(m.group(1))
+    except yaml.YAMLError as e:
+        raise MtError(f"frontmatter is not valid YAML: {e}") from e
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        raise MtError(f"frontmatter is not a mapping (got {type(data).__name__})")
+    return data, text[m.end() :]
+
+
+def write_frontmatter(data: dict[str, Any], body: str) -> str:
+    """The text with `data` as YAML frontmatter followed by `body` unchanged (key order kept)."""
+    dumped = yaml.safe_dump(data, sort_keys=False, allow_unicode=True, default_flow_style=None)
+    return f"---\n{dumped}---\n{body}"
+
+
+# ---------------------------------------------------------------- profiles
+
+PROFILE_SCHEMA = 1
+# finalize always runs and uses the exec companion: it has no entry in a profile's phases map
+PROFILE_PHASES = tuple(p for p in PHASE_IDS if p != "finalize")
+SKIPPABLE_PHASES = ("brainstorm", "review")
+PHASE_FIELDS: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    # phase: (required fields, optional fields); `requires` (commands on PATH) only on review, where a
+    # missing one counts as a failed preflight: no other phase has a step that acts on it
+    "brainstorm": (("companion", "entry"), ()),
+    "plan": (("companion", "entry"), ("reviewer",)),
+    "exec": (("companion", "scripts", "rules"), ()),
+    "review": (("companion", "entry", "scripts"), ("requires",)),
+}
+# the exec companion contract: its `scripts` dir holds these, `scripts`/../references/prompts/ the prompts
+# (where resolve-file.sh reads them)
+EXEC_CONTRACT_SCRIPTS = (
+    "create-branch.sh",
+    "init-progress.sh",
+    "append-progress.sh",
+    "move-plan.sh",
+    "resolve-file.sh",
+    "detect-branch.sh",
+)
+EXEC_CONTRACT_PROMPTS = ("task.md", "fixer.md", "finalizer.md", "stats.md")
+REVIEW_CONTRACT_SCRIPTS = ("preflight.sh", "task-state.sh")
+# phase: the scripts its `scripts` dir must hold
+CONTRACT_SCRIPTS = {"exec": EXEC_CONTRACT_SCRIPTS, "review": REVIEW_CONTRACT_SCRIPTS}
+GATES = ("design", "plan", "review-round")
+# autonomy preset: its gates (a profile's `gates` replaces them)
+AUTONOMY_PRESETS: dict[str, tuple[str, ...]] = {
+    "autonomous": (),
+    "default": (),
+    "interactive": GATES,
+}
+# `defaults` answer the worktree and leftovers cards under `autonomous`; defaults.mode goes to `mt set mode=`
+DEFAULTS_CHOICES = {"mode": SET_CHOICES["mode"], "leftovers": ("leave", "fix")}
+PROFILE_KEYS = ("schema", "template", "autonomy", "gates", "defaults", "phases")
+# the path variables a profile install rewrites (import, install-default, fetch)
+PATH_VARS = ("CLAUDE_PLUGIN_ROOT", "CLAUDE_SKILL_DIR", "CLAUDE_PLUGIN_DATA")
+_VARS = "|".join(PATH_VARS)
+# a variable name ends here: $CLAUDE_PLUGIN_DATAX is another variable
+_WORD_END = r"(?![A-Za-z0-9_])"
+# `${NAME}`, or `$NAME` up to a word boundary, for the NAME alternation {0}; group 1 or 2 is the NAME
+_PATH_TOKEN_FORM = r"\$\{{({0})\}}|\$({0})" + _WORD_END
+PATH_TOKEN = re.compile(_PATH_TOKEN_FORM.format(_VARS))
+PLUGIN_ROOT_TOKEN = re.compile(_PATH_TOKEN_FORM.format("CLAUDE_PLUGIN_ROOT"))
+# left in a profile's copies, an error: a path variable in a form the rewrite does not take (with a
+# modifier, ${CLAUDE_PLUGIN_DATA:-x}) or a plugin's user_config value; a run reads the copies with no
+# plugin around them, so nothing would fill either in
+UNREWRITTEN_TOKEN = re.compile(
+    rf"\$\{{(?:{_VARS}){_WORD_END}[^}}\s]*\}}?|\$(?:{_VARS}){_WORD_END}|\$\{{user_config\.[^}}\s]*\}}?"
+)
+# any other Claude Code variable ($CLAUDE_PROJECT_DIR, ${CLAUDE_SESSION_ID}): a warning, the text keeps it
+_SUFFIXES = "|".join(v.removeprefix("CLAUDE_") for v in PATH_VARS)
+OTHER_TOKEN = re.compile(rf"\$\{{?CLAUDE_(?!(?:{_SUFFIXES}){_WORD_END})\w+\}}?")
+# never part of a tree's identity (Finder writes them anywhere)
+TREE_IGNORE = frozenset({".DS_Store"})
+# UPDATE.md's frontmatter key for the profile dir the copies' paths were rewritten for
+REWRITTEN_FOR = "rewritten_for"
+# the templates make-task ships, with raw tokens: make-task:<profile>/<id> sources and install-default read here
+PROFILE_TEMPLATES = ASSETS / "profiles"
+# the run-state keys `init --profile-dir` stores (and init and status print): the profile's resolved values,
+# absolute paths, null for a skipped phase's keys; flat, so SKILL.md names each one as <key>
+PROFILE_STATE_KEYS = (
+    "profile_name",
+    "profile_dir",
+    "autonomy",
+    "gates",
+    "defaults",
+    "brainstorm_entry",
+    "plan_entry",
+    "plan_reviewer",
+    "plan_reviewer_model",
+    "exec_root",
+    "exec_scripts",
+    "exec_rules",
+    "exec_data",
+    "review_entry",
+    "review_scripts",
+    "review_data",
+)
+
+
+class NoProfile(MtError):
+    """The directory holds no profile.md."""
+
+
+def profile_path(raw: str, flag: str) -> Path:
+    """The profile dir `flag` names: `~` expanded, made absolute, symlinks kept (the path the copies' rewritten
+    paths and a run name). An MtError for an empty one, which would otherwise name the current directory."""
+    if not raw.strip():
+        raise MtError(f"{flag}: an empty path names no profile directory")
+    return Path(os.path.abspath(os.path.expanduser(raw)))
+
+
+# the characters a profile path may not hold: whitespace, control characters and the ones a shell treats as
+# special in a word. The rewritten paths land in third-party text in every shell context (bare words, inside
+# "…", in $(…), in JSON), and SKILL.md's script calls use the profile paths as they are: a path without them is
+# one plain word in all of them, so no quoting is needed (and none is added). The rule covers every part of
+# those paths: the profile dir, the phase paths below companions/<id>/ and a rewritten skill dir (an id is
+# always a plain word)
+SHELL_SPECIAL = "'\"`$&|;<>()[]{}*?!#~\\^"
+NOT_SHELL_WORD = re.compile(rf"[\s\x00-\x1f\x7f{re.escape(SHELL_SPECIAL)}]")
+
+
+def unsafe_path(what: str, path: str, fix: str) -> str | None:
+    """Why `what` at path would break the shell commands it goes into unquoted (fix: what to do about it), or
+    None when it is one plain word."""
+    bad = sorted(set(NOT_SHELL_WORD.findall(path)))
+    if not bad:
+        return None
+    return (
+        f"{what} {path!r} holds {', '.join(map(repr, bad))}: the copies' rewritten paths and SKILL.md's "
+        "script calls put it into shell commands unquoted, so it may hold no whitespace and none of "
+        f"{' '.join(SHELL_SPECIAL)}. {fix}"
+    )
+
+
+def unsafe_profile_path(path: str) -> str | None:
+    """unsafe_path for the profile dir at path."""
+    fix = "Put the profile under another path: set MT_CONFIG_HOME (or XDG_CONFIG_HOME), or pass --dir"
+    return unsafe_path("the profile path", path, fix)
+
+
+def require_shell_word(d: Path) -> None:
+    """An MtError when the profile dir d cannot go into a shell command unquoted (unsafe_profile_path)."""
+    reason = unsafe_profile_path(str(d))
+    if reason:
+        raise MtError(reason)
+
+
+def profile_target(args: argparse.Namespace) -> tuple[str, Path]:
+    """(name, dir) from --dir DIR or --profile NAME (default `default`, under <config root>/profiles/)."""
+    if getattr(args, "run", None):
+        raise MtError("profile commands take --profile or --dir, never --run")
+    if args.dir is not None:
+        d = profile_path(args.dir, "--dir")
+        return d.name, d
+    name = "default" if args.profile is None else args.profile
+    if not re.fullmatch(ID, name):
+        raise MtError(f"--profile {name!r}: a name is {ID_RULE}")
+    return name, profile_path(str(config_root() / "profiles" / name), "--profile")
+
+
+# every command that changes a profile (install-default, import, fetch's publish, accept, raise-schema) holds its
+# lock for the whole change, so commands from two sessions never interleave their steps. The lock is an flock on the profile
+# dir itself (install-default: on the dir it installs into, its target does not exist yet): no lock file to
+# leave behind or to keep out of the trees, and the kernel drops it with the process. check, status, outdated,
+# resolve and init only read and take no lock.
+PROFILE_LOCK_WAIT = 60.0
+LOCK_POLL = 0.05
+
+
+def profile_lock_wait() -> float:
+    raw = os.environ.get("MT_PROFILE_LOCK_WAIT")
+    if not raw:
+        return PROFILE_LOCK_WAIT
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 0
+    if not 0 < value < float("inf"):
+        raise MtError(f"MT_PROFILE_LOCK_WAIT must be a positive number of seconds, got {raw!r}")
+    return value
+
+
+@contextlib.contextmanager
+def dir_lock(lock_dir: Path, what: str) -> Iterator[None]:
+    """Hold an exclusive flock on the dir lock_dir, the lock of `what` (for the messages), for the block. Waits
+    up to MT_PROFILE_LOCK_WAIT seconds for the command that holds it, then an MtError."""
+    wait = profile_lock_wait()
+    fd = os.open(lock_dir, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        deadline = time.monotonic() + wait
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise MtError(
+                        f"another make-task command is changing {what}; try again once it is done (waited "
+                        f"{wait:g} s for the lock on {lock_dir}; MT_PROFILE_LOCK_WAIT sets how long)"
+                    ) from None
+                time.sleep(LOCK_POLL)
+            except OSError as e:
+                raise MtError(f"cannot lock {lock_dir} to change {what}: {e}") from e
+        yield
+    finally:
+        os.close(fd)  # drops the lock
+
+
+def profile_lock(d: Path) -> contextlib.AbstractContextManager[None]:
+    """dir_lock on the profile dir d; NoProfile when d holds no profile."""
+    if not d.is_dir():
+        load_profile(d)  # NoProfile
+    return dir_lock(d, f"profile {d.name}")
+
+
+def read_md(path: Path) -> tuple[dict[str, Any] | None, str]:
+    """(frontmatter, body) of the markdown file at path; an MtError naming the file when it cannot be read
+    (not UTF-8 included) or its frontmatter is not a YAML mapping."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        raise MtError(f"cannot read {path}: {e}") from e
+    try:
+        return read_frontmatter(text)
+    except MtError as e:
+        raise MtError(f"{path}: {e}") from e
+
+
+def load_profile(d: Path) -> dict[str, Any]:
+    """profile.md's frontmatter; NoProfile when the file is missing, an MtError when it has no valid frontmatter."""
+    pm = d / "profile.md"
+    if not pm.is_file():
+        raise NoProfile(f"no profile at {d} (no profile.md); run `mt profile install-default` or pick another")
+    data, _ = read_md(pm)
+    if data is None:
+        raise MtError(f"{pm} has no frontmatter")
+    return data
+
+
+def is_template(d: Path) -> bool:
+    """The profile in d says `template: true` (its copies keep raw tokens); an MtError as load_profile."""
+    return load_profile(d).get("template") is True
+
+
+def load_update(d: Path) -> dict[str, Any]:
+    """UPDATE.md's frontmatter ({} when the file or its frontmatter is missing)."""
+    path = d / "UPDATE.md"
+    if not path.is_file():
+        return {}
+    data, _ = read_md(path)
+    return data or {}
+
+
+def load_update_companions(d: Path) -> dict[str, Any]:
+    """UPDATE.md's `companions` map, ids as strings ({} when the file or the key is missing)."""
+    comps = load_update(d).get("companions")
+    return {str(cid): rec for cid, rec in comps.items()} if isinstance(comps, dict) else {}
+
+
+def tree_files(root: Path) -> list[tuple[str, Path]]:
+    """(posix path relative to root, path) of every non-directory under root, sorted; symlinks not followed."""
+    out: list[tuple[str, Path]] = []
+
+    def walk(d: Path, rel: str) -> None:
+        for e in sorted(os.scandir(d), key=lambda e: e.name):
+            if e.name in TREE_IGNORE:
+                continue
+            if e.is_dir(follow_symlinks=False):
+                walk(Path(e.path), f"{rel}{e.name}/")
+            else:
+                out.append((f"{rel}{e.name}", Path(e.path)))
+
+    walk(root, "")
+    return out
+
+
+def tree_entries(root: Path) -> dict[str, tuple[str, str]]:
+    """{relative posix path: (kind, sha256 hex)} for every file under root, in tree_files order; kind `l` (a
+    symlink, digest of its target), `x` (an executable file) or `f`."""
+    out: dict[str, tuple[str, str]] = {}
+    for rel, path in tree_files(root):
+        st = path.lstat()
+        if stat.S_ISLNK(st.st_mode):
+            out[rel] = ("l", hashlib.sha256(os.fsencode(os.readlink(path))).hexdigest())
+        else:
+            with open(path, "rb") as f:
+                out[rel] = ("x" if st.st_mode & 0o111 else "f", hashlib.file_digest(f, "sha256").hexdigest())
+    return out
+
+
+def tree_hash(root: Path) -> str:
+    """`sha256:` over every file's relative path, kind (file, executable, symlink) and content."""
+    h = hashlib.sha256()
+    for rel, (kind, digest) in tree_entries(root).items():
+        h.update(os.fsencode(rel) + b"\0" + kind.encode() + b"\0" + digest.encode() + b"\n")
+    return "sha256:" + h.hexdigest()
+
+
+def inside(root: Path, rel: Any) -> Path | None:
+    """root/rel when rel is a non-empty relative path that stays inside root, else None."""
+    if not isinstance(rel, str) or not rel.strip():
+        return None
+    norm = os.path.normpath(rel)
+    if os.path.isabs(norm) or norm == ".." or norm.startswith(".." + os.sep):
+        return None
+    return root / norm
+
+
+def resolved_gates(data: dict[str, Any]) -> list[str]:
+    """The profile's `gates`, else its autonomy preset's (empty for an unknown autonomy)."""
+    gates = data.get("gates")
+    if isinstance(gates, list):
+        return [g for g in gates if isinstance(g, str)]
+    return list(AUTONOMY_PRESETS.get(str(data.get("autonomy")), ()))
+
+
+def line_of(text: str, pos: int) -> int:
+    """The 1-based line number of position pos in text."""
+    return text.count("\n", 0, pos) + 1
+
+
+def leftover_tokens(d: Path, *, template: bool) -> tuple[list[str], list[str]]:
+    """(unrewritten, other): `<file>:<line>: <token>` for the first UNREWRITTEN_TOKEN and the first
+    OTHER_TOKEN hit in each text file of companions/ and profile.md. A template keeps its path tokens
+    raw: its files are scanned as an install would leave them (PATH_TOKEN's tokens taken out), so the
+    tokens a user's profile would fail on show at the template already."""
+    files = [("profile.md", d / "profile.md")]
+    comps = d / "companions"
+    if comps.is_dir():
+        files += [(f"companions/{rel}", p) for rel, p in tree_files(comps) if not p.is_symlink()]
+    unrewritten: list[str] = []
+    other: list[str] = []
+    for rel, path in files:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue  # binary files are copied as they are and never rewritten
+        if template:
+            text = PATH_TOKEN.sub("", text)
+        for regex, found in ((UNREWRITTEN_TOKEN, unrewritten), (OTHER_TOKEN, other)):
+            m = regex.search(text)
+            if m:
+                found.append(f"{rel}:{line_of(text, m.start())}: {m.group(0)}")
+    return unrewritten, other
+
+
+def check_phase(d: Path, pid: str, spec: Any, errors: list[str], warnings: list[str]) -> None:
+    """Validate one phases.<pid> entry: skip rules, fields, companion, entries and the contracts."""
+    where = f"phases.{pid}"
+    if spec == "skip":
+        if pid not in SKIPPABLE_PHASES:
+            errors.append(f"{where}: {pid} cannot be skip (only {' and '.join(SKIPPABLE_PHASES)} can)")
+        return
+    if not isinstance(spec, dict):
+        errors.append(f"{where}: expected `skip` or a mapping, got {spec!r}")
+        return
+    required, optional = PHASE_FIELDS[pid]
+    fields = required + optional
+    for key in spec:
+        if key not in fields:
+            warnings.append(f"{where}: unknown field {key!r} (fields: {', '.join(fields)})")
+    missing = [k for k in required if spec.get(k) in (None, "")]
+    if missing:
+        errors.append(f"{where}: missing {', '.join(missing)}")
+    requires = spec.get("requires") if "requires" in fields else None
+    if requires is not None:
+        if not isinstance(requires, list) or not all(isinstance(c, str) and c.strip() for c in requires):
+            errors.append(f"{where}.requires: expected a list of command names")
+        else:
+            for cmd in requires:
+                if shutil.which(cmd) is None:
+                    warnings.append(f"{where} requires {cmd!r}, which is not on PATH; the {pid} phase cannot run")
+    comp = spec.get("companion")
+    if comp in (None, ""):
+        return
+    if not isinstance(comp, str) or not re.fullmatch(ID, comp):
+        errors.append(f"{where}.companion: {comp!r} is not a companion id")
+        return
+    root = d / "companions" / comp
+    if not root.is_dir():
+        errors.append(f"{where}.companion: companions/{comp}/ does not exist")
+        return
+
+    def path_field(key: str, kind: str) -> Path | None:
+        if key not in spec or spec[key] in (None, ""):
+            return None
+        path = inside(root, spec[key])
+        if path is None:
+            errors.append(f"{where}.{key}: {spec[key]!r} must be a relative path inside companions/{comp}/")
+            return None
+        exists = path.is_dir() if kind == "dir" else path.is_file()
+        if not exists:
+            errors.append(f"{where}.{key}: companions/{comp}/{spec[key]} is not a {kind}")
+            return None
+        # the run's value is <profile>/companions/<comp>/<this>; check_profile checks the profile dir
+        rel = f"companions/{comp}/{os.path.normpath(spec[key])}"
+        unsafe = unsafe_path(f"{where}.{key}: the path", rel, f"Rename it, in companions/{comp}/ and in profile.md")
+        if unsafe:
+            errors.append(unsafe)
+        return path
+
+    path_field("entry", "file")
+    reviewer = path_field("reviewer", "file")
+    if reviewer is not None:
+        try:
+            fm, _ = read_md(reviewer)
+        except MtError as e:
+            errors.append(f"{where}.reviewer: {e}")
+        else:
+            if fm is None:
+                errors.append(f"{where}.reviewer: companions/{comp}/{spec['reviewer']} has no frontmatter")
+            elif fm.get("model") is not None and not (isinstance(fm["model"], str) and fm["model"].strip()):
+                errors.append(f"{where}.reviewer: frontmatter `model` must be a model name, got {fm['model']!r}")
+    contract = CONTRACT_SCRIPTS.get(pid, ())
+    scripts = path_field("scripts", "dir") if contract else None
+    if "rules" in fields:
+        path_field("rules", "file")
+    if scripts is None:
+        return
+    gone = [s for s in contract if not (scripts / s).is_file()]
+    if gone:
+        errors.append(f"{where}.scripts: companions/{comp}/{spec['scripts']} lacks {', '.join(gone)}")
+    if pid == "exec":
+        prompts = scripts.parent / "references" / "prompts"
+        gone = [p for p in EXEC_CONTRACT_PROMPTS if not (prompts / p).is_file()]
+        if gone:
+            rel = os.path.normpath(os.path.join(spec["scripts"], "..", "references", "prompts"))
+            errors.append(f"{where}.scripts: companions/{comp}/{rel} lacks {', '.join(gone)}")
+
+
+def check_rewritten_for(d: Path, errors: list[str]) -> None:
+    """The copies' absolute paths name d: UPDATE.md's `rewritten_for` (the dir they were rewritten for), when
+    recorded, is d. A copied or moved profile would otherwise run the files of the dir it came from."""
+    try:
+        recorded = load_update(d).get(REWRITTEN_FOR)
+    except MtError:
+        return  # an unreadable UPDATE.md is the update lookups' warning
+    if recorded is None:
+        return
+    if not isinstance(recorded, str) or os.path.realpath(recorded) != os.path.realpath(d):
+        errors.append(
+            f"UPDATE.md: the copies' paths were written for {recorded!r}, not {str(d)!r}: a copied or moved profile "
+            f"runs the files there. Install a new profile (`mt profile install-default --profile <name>`) and carry "
+            f"your edits over, or replace {recorded} with {d} in companions/, upstream/ and `{REWRITTEN_FOR}`"
+        )
+
+
+def check_profile(d: Path, *, with_updates: bool = True) -> dict[str, Any]:
+    """{"ok", "errors", "warnings", "updates"} for the profile in d; NoProfile when it has no profile.md.
+
+    with_updates=False leaves the source lookups out (`updates` stays empty), as `init` does.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+    updates: list[dict[str, Any]] = []
+
+    def result() -> dict[str, Any]:
+        return {"ok": not errors, "errors": errors, "warnings": warnings, "updates": updates}
+
+    try:
+        data = load_profile(d)
+    except NoProfile:
+        raise
+    except MtError as e:
+        errors.append(str(e))
+        return result()
+
+    schema = data.get("schema")
+    if not isinstance(schema, int) or isinstance(schema, bool):
+        errors.append(f"schema: expected {PROFILE_SCHEMA}, got {schema!r}")
+        return result()
+    if schema > PROFILE_SCHEMA:
+        errors.append(f"schema {schema} is newer than this make-task reads ({PROFILE_SCHEMA}); update make-task")
+        return result()
+    if schema < PROFILE_SCHEMA:
+        fix = (
+            f"a template's schema follows PROFILE_SCHEMA: set it to {PROFILE_SCHEMA}"
+            if data.get("template") is True
+            else "run `/make-task --update`: it takes make-task's updates to the copies, then raises the schema"
+        )
+        errors.append(f"schema {schema} is older than this make-task reads ({PROFILE_SCHEMA}); {fix}")
+        return result()
+
+    for key in data:
+        if key not in PROFILE_KEYS:
+            warnings.append(f"unknown key {key!r} (keys: {', '.join(PROFILE_KEYS)})")
+    template = data.get("template", False)
+    if not isinstance(template, bool):
+        errors.append(f"template: expected true or false, got {template!r}")
+
+    autonomy = data.get("autonomy")
+    if not isinstance(autonomy, str) or autonomy not in AUTONOMY_PRESETS:
+        errors.append(f"autonomy: expected one of {', '.join(AUTONOMY_PRESETS)}, got {autonomy!r}")
+    gates = data.get("gates")
+    if gates is not None:
+        if not isinstance(gates, list):
+            errors.append(f"gates: expected a list of {', '.join(GATES)}, got {gates!r}")
+        else:
+            for g in gates:
+                if g not in GATES:
+                    errors.append(f"gates: unknown gate {g!r} (gates: {', '.join(GATES)})")
+            if len({str(g) for g in gates}) != len(gates):
+                errors.append("gates: a gate is listed twice")
+    defaults = data.get("defaults")
+    if defaults is not None and not isinstance(defaults, dict):
+        errors.append(f"defaults: expected a mapping with {', '.join(DEFAULTS_CHOICES)}, got {defaults!r}")
+        defaults = None
+    for key, choices in DEFAULTS_CHOICES.items():
+        value = (defaults or {}).get(key)
+        if value is None:
+            if autonomy == "autonomous":
+                errors.append(f"defaults.{key}: autonomy autonomous needs it ({' or '.join(choices)})")
+        elif value not in choices:
+            errors.append(f"defaults.{key}: expected {' or '.join(choices)}, got {value!r}")
+    for key in defaults or {}:
+        if key not in DEFAULTS_CHOICES:
+            warnings.append(f"defaults: unknown key {key!r} (keys: {', '.join(DEFAULTS_CHOICES)})")
+
+    phases = data.get("phases")
+    if not isinstance(phases, dict):
+        errors.append(f"phases: expected a mapping of {', '.join(PROFILE_PHASES)}")
+    else:
+        for pid in phases:
+            if pid == "finalize":
+                errors.append("phases.finalize: finalize is not configurable; it always runs with the exec companion")
+            elif pid not in PHASE_IDS:
+                errors.append(f"phases: unknown phase {pid!r} (phases: {', '.join(PROFILE_PHASES)})")
+        for pid in PROFILE_PHASES:
+            if pid not in phases:
+                hint = " (use `skip` to leave it out)" if pid in SKIPPABLE_PHASES else ""
+                errors.append(f"phases.{pid}: missing{hint}")
+            else:
+                check_phase(d, pid, phases[pid], errors, warnings)
+
+    unrewritten, other = leftover_tokens(d, template=template is True)
+    for hit in unrewritten:
+        errors.append(
+            f"unrewritten token at {hit} (nothing fills it in when a run reads the copy: write what it stands for)"
+        )
+    for hit in other:
+        warnings.append(f"{hit}: make-task sets no such variable; a run reads it as written")
+    if template is not True:
+        unsafe = unsafe_profile_path(str(d))
+        if unsafe:
+            errors.append(unsafe)
+        check_rewritten_for(d, errors)
+
+    if not with_updates:
+        return result()
+    # updates from the sources that need no network (make-task:, plugin:); one that cannot be read is a warning:
+    # the copies still run
+    try:
+        found = companion_updates(d, network=False)
+    except MtError as e:
+        warnings.append(f"updates not checked: {e}")
+    else:
+        updates.extend(found["updates"])
+        for err in found["errors"]:
+            warnings.append(f"companion {err['id']}: cannot check {err['source']} for updates: {err['error']}")
+    return result()
+
+
+def companion_ids(d: Path, sources: dict[str, Any]) -> list[str]:
+    """The ids UPDATE.md records and the dirs under companions/, sorted."""
+    ids = set(sources)
+    comps = d / "companions"
+    if comps.is_dir():
+        ids |= {p.name for p in comps.iterdir() if p.is_dir()}
+    return sorted(ids)
+
+
+def companion_modified(d: Path, cid: str) -> bool | None:
+    """companions/<cid> differs from upstream/<cid>; None when either is missing."""
+    comp, up = d / "companions" / cid, d / "upstream" / cid
+    return tree_hash(comp) != tree_hash(up) if comp.is_dir() and up.is_dir() else None
+
+
+def profile_status(name: str, d: Path) -> dict[str, Any]:
+    data = load_profile(d)
+    sources = load_update_companions(d)
+    companions: dict[str, Any] = {}
+    for cid in companion_ids(d, sources):
+        src = sources.get(cid) if isinstance(sources.get(cid), dict) else {}
+        companions[cid] = {
+            "source": src.get("source"),
+            "version": src.get("version"),
+            "present": (d / "companions" / cid).is_dir(),
+            "modified": companion_modified(d, cid),
+        }
+    return {
+        "name": name,
+        "dir": str(d),
+        "template": data.get("template", False),
+        "autonomy": data.get("autonomy"),
+        "gates": resolved_gates(data),
+        "defaults": data.get("defaults"),
+        "phases": data.get("phases"),
+        "companions": companions,
+    }
+
+
+def run_profile(d: Path) -> tuple[dict[str, Any], list[str]]:
+    """(the PROFILE_STATE_KEYS values, warnings) for a run with the profile in d (an absolute path).
+
+    NoProfile when d has no profile.md; an MtError when the profile fails `check` (no update lookups) or is a
+    template. The check warnings come back prefixed with the profile's name, plus one when the review phase is
+    skip.
+    """
+    checked = check_profile(d, with_updates=False)
+    if not checked["ok"]:
+        raise MtError(
+            f"profile {d} has errors (fix profile.md or the copies, or run make-task --update; "
+            f"`mt profile check --dir {d}` lists them): " + "; ".join(checked["errors"])
+        )
+    data = load_profile(d)
+    if data.get("template") is True:
+        raise MtError(
+            f"profile {d} is a template (template: true; its paths are raw): install it with "
+            "`mt profile install-default` and run that profile"
+        )
+    name = d.name
+    warnings = [f"profile {name}: {w}" for w in checked["warnings"]]
+    phases: dict[str, Any] = data["phases"]
+    defaults = data.get("defaults")  # check passed: None or a mapping; its unknown keys were warnings
+    values: dict[str, Any] = dict.fromkeys(PROFILE_STATE_KEYS)
+    values.update(
+        profile_name=name,
+        profile_dir=str(d),
+        autonomy=data["autonomy"],
+        gates=resolved_gates(data),
+        defaults=None if defaults is None else {k: defaults[k] for k in DEFAULTS_CHOICES if k in defaults},
+    )
+
+    def companion(pid: str) -> tuple[Path, dict[str, Any]] | None:
+        """(companion root, phase spec), None for a skipped phase (check passed: the rest is valid)."""
+        spec = phases[pid]
+        return None if spec == "skip" else (d / "companions" / spec["companion"], spec)
+
+    def path(root: Path, spec: dict[str, Any], key: str) -> str | None:
+        target = inside(root, spec.get(key))
+        return None if target is None else str(target)
+
+    if (b := companion("brainstorm")) is not None:
+        values["brainstorm_entry"] = path(*b, "entry")
+    if (p := companion("plan")) is not None:
+        values["plan_entry"] = path(*p, "entry")
+        reviewer = path(*p, "reviewer")
+        if reviewer is not None:
+            fm, _ = read_md(Path(reviewer))
+            model = (fm or {}).get("model")
+            values.update(plan_reviewer=reviewer, plan_reviewer_model=model.strip() if isinstance(model, str) else None)
+    if (e := companion("exec")) is not None:
+        root, spec = e
+        values.update(
+            exec_root=str(root),
+            exec_scripts=path(root, spec, "scripts"),
+            exec_rules=path(root, spec, "rules"),
+            exec_data=str(d / "data" / spec["companion"]),
+        )
+    if (r := companion("review")) is not None:
+        root, spec = r
+        values.update(
+            review_entry=path(root, spec, "entry"),
+            review_scripts=path(root, spec, "scripts"),
+            review_data=str(d / "data" / spec["companion"]),
+        )
+    else:
+        warnings.append(f"profile {name}: phases.review is skip; the review phase does not run")
+    return values, warnings
+
+
+# ---------------------------------------------------------------- profile import
+
+SOURCE_FORMS = "make-task:<profile>/<id>, plugin:<name>@<marketplace>[:<subpath>], git:<url>#<ref>[:<subpath>] or local"
+PLUGIN_KEY = re.compile(rf"{ID}@{ID}")
+# never copied: a clone's git dir and Finder files at any depth; Claude Code's in-use markers and the
+# plugin's hooks (they hold user-specific absolute paths) at the copy root
+COPY_EXCLUDE_ANY = frozenset({".git"}) | TREE_IGNORE
+COPY_EXCLUDE_ROOT = frozenset({".in_use", "hooks"})
+UPDATE_BODY = "\n## Preferences\n\n## Changes\n\n## Wanted\n"
+GIT_FETCH_TIMEOUT = 300.0
+
+
+class Source(NamedTuple):
+    """A companion source spec; `text` is what UPDATE.md records as `source`."""
+
+    kind: str  # make-task | plugin | git | local
+    text: str
+    where: str = ""  # make-task: <profile>/<id>; plugin: <name>@<marketplace>; git: the URL
+    ref: str = ""  # git: the ref to fetch
+    subpath: str = ""  # plugin, git: the subtree to copy, normalized ("" = the whole root)
+
+
+def source_subpath(text: str, raw: str) -> str:
+    if not raw:
+        return ""
+    if inside(Path("."), raw) is None:
+        raise MtError(f"source {text!r}: subpath {raw!r} must be a relative path inside the source")
+    norm = Path(os.path.normpath(raw)).as_posix()
+    return "" if norm == "." else norm
+
+
+def parse_source(text: str) -> Source:
+    """Parse a source spec; for git, `#` and the last `:` after it separate URL, ref and subpath."""
+    if text == "local":
+        return Source("local", text)
+    kind, sep, rest = text.partition(":")
+    if kind == "make-task" and sep:
+        prof, _, cid = rest.partition("/")
+        if not (re.fullmatch(ID, prof) and re.fullmatch(ID, cid)):
+            raise MtError(f"source {text!r}: expected make-task:<profile>/<id>")
+        return Source(kind, text, rest)
+    if kind == "plugin" and sep:
+        key, _, sub = rest.partition(":")
+        if not PLUGIN_KEY.fullmatch(key):
+            raise MtError(f"source {text!r}: expected plugin:<name>@<marketplace>[:<subpath>]")
+        return Source(kind, text, key, subpath=source_subpath(text, sub))
+    if kind == "git" and sep:
+        url, hash_, tail = rest.partition("#")
+        ref, colon, sub = tail.rpartition(":")
+        if not colon:
+            ref, sub = tail, ""
+        if not (url and hash_ and ref) or url.startswith("-") or ref.startswith("-"):
+            raise MtError(f"source {text!r}: expected git:<url>#<ref>[:<subpath>]")
+        return Source(kind, text, url, ref, source_subpath(text, sub))
+    raise MtError(f"source {text!r}: expected {SOURCE_FORMS}")
+
+
+def plugin_version(entry: dict[str, Any], root: Path) -> str:
+    """`<version>+<gitCommitSha[:12]>`; a missing part is left out; neither recorded: the tree's sha256."""
+    version = str(entry.get("version") or "").strip()
+    sha = str(entry.get("gitCommitSha") or "").strip()[:12]
+    if version and sha:
+        return f"{version}+{sha}"
+    return version or sha or tree_hash(root)
+
+
+def git_fetch(url: str, ref: str, dest: Path) -> str:
+    """Fetch <ref> of <url> at depth 1 into the empty dir dest, check it out, return its commit sha."""
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    for args in (
+        ("init", "-q"),
+        ("fetch", "-q", "--depth", "1", url, ref),
+        ("checkout", "-q", "--detach", "FETCH_HEAD"),
+    ):
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(dest), *args],
+                capture_output=True,
+                text=True,
+                check=False,
+                env=env,
+                timeout=GIT_FETCH_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired as e:
+            raise MtError(f"git {args[0]} {url}#{ref} timed out after {GIT_FETCH_TIMEOUT:g} s") from e
+        if r.returncode != 0:
+            raise MtError(f"git {args[0]} {url}#{ref} failed: {r.stderr.strip()}")
+    return git("rev-parse", "FETCH_HEAD^{commit}", cwd=dest)
+
+
+def within(src: Source, base: Path, root: Path) -> Path:
+    """root, an MtError when it resolves outside base (a symlink in the subpath leaving the source): the
+    copy's own symlink check only sees what is under root."""
+    real_base, real_root = os.path.realpath(base), os.path.realpath(root)
+    if os.path.commonpath([real_base, real_root]) != real_base:
+        raise MtError(f"source {src.text!r}: {root} resolves to {real_root}, outside the source {base}")
+    return root
+
+
+@contextlib.contextmanager
+def source_tree(src: Source) -> Iterator[tuple[Path, str]]:
+    """(the directory to copy, the source's current version) for a make-task, plugin or git source."""
+    if src.kind == "make-task":
+        prof, _, cid = src.where.partition("/")
+        base = PROFILE_TEMPLATES / prof / "companions"
+        root = base / cid
+        if not root.is_dir():
+            raise MtError(f"source {src.text!r}: {root} does not exist")
+        yield within(src, base, root), tree_hash(root)
+    elif src.kind == "plugin":
+        pj, plugins = load_plugins()
+        entry = plugin_entry(plugins, src.where)
+        if entry is None:
+            raise MtError(f"source {src.text!r}: {src.where} is not installed (no entry with an existing dir in {pj})")
+        base = Path(entry["installPath"])
+        root = base / src.subpath
+        if not root.is_dir():
+            raise MtError(f"source {src.text!r}: {root} is not a directory")
+        yield within(src, base, root), plugin_version(entry, root)
+    elif src.kind == "git":
+        with tempfile.TemporaryDirectory(prefix="mt-git-") as tmp:
+            sha = git_fetch(src.where, src.ref, Path(tmp))
+            root = Path(tmp) / src.subpath
+            if not root.is_dir():
+                raise MtError(f"source {src.text!r}: {src.subpath} is not a directory at {src.ref} ({sha[:12]})")
+            yield within(src, Path(tmp), root), sha
+    else:
+        raise MtError(f"source {src.text!r} has no files to copy")
+
+
+def copy_entries(root: Path) -> tuple[list[str], list[tuple[str, Path]]]:
+    """(dirs, files) of the copy of root: posix paths relative to it, files with the path to read.
+
+    The exclusions are applied; a symlink becomes what it points to (a file, or a directory walked like
+    any other); a link that leaves root, dangles or loops is an MtError.
+    """
+    real_root = os.path.realpath(root)
+    dirs: list[str] = []
+    files: list[tuple[str, Path]] = []
+
+    def walk(d: str, rel: str, chain: frozenset[str]) -> None:
+        for e in sorted(os.scandir(d), key=lambda e: e.name):
+            if e.name in COPY_EXCLUDE_ANY or (not rel and e.name in COPY_EXCLUDE_ROOT):
+                continue
+            child = f"{rel}{e.name}"
+            path = e.path
+            if e.is_symlink():
+                target = os.path.realpath(path)
+                if os.path.commonpath([real_root, target]) != real_root:
+                    raise MtError(f"{child}: a symlink to {os.readlink(path)}, outside the source {root}")
+                if not os.path.exists(target):
+                    raise MtError(f"{child}: a symlink to {os.readlink(path)}, which does not exist")
+                if target in chain:
+                    raise MtError(f"{child}: a symlink to {os.readlink(path)}, which loops")
+                path = target
+            if os.path.isdir(path):
+                dirs.append(child)
+                real = os.path.realpath(path)
+                walk(path, f"{child}/", chain | {real})
+            elif os.path.isfile(path):
+                files.append((child, Path(path)))
+            else:
+                raise MtError(f"{child}: not a regular file, directory or symlink")
+
+    walk(real_root, "", frozenset({real_root}))
+    return dirs, files
+
+
+def nearest_skill_dir(rel: str, skill_dirs: set[str]) -> str:
+    """The nearest ancestor dir of rel (relative, posix) that holds a SKILL.md; "" (the root) when none does."""
+    parts = rel.split("/")[:-1]
+    while parts:
+        cand = "/".join(parts)
+        if cand in skill_dirs:
+            return cand
+        parts.pop()
+    return ""
+
+
+def copy_companion(src: Path, dest: Path, *, profile_dir: Path, cid: str, rewrite: bool, narrow: bool) -> None:
+    """Copy the source tree src to dest (new) for the companion `cid` of the profile in profile_dir.
+
+    Every token is rewritten for the final companions/<cid>/ location, whichever tree dest is; with
+    rewrite False (a template) tokens stay raw. narrow (a plugin subtree): ${CLAUDE_PLUGIN_ROOT} names a
+    dir above the copy, an MtError. Only UTF-8 text is rewritten; other files are copied byte for byte.
+    File modes are kept.
+    """
+    dirs, files = copy_entries(src)
+    skill_dirs = {rel.rpartition("/")[0] for rel, _ in files if rel.rpartition("/")[2] == "SKILL.md"}
+    comp_root = profile_dir / "companions" / cid
+    data_dir = profile_dir / "data" / cid
+    dest.mkdir(parents=True)
+    for rel in dirs:
+        (dest / rel).mkdir(parents=True, exist_ok=True)
+    for rel, path in files:
+        data = path.read_bytes()
+        mode = stat.S_IMODE(path.stat().st_mode)
+        try:
+            text: str | None = data.decode("utf-8")
+        except UnicodeDecodeError:
+            text = None
+        if text is not None and narrow:
+            m = PLUGIN_ROOT_TOKEN.search(text)
+            if m:
+                raise MtError(
+                    f"{rel}:{line_of(text, m.start())}: {m.group(0)} names the plugin root, which is above this "
+                    "subtree; import the whole plugin, or a git: source whose subpath is the plugin root"
+                )
+        if text is not None and rewrite:
+            skill_rel = nearest_skill_dir(rel, skill_dirs)
+
+            def value(m: re.Match[str], skill_rel: str = skill_rel, rel: str = rel, text: str = text) -> str:
+                var = m.group(1) or m.group(2)
+                if var == "CLAUDE_PLUGIN_ROOT":
+                    return str(comp_root)
+                if var == "CLAUDE_PLUGIN_DATA":
+                    return str(data_dir)
+                # profile_dir is the caller's to check; a skill dir comes from the source
+                where = f"{rel}:{line_of(text, m.start())}: {m.group(0)} names its skill dir, whose path"
+                unsafe = unsafe_path(
+                    where, f"companions/{cid}/{skill_rel}", "Import a source whose skill dirs have plain names"
+                )
+                if unsafe:
+                    raise MtError(unsafe)
+                return str(comp_root / skill_rel)
+
+            new = PATH_TOKEN.sub(value, text)
+            if new != text:
+                data = new.encode("utf-8")
+        out = dest / rel
+        out.write_bytes(data)
+        os.chmod(out, mode)
+
+
+def remove_path(path: Path) -> None:
+    if path.is_symlink() or not path.is_dir():
+        path.unlink()
+    else:
+        shutil.rmtree(path)
+
+
+def record_companion(d: Path, cid: str, source: str, version: str | None, *, rewritten: bool = False) -> None:
+    """Set UPDATE.md's companions.<cid> (the file is created when missing; its body and other keys stay).
+    rewritten (the copy's paths were written for d): `rewritten_for` becomes d when it is not recorded yet
+    (a different one stays, for `check` to report)."""
+    path = d / "UPDATE.md"
+    data: dict[str, Any] | None = None
+    body = UPDATE_BODY
+    if path.is_file():
+        data, body = read_md(path)
+    data = data or {}
+    if rewritten and data.get(REWRITTEN_FOR) is None:
+        data.pop(REWRITTEN_FOR, None)
+        data = {REWRITTEN_FOR: str(d), **data}
+    comps = data.get("companions")
+    if not isinstance(comps, dict):
+        comps = {}
+    comps[cid] = {"source": source, "version": version}
+    data["companions"] = comps
+    atomic_write(path, write_frontmatter(data, body))
+
+
+def finish_companion(d: Path, cid: str, source: str, version: str, *, raw: bool) -> None:
+    """After companions/<cid> and upstream/<cid> are in place: data/<cid> (not in a template, raw), the record
+    in UPDATE.md, and no pending fetch."""
+    if not raw:
+        (d / "data" / cid).mkdir(parents=True, exist_ok=True)
+    record_companion(d, cid, source, version, rewritten=not raw)
+    discard_staging(d, cid)
+
+
+def import_local(d: Path, cid: str, replace: bool) -> dict[str, Any]:
+    """Record companions/<cid>/, written by the user, as `local` (never updated, no upstream/)."""
+    comp, up = d / "companions" / cid, d / "upstream" / cid
+    if not comp.is_dir():
+        raise MtError(f"--source local records companions/{cid}/ written by you; {comp} does not exist yet")
+    recorded = load_update_companions(d).get(cid)
+    other = recorded.get("source") if isinstance(recorded, dict) else None
+    tracked = os.path.lexists(up) or other not in (None, "local")
+    if tracked and not replace:
+        raise MtError(
+            f"companion {cid!r} has a source ({other or f'upstream/{cid}'}); "
+            f"pass --replace to make it local (drops upstream/{cid})"
+        )
+    if os.path.lexists(up):
+        remove_path(up)
+    record_companion(d, cid, "local", None)
+    return {"id": cid, "source": "local", "version": None, "dir": str(comp), "replaced": tracked}
+
+
+def check_companion_id(cid: str) -> None:
+    if not re.fullmatch(ID, cid):
+        raise MtError(f"companion id {cid!r}: an id is {ID_RULE}")
+
+
+def copy_source(src: Source, dest: Path, d: Path, cid: str, *, raw: bool) -> str:
+    """Copy the source's current tree to dest (new) for companions/<cid> of the profile in d, rewritten
+    unless raw (a template); return the version copied. A rewrite refuses a profile dir that is not one plain
+    shell word before it reads the source."""
+    if not raw:
+        require_shell_word(d)
+    with source_tree(src) as (root, version):
+        narrow = src.kind == "plugin" and bool(src.subpath)
+        copy_companion(root, dest, profile_dir=d, cid=cid, rewrite=not raw, narrow=narrow)
+    return version
+
+
+def import_companion(d: Path, cid: str, src: Source, replace: bool) -> dict[str, Any]:
+    """Copy src to companions/<cid> and upstream/<cid> (rewritten unless the profile is a template) and
+    record its source and version in UPDATE.md, all under the profile's lock."""
+    check_companion_id(cid)
+    with profile_lock(d):
+        raw = is_template(d)
+        if src.kind == "local":
+            out = import_local(d, cid, replace)
+            discard_staging(d, cid)
+            return out
+        comp, up = d / "companions" / cid, d / "upstream" / cid
+        exists = os.path.lexists(comp) or os.path.lexists(up)
+        if exists and not replace:
+            raise MtError(
+                f"companion {cid!r} exists in {d}; pass --replace to replace companions/{cid} and upstream/{cid}"
+            )
+        # the record is written last, after the trees are in place: an UPDATE.md it cannot read fails here,
+        # before anything is copied or replaced
+        load_update(d)
+        work = Path(tempfile.mkdtemp(dir=d, prefix=f".import-{cid}-"))
+        try:
+            version = copy_source(src, work / "companions", d, cid, raw=raw)
+            shutil.copytree(work / "companions", work / "upstream", symlinks=True)
+            for tree, target in (("companions", comp), ("upstream", up)):
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if os.path.lexists(target):
+                    os.rename(target, work / f"old-{tree}")
+                os.rename(work / tree, target)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        # a pending fetch was made against the base this import replaced
+        finish_companion(d, cid, src.text, version, raw=raw)
+        return {"id": cid, "source": src.text, "version": version, "dir": str(comp), "replaced": exists}
+
+
+# ---------------------------------------------------------------- profile install-default
+
+# the template a profile is installed from: PROFILE_TEMPLATES/<DEFAULT_TEMPLATE>, with raw tokens
+DEFAULT_TEMPLATE = "default"
+
+
+def read_template(tpl: Path) -> tuple[dict[str, Any], str, list[str]]:
+    """(profile.md frontmatter, its body, companion ids) of the template in tpl; an MtError when it is not one."""
+    pm = tpl / "profile.md"
+    if not pm.is_file():
+        raise MtError(f"no make-task template at {tpl} (no profile.md); this make-task install is incomplete")
+    config, body = read_md(pm)
+    if config is None or config.get("template") is not True:
+        raise MtError(f"{pm} does not say `template: true`; only a template (raw paths) can be installed")
+    comps = tpl / "companions"
+    ids = sorted(e.name for e in os.scandir(comps) if e.is_dir(follow_symlinks=False)) if comps.is_dir() else []
+    if not ids:
+        raise MtError(f"the template at {tpl} has no companions/<id>/")
+    bad = [cid for cid in ids if not re.fullmatch(ID, cid)]
+    if bad:
+        raise MtError(f"the template at {tpl} has companion dirs that are not ids: {', '.join(bad)}")
+    return config, body, ids
+
+
+def install_default(name: str, target: Path) -> dict[str, Any]:
+    """Install the template PROFILE_TEMPLATES/default as the profile `name` in target, which must not exist.
+
+    companions/<id> and upstream/<id> both come from the template's companions/<id>, rewritten for target
+    (the template's own upstream/ and UPDATE.md stay behind: they track make-task's sources, and make-task's
+    `## Changes` live there); UPDATE.md records target as `rewritten_for` and each companion as
+    make-task:default/<id> with its tree hash, under empty sections; profile.md is the template's with
+    `template: false`, body kept; LICENSES/ is copied; data/<id>/ starts empty. Everything is built in a temp
+    dir next to target and renamed into place at the end, so a failure leaves no target behind; the dir it
+    installs into is locked meanwhile (the lock profile commands take, on a target that does not exist yet).
+    """
+    tpl = PROFILE_TEMPLATES / DEFAULT_TEMPLATE
+    config, body, ids = read_template(tpl)
+    if os.path.lexists(target):
+        raise MtError(f"{target} exists; install-default never overwrites a profile (pick another name or remove it)")
+    require_shell_word(target)  # before anything, its parent dirs included, is created
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with dir_lock(target.parent, f"the profiles in {target.parent}"):
+        work = Path(tempfile.mkdtemp(dir=target.parent, prefix=f".install-{target.name}-"))
+        try:
+            sources: dict[str, Any] = {}
+            for cid in ids:
+                src = parse_source(f"make-task:{DEFAULT_TEMPLATE}/{cid}")
+                comp = work / "companions" / cid
+                version = copy_source(src, comp, target, cid, raw=False)
+                shutil.copytree(comp, work / "upstream" / cid, symlinks=True)
+                (work / "data" / cid).mkdir(parents=True)
+                sources[cid] = {"source": src.text, "version": version}
+            if (tpl / "LICENSES").is_dir():
+                shutil.copytree(tpl / "LICENSES", work / "LICENSES", ignore=shutil.ignore_patterns(*TREE_IGNORE))
+            config["template"] = False
+            (work / "profile.md").write_text(write_frontmatter(config, body), encoding="utf-8")
+            update = {REWRITTEN_FOR: str(target), "companions": sources}
+            (work / "UPDATE.md").write_text(write_frontmatter(update, UPDATE_BODY), encoding="utf-8")
+            if os.path.lexists(target):
+                raise MtError(f"{target} appeared while installing; install-default never overwrites a profile")
+            os.rename(work, target)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+    return {"name": name, "dir": str(target), "template": str(tpl), "companions": sources}
+
+
+# ---------------------------------------------------------------- profile outdated, fetch, accept
+
+# <profile>/.staging/<id>/ is one fetch: tree/ (the fetched tree) and fetch.json (its source and version). fetch
+# builds it in a private dir (<profile>/.fetch-<id>-*) and renames it into place, accept claims it with one
+# rename, and each reads only its own copy: the tree shown, its record and the tree accepted are always one
+# fetch's. Both publish and accept hold the profile's lock (profile_lock); the renames keep a crash, or a writer
+# that takes no lock, from mixing two fetches
+STAGING = ".staging"
+STAGED_TREE = "tree"
+FETCH_RECORD = "fetch.json"
+
+
+def available_version(src: Source) -> str:
+    """The version a make-task, plugin or git source has now, without copying it (git: the commit a shallow
+    fetch of the ref gets, the same lookup import and fetch make)."""
+    with source_tree(src) as (_, version):
+        return version
+
+
+def companion_updates(d: Path, *, network: bool) -> dict[str, list[Any]]:
+    """Compare every companion's recorded version with its source's version now.
+
+    {"updates": [{"id", "source", "version", "available", "modified"}], "current": [ids],
+    "skipped": [{"id", "source", "reason"}], "errors": [{"id", "source", "error"}]}. git: sources are
+    looked up only with network; local ones and copies with no recorded source never.
+    """
+    records = load_update_companions(d)
+    out: dict[str, list[Any]] = {"updates": [], "current": [], "skipped": [], "errors": []}
+    for cid in companion_ids(d, records):
+        rec = records.get(cid)
+        if not isinstance(rec, dict) or not rec.get("source"):
+            out["skipped"].append({"id": cid, "source": None, "reason": "no source recorded in UPDATE.md"})
+            continue
+        text = str(rec["source"])
+        try:
+            src = parse_source(text)
+        except MtError as e:
+            out["errors"].append({"id": cid, "source": text, "error": str(e)})
+            continue
+        if src.kind == "local":
+            out["skipped"].append({"id": cid, "source": text, "reason": "local: written by you, never updated"})
+            continue
+        if src.kind == "git" and not network:
+            out["skipped"].append({"id": cid, "source": text, "reason": "git: looked up only with --network"})
+            continue
+        try:
+            available = available_version(src)
+        except MtError as e:
+            out["errors"].append({"id": cid, "source": text, "error": str(e)})
+            continue
+        recorded = rec.get("version")
+        recorded = None if recorded is None else str(recorded)
+        if available == recorded:
+            out["current"].append(cid)
+        else:
+            out["updates"].append(
+                {
+                    "id": cid,
+                    "source": text,
+                    "version": recorded,
+                    "available": available,
+                    "modified": companion_modified(d, cid),
+                }
+            )
+    return out
+
+
+def discard_staging(d: Path, cid: str) -> None:
+    """Remove a pending fetch (and .staging/ once it is empty)."""
+    if os.path.lexists(d / STAGING / cid):
+        remove_path(d / STAGING / cid)
+    with contextlib.suppress(OSError):
+        (d / STAGING).rmdir()
+
+
+def recorded_source(d: Path, cid: str) -> tuple[Source, str | None]:
+    """(source, recorded version) of a companion UPDATE.md tracks; an MtError for an unknown or local one.
+    The caller has read profile.md (is_template): this reads only UPDATE.md."""
+    check_companion_id(cid)
+    rec = load_update_companions(d).get(cid)
+    if not isinstance(rec, dict) or not rec.get("source"):
+        raise MtError(
+            f"companion {cid!r} has no source in {d / 'UPDATE.md'}; record one with `mt profile import {cid} --source S`"
+        )
+    src = parse_source(str(rec["source"]))
+    if src.kind == "local":
+        raise MtError(f"companion {cid!r} is local: you wrote it, it has no source to update from")
+    version = rec.get("version")
+    return src, None if version is None else str(version)
+
+
+def tree_diff(d: Path, old: Path, new: Path) -> str:
+    """The unified diff (git diff --no-index) from the tree old to the tree new, both under d; headers name
+    them relative to d."""
+    r = subprocess.run(
+        [
+            "git",
+            "-c",
+            "core.quotepath=false",
+            "diff",
+            "--no-index",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--find-renames",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "--",
+            os.path.relpath(old, d),
+            os.path.relpath(new, d),
+        ],
+        cwd=d,
+        capture_output=True,
+        check=False,
+    )
+    if r.returncode not in (0, 1):  # 1: the trees differ
+        raise MtError(f"git diff {old} {new} failed: {r.stderr.decode('utf-8', 'replace').strip()}")
+    return r.stdout.decode("utf-8", "replace")
+
+
+def fetch_companion(d: Path, cid: str) -> dict[str, Any]:
+    """Copy the companion's source as it is now to .staging/<cid>/tree, rewritten for companions/<cid> (raw in
+    a template), replacing an earlier fetch; return it with the diff upstream/<cid> -> .staging/<cid>/tree and
+    its tree hash, which accept takes as --expect.
+
+    The whole fetch (tree, record, hash and diff, against a snapshot of upstream/<cid>) is made in a private
+    work dir and then renamed into place: what it prints is its own. The copy (a git source can take minutes)
+    holds no lock; the snapshot, the diff and the publish hold the profile's lock, so the base the diff shows is
+    upstream/<cid> as it is when the fetch lands, and no accept or import runs in between.
+    """
+    raw = is_template(d)
+    src, _ = recorded_source(d, cid)
+    target = d / STAGING / cid
+    work = Path(tempfile.mkdtemp(dir=d, prefix=f".fetch-{cid}-"))
+    try:
+        # work holds the profile's layout, so the diff's headers name upstream/<cid> and .staging/<cid>/tree
+        unit, base = work / STAGING / cid, work / "upstream" / cid
+        tree_dir = unit / STAGED_TREE
+        version = copy_source(src, tree_dir, d, cid, raw=raw)
+        record = json.dumps({"source": src.text, "version": version}) + "\n"
+        (unit / FETCH_RECORD).write_text(record, encoding="utf-8")
+        tree = tree_hash(tree_dir)
+        with profile_lock(d):
+            now, recorded = recorded_source(d, cid)
+            if now.text != src.text:  # an import --replace while this one copied
+                raise MtError(
+                    f"UPDATE.md records {now.text!r} for {cid!r} now, not {src.text!r}, which this fetch copied; "
+                    f"run `mt profile fetch {cid}` again"
+                )
+            if (d / "upstream" / cid).is_dir():
+                shutil.copytree(d / "upstream" / cid, base, symlinks=True)
+            else:  # no base to compare with: every file is new
+                base.mkdir(parents=True)
+            changed = tree_hash(base) != tree
+            diff = tree_diff(work, base, tree_dir)
+            target.parent.mkdir(exist_ok=True)
+            with contextlib.suppress(FileNotFoundError):
+                os.rename(target, work / "old")  # the earlier fetch
+            try:
+                os.rename(unit, target)
+            except OSError as e:
+                if not os.path.lexists(target):
+                    raise
+                raise MtError(
+                    f"another fetch of {cid!r} was staged in {target} while this one ran; "
+                    f"run `mt profile fetch {cid}` again"
+                ) from e
+            modified = companion_modified(d, cid)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    return {
+        "id": cid,
+        "source": src.text,
+        "version": recorded,
+        "available": version,
+        "staging": str(target / STAGED_TREE),
+        "tree": tree,
+        "changed": changed,
+        "modified": modified,
+        "diff": diff,
+    }
+
+
+def nothing_fetched(staged: Path, cid: str) -> MtError:
+    return MtError(f"nothing fetched for {cid!r} in {staged.parent}; run `mt profile fetch {cid}` first")
+
+
+def fetched_version(unit: Path, staged: Path, cid: str, src: Source, expect: str) -> str:
+    """The version the fetch in unit (claimed from staged, which the messages name) records, once its record
+    names src and its tree is expect; an MtError otherwise."""
+    record = unit / FETCH_RECORD
+    if not (unit / STAGED_TREE).is_dir() or not record.is_file():
+        raise nothing_fetched(staged, cid)
+    try:
+        meta = json.loads(record.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise MtError(f"cannot read {staged / FETCH_RECORD}: {e}; run `mt profile fetch {cid}` again") from e
+    if not isinstance(meta, dict) or not isinstance(meta.get("version"), str):
+        raise MtError(f"{staged / FETCH_RECORD} records no version; run `mt profile fetch {cid}` again")
+    if meta.get("source") != src.text:
+        raise MtError(
+            f"{cid!r} was fetched from {meta.get('source')!r}, but UPDATE.md now records {src.text!r}; "
+            f"run `mt profile fetch {cid}` again"
+        )
+    found = tree_hash(unit / STAGED_TREE)
+    if found != expect:
+        raise MtError(
+            f"{staged / STAGED_TREE} holds the tree {found}, not --expect {expect}: it is not the fetch that was "
+            f"reviewed (a later fetch replaced it); run `mt profile fetch {cid}` again and review its diff"
+        )
+    return meta["version"]
+
+
+def accept_companion(d: Path, cid: str, expect: str) -> dict[str, Any]:
+    """Make the fetched tree the companion's base: .staging/<cid>/tree -> upstream/<cid>, and -> companions/<cid>
+    too when the copy holds nothing of the user's (unmodified or missing); record its version.
+
+    The whole fetch (.staging/<cid>) is claimed with one rename before anything in it is read, so its tree and
+    its record are one fetch's. expect is the `tree` hash the fetch the user reviewed printed: a fetch that
+    holds another tree (a later fetch, from another session too, replaced it) is refused and put back. The
+    profile's lock is held from the first read to the recorded version, so upstream/<cid>, companions/<cid> and
+    the record always come from one fetch: another session's fetch or accept waits for this one.
+    """
+    with profile_lock(d):
+        raw = is_template(d)
+        src, recorded = recorded_source(d, cid)
+        staged = d / STAGING / cid
+        comp, up = d / "companions" / cid, d / "upstream" / cid
+        before = companion_modified(d, cid)
+        take = before is False or not os.path.lexists(comp)
+        work = Path(tempfile.mkdtemp(dir=d, prefix=f".accept-{cid}-"))
+        try:
+            # a fetch that takes no lock stages beside the claimed one, never into the tree checked and installed
+            claimed = work / "staged"
+            try:
+                os.rename(staged, claimed)
+            except FileNotFoundError:
+                raise nothing_fetched(staged, cid) from None
+            try:
+                version = fetched_version(claimed, staged, cid, src, expect)
+            except MtError:
+                with contextlib.suppress(OSError):
+                    os.rename(claimed, staged)  # back in place, unless a newer fetch is staged there by now
+                raise
+            tree = claimed / STAGED_TREE
+            if take:
+                shutil.copytree(tree, work / "companions", symlinks=True)
+            up.parent.mkdir(parents=True, exist_ok=True)
+            if os.path.lexists(up):
+                os.rename(up, work / "old-upstream")
+            os.rename(tree, up)
+            if take:
+                comp.parent.mkdir(parents=True, exist_ok=True)
+                if os.path.lexists(comp):
+                    os.rename(comp, work / "old-companions")
+                os.rename(work / "companions", comp)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        finish_companion(d, cid, src.text, version, raw=raw)
+        return {
+            "id": cid,
+            "source": src.text,
+            "version": version,
+            "previous": recorded,
+            "copy": "updated" if take else "kept",
+            "modified": companion_modified(d, cid),
+        }
+
+
+# ---------------------------------------------------------------- profile raise-schema
+
+# profile.md's top-level `schema:` value (a comment after it stays)
+SCHEMA_VALUE = re.compile(r"^(schema[ \t]*:[ \t]*)[^\s#]+", re.MULTILINE)
+
+
+def raise_schema(d: Path) -> dict[str, Any]:
+    """Raise profile.md's `schema` to PROFILE_SCHEMA, under the profile's lock, once every make-task: companion
+    records the version its template has now: a newer schema means SKILL.md relies on text only the template's
+    current copies carry. Only that line changes (the rest of profile.md stays byte for byte).
+
+    {"dir", "schema", "previous", "raised"}; a current schema is left as it is (raised false). An MtError for a
+    template (its schema follows PROFILE_SCHEMA by hand), a schema that is newer or not an integer, and, naming
+    them, make-task: companions whose recorded version is not their template's now (or cannot be read).
+    """
+    with profile_lock(d):
+        data = load_profile(d)
+        pm = d / "profile.md"
+        if data.get("template") is True:
+            raise MtError(f"{d} is a template: its schema follows PROFILE_SCHEMA; set it to {PROFILE_SCHEMA} by hand")
+        schema = data.get("schema")
+        if not isinstance(schema, int) or isinstance(schema, bool):
+            raise MtError(f"{pm}: schema: expected an integer, got {schema!r}")
+        if schema > PROFILE_SCHEMA:
+            raise MtError(f"schema {schema} is newer than this make-task reads ({PROFILE_SCHEMA}); update make-task")
+        out = {"dir": str(d), "schema": PROFILE_SCHEMA, "previous": schema, "raised": schema < PROFILE_SCHEMA}
+        if schema == PROFILE_SCHEMA:
+            return out
+        found = companion_updates(d, network=False)
+        ours = [u for key in ("updates", "errors") for u in found[key] if str(u["source"]).startswith("make-task:")]
+        behind = [u["id"] if "error" not in u else f"{u['id']} (cannot check: {u['error']})" for u in ours]
+        if behind:
+            raise MtError(
+                f"schema {schema} is older than this make-task reads ({PROFILE_SCHEMA}), and these companions are "
+                f"not at make-task's current version yet: {', '.join(behind)}; take their updates in "
+                "`/make-task --update`, then run `mt profile raise-schema` again"
+            )
+        text = pm.read_text(encoding="utf-8")
+        m = FRONTMATTER.match(text)
+        if m is not None:
+            head, n = SCHEMA_VALUE.subn(rf"\g<1>{PROFILE_SCHEMA}", m.group(1))
+            new = text[: m.start(1)] + head + text[m.end(1) :]
+            if n == 1 and read_frontmatter(new) == ({**data, "schema": PROFILE_SCHEMA}, text[m.end() :]):
+                atomic_write(pm, new)
+                return out
+        raise MtError(f"{pm}: found no one `schema: {schema}` line to raise; set it to {PROFILE_SCHEMA} by hand")
+
+
+def cmd_profile_resolve(args: argparse.Namespace) -> int:
+    name, d = profile_target(args)
+    status = "ok" if (d / "profile.md").is_file() else "missing"
+    print(json.dumps({"name": name, "dir": str(d), "status": status}, ensure_ascii=False))
+    return 0
+
+
+def cmd_profile_check(args: argparse.Namespace) -> int:
+    _, d = profile_target(args)
+    out = check_profile(d)
+    print(json.dumps(out, ensure_ascii=False))
+    return 0 if out["ok"] else 1
+
+
+def cmd_profile_status(args: argparse.Namespace) -> int:
+    name, d = profile_target(args)
+    # default=str: a YAML value JSON has no type for (a date) is printed as text, not a traceback
+    print(json.dumps(profile_status(name, d), ensure_ascii=False, default=str))
+    return 0
+
+
+def cmd_profile_install_default(args: argparse.Namespace) -> int:
+    name, d = profile_target(args)
+    print(json.dumps(install_default(name, d), ensure_ascii=False))
+    return 0
+
+
+def cmd_profile_import(args: argparse.Namespace) -> int:
+    _, d = profile_target(args)
+    out = import_companion(d, args.id, parse_source(args.source), args.replace)
+    print(json.dumps(out, ensure_ascii=False))
+    return 0
+
+
+def cmd_profile_outdated(args: argparse.Namespace) -> int:
+    _, d = profile_target(args)
+    load_profile(d)  # refuses a dir with no profile
+    print(json.dumps(companion_updates(d, network=args.network), ensure_ascii=False))
+    return 0
+
+
+def cmd_profile_fetch(args: argparse.Namespace) -> int:
+    _, d = profile_target(args)
+    print(json.dumps(fetch_companion(d, args.id), ensure_ascii=False))
+    return 0
+
+
+def cmd_profile_accept(args: argparse.Namespace) -> int:
+    _, d = profile_target(args)
+    print(json.dumps(accept_companion(d, args.id, args.expect), ensure_ascii=False))
+    return 0
+
+
+def cmd_profile_raise_schema(args: argparse.Namespace) -> int:
+    _, d = profile_target(args)
+    print(json.dumps(raise_schema(d), ensure_ascii=False))
+    return 0
+
+
+# ---------------------------------------------------------------- cli
+
+
+def build_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(
+        prog="mt",
+        description="Run state, journal and agterm UI for the make-task skill.",
+        epilog="Run lookup: --run DIR, else <state root>/current-<AGTERM_SESSION_ID or default>.",
+    )
+    ap.add_argument("--run", metavar="DIR", help="run directory (default: the current run pointer)")
+    sub = ap.add_subparsers(dest="cmd", required=True, metavar="COMMAND")
+
+    p = sub.add_parser(
+        "init",
+        help="check the profile, create a run dir and pointer, detect the repo, print one JSON line "
+        "(a profile with errors creates no run)",
+    )
+    p.add_argument("--title", required=True, help="task title (also names the run dir)")
+    p.add_argument(
+        "--profile-dir",
+        required=True,
+        metavar="DIR",
+        help="the profile to run (e.g. the dir `mt profile resolve` prints); its values become the run's profile keys",
+    )
+    p.set_defaults(func=cmd_init)
+
+    p = sub.add_parser(
+        "status", help="print phase, activity, error, values, checkpoints, rounds, assumptions and decisions"
+    )
+    p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("set", help=f"store orchestrator values; keys: {', '.join(SET_KEYS)}")
+    p.add_argument(
+        "pairs", nargs="+", metavar="KEY=VALUE", help=f"an empty VALUE clears {' or '.join(CLEARABLE_KEYS)} only"
+    )
+    p.set_defaults(func=cmd_set)
+
+    p = sub.add_parser("phase", help="finish the running phase and start (or skip) ID")
+    p.add_argument("id", metavar="ID", help=f"one of: {', '.join(PHASE_IDS)}")
+    p.add_argument("--activity", help="new 'now' line")
+    p.add_argument("--note", help="note shown on phase ID")
+    p.add_argument("--skipped", action="store_true", help="mark ID skipped instead of starting it")
+    p.set_defaults(func=cmd_phase)
+
+    p = sub.add_parser("activity", help="set the 'now' line; clears an error")
+    p.add_argument("text", metavar="A")
+    p.add_argument("--wait", action="store_true", help="mark the line as waiting for the user")
+    p.set_defaults(func=cmd_activity)
+
+    p = sub.add_parser("assume", help="record an assumption")
+    p.add_argument("text", metavar="TEXT")
+    p.add_argument("--why", required=True, metavar="W")
+    p.set_defaults(func=cmd_assume)
+
+    p = sub.add_parser("decide", help="record a decision (question and answer)")
+    p.add_argument("q", metavar="Q")
+    p.add_argument("a", metavar="A")
+    p.set_defaults(func=cmd_decide)
+
+    p = sub.add_parser("event", help="append a timeline event")
+    p.add_argument("text", metavar="TEXT")
+    p.set_defaults(func=cmd_event)
+
+    p = sub.add_parser("checkpoint", help="journal an external side effect (begin before, end after)")
+    cp_sub = p.add_subparsers(dest="action", required=True, metavar="ACTION")
+    b = cp_sub.add_parser("begin", help="record intent before the side effect starts")
+    b.add_argument("key", metavar="KEY", help="e.g. exec.task.3, review.fix.2, finalize")
+    b.add_argument("--resume", action="store_true", help="continue a checkpoint that is already begun")
+    b.set_defaults(func=cmd_checkpoint)
+    e = cp_sub.add_parser("end", help="record that the side effect finished")
+    e.add_argument("key", metavar="KEY")
+    e.add_argument("--result", metavar="R", help="result to store")
+    e.set_defaults(func=cmd_checkpoint)
+
+    p = sub.add_parser("fail", help="set the error state (run stays open; the next phase/activity resumes it)")
+    p.add_argument("msg", metavar="MSG")
+    p.set_defaults(func=cmd_fail)
+
+    p = sub.add_parser("dirty", help="re-read the dirty paths, store and print the ones to stash")
+    p.add_argument("--exclude", action="append", metavar="PATH", help="a path to leave out, e.g. the plan (repeatable)")
+    p.set_defaults(func=cmd_dirty)
+
+    p = sub.add_parser("plan", help="store the plan (resolved against cwd) and parse its tasks")
+    p.add_argument("path", metavar="PATH", help="plan file, relative to the current directory")
+    p.add_argument("--progress", metavar="P", help="progress log file")
+    p.set_defaults(func=cmd_plan)
+
+    p = sub.add_parser(
+        "refresh", help="re-detect toplevel and branch, re-resolve and re-parse the plan, re-render changed artifacts"
+    )
+    p.set_defaults(func=cmd_refresh)
+
+    p = sub.add_parser("artifact", help="register (and render) an artifact; `artifact changes` registers revdiff")
+    p.add_argument("id", metavar="ID", help=f"one of: {', '.join(ARTIFACT_IDS)}")
+    p.add_argument("path", nargs="?", metavar="PATH", help="source file, relative to the current directory")
+    p.add_argument("--hint", metavar="H", help="tooltip text (default: the source path)")
+    p.set_defaults(func=cmd_artifact)
+
+    p = sub.add_parser("review", help="revmux review rounds: start, wait, result, verify-final")
+    rv = p.add_subparsers(dest="action", required=True, metavar="ACTION")
+    s = rv.add_parser("start", help="open a round with its revmux run name and round dir; print its report path")
+    s.add_argument("--round", type=int, required=True, metavar="N")
+    s.add_argument("--run", dest="name", required=True, metavar="NAME", help="revmux run name, e.g. 01-initial")
+    s.add_argument("--round-dir", required=True, metavar="D", help="the round's directory (holds events.jsonl)")
+    s.set_defaults(func=cmd_review_start)
+    w = rv.add_parser("wait", help="wait for a round; print done, failed or running")
+    w.add_argument("--round", type=int, required=True, metavar="N")
+    w.add_argument(
+        "--deadline", type=float, default=REVIEW_DEADLINE, metavar="S", help=f"seconds (default {REVIEW_DEADLINE:g})"
+    )
+    w.set_defaults(func=cmd_review_wait)
+    r = rv.add_parser("result", help="record a round's report; rebuild review.md")
+    r.add_argument("file", metavar="FILE", help="revmux JSON report")
+    r.add_argument("--round", type=int, required=True, metavar="N")
+    r.add_argument(
+        "--not-gating", action="append", metavar="ID=REASON", help="scope-ruled finding: clean on it (repeatable)"
+    )
+    r.add_argument(
+        "--deferred", action="append", metavar="ID=REASON", help="prose-only major batched to the end (repeatable)"
+    )
+    r.add_argument(
+        "--confirming",
+        action="store_true",
+        help="the leftovers fix's confirming round: deferred findings carried from earlier rounds are settled",
+    )
+    r.set_defaults(func=cmd_review_result)
+    v = rv.add_parser("verify-final", help="check that finalize kept the reviewed content (rebased)")
+    v.set_defaults(func=cmd_review_verify_final)
+
+    p = sub.add_parser(
+        "ask",
+        help="show a question card (1-4 options) and print the answer (exit 0 answered, 2 dismissed/expired, "
+        "3 not shown: not in agterm, a run without agterm, or agtermctl failed)",
+    )
+    p.add_argument(
+        "card",
+        metavar="CARD.json",
+        help='{"phase","title","context","options":[{"id","label","pro","con","recommended"}],"allow_other"}',
+    )
+    p.set_defaults(func=cmd_ask)
+
+    p = sub.add_parser("done", help="finish the run with a final status; sidebar status completed")
+    p.add_argument(
+        "--status",
+        required=True,
+        metavar="S",
+        help=f"one of: {', '.join(repr(s) for s in FINAL_STATUSES)}; clean is refused while findings are "
+        "unresolved or deferred, the review is stale, skipped, unfinished or degraded, verify-final or "
+        "finalize did not pass, or an error is set",
+    )
+    p.add_argument("--note", metavar="N", help="closing note shown on the now line and in the timeline")
+    p.set_defaults(func=cmd_done)
+
+    p = sub.add_parser("revmux", help="set the tracked .revmux/ working copies aside and put them back (in place)")
+    rx = p.add_subparsers(dest="action", required=True, metavar="ACTION")
+    for action, text in (
+        ("aside", "save raw copies, check out HEAD's version; revmux_tree=aside|none (0), differs|unsafe|failed (1)"),
+        ("put-back", "copy the saved files back, all or nothing; revmux_tree=ok|none|conflict|failed (exit 0)"),
+    ):
+        a = rx.add_parser(action, help=text)
+        a.add_argument("--state-dir", required=True, metavar="DIR", help="the run's state_dir (holds revmux-tree/)")
+        a.add_argument("--toplevel", required=True, metavar="DIR", help="the checkout's toplevel")
+        a.set_defaults(func=cmd_revmux)
+
+    # every profile command names its profile the same way: --profile NAME or --dir DIR, never --run
+    def target_parser(dir_help: str) -> argparse.ArgumentParser:
+        target = argparse.ArgumentParser(add_help=False)
+        tg = target.add_mutually_exclusive_group()
+        tg.add_argument("--profile", metavar="NAME", help="profile under <config root>/profiles/ (default: default)")
+        tg.add_argument("--dir", metavar="DIR", help=dir_help)
+        return target
+
+    target = target_parser("a profile directory, e.g. the make-task template")
+    p = sub.add_parser(
+        "profile",
+        help="make-task profiles: resolve, check, status, install-default, import, outdated, fetch, accept, "
+        "raise-schema (one JSON line each)",
+    )
+    pf = p.add_subparsers(dest="action", required=True, metavar="ACTION")
+    for action, func, text in (
+        ("resolve", cmd_profile_resolve, 'print {"name", "dir", "status": "ok"|"missing"}'),
+        (
+            "check",
+            cmd_profile_check,
+            (
+                'validate the profile; print {"ok", "errors", "warnings", "updates"} (updates: make-task: and '
+                "plugin: sources), exit 1 when not ok"
+            ),
+        ),
+        ("status", cmd_profile_status, "print autonomy, gates, phases and each companion's source, version, modified"),
+    ):
+        a = pf.add_parser(action, help=text, parents=[target])
+        a.set_defaults(func=func)
+    a = pf.add_parser(
+        "install-default",
+        help="install make-task's default template as the profile (paths rewritten); refuses an existing one",
+        parents=[target_parser("install into this directory (it must not exist)")],
+    )
+    a.set_defaults(func=cmd_profile_install_default)
+    a = pf.add_parser(
+        "import",
+        help="copy a source to companions/ID and upstream/ID (paths rewritten), record it in UPDATE.md",
+        parents=[target],
+    )
+    a.add_argument("id", metavar="ID", help="companion id (its dir under companions/)")
+    a.add_argument("--source", required=True, metavar="S", help=SOURCE_FORMS)
+    a.add_argument("--replace", action="store_true", help="replace an existing companion (both trees)")
+    a.set_defaults(func=cmd_profile_import)
+    a = pf.add_parser(
+        "outdated",
+        help='print {"updates", "current", "skipped", "errors"}: companions whose source has another version now',
+        parents=[target],
+    )
+    a.add_argument("--network", action="store_true", help="also look up git: sources (a shallow fetch of each)")
+    a.set_defaults(func=cmd_profile_outdated)
+    a = pf.add_parser(
+        "fetch",
+        help="copy the source as it is now to .staging/ID/tree (paths rewritten); print it with its tree hash and "
+        "the diff from upstream/ID",
+        parents=[target],
+    )
+    a.add_argument("id", metavar="ID", help="companion id (its dir under companions/)")
+    a.set_defaults(func=cmd_profile_fetch)
+    a = pf.add_parser(
+        "accept",
+        help="move .staging/ID/tree to upstream/ID, and to companions/ID when that copy is unmodified; record the "
+        "version",
+        parents=[target],
+    )
+    a.add_argument("id", metavar="ID", help="companion id (its dir under companions/)")
+    a.add_argument(
+        "--expect",
+        required=True,
+        metavar="HASH",
+        help="the `tree` the reviewed fetch printed; refused when .staging/ID/tree is another tree",
+    )
+    a.set_defaults(func=cmd_profile_accept)
+    a = pf.add_parser(
+        "raise-schema",
+        help="raise profile.md's schema to the one this make-task reads; refused until every make-task: companion "
+        "is at its template's current version",
+        parents=[target],
+    )
+    a.set_defaults(func=cmd_profile_raise_schema)
+    return ap
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        return args.func(args)
+    except MtError as e:
+        print(f"mt: error: {e}", file=sys.stderr)
+        return 1
+    except OSError as e:
+        print(f"mt: error: {args.cmd}: {e}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

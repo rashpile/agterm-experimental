@@ -1,0 +1,18 @@
+{"kind":"stage","stage":"find","at":"2026-10-29T21:20:24.031242+02:00"}
+{"kind":"agent_started","agent":"bugs+impl","text":"bugs, impl","at":"2026-10-29T21:20:24.033571+02:00"}
+{"kind":"agent_started","agent":"adversarial","text":"adversarial","at":"2026-10-29T21:20:26.069087+02:00"}
+{"kind":"agent_state","agent":"adversarial","text":"model: gpt-6","at":"2026-10-29T21:20:28.098329+02:00"}
+{"kind":"agent_activity","agent":"bugs+impl","text":"Reading src/store.go","at":"2026-10-29T21:20:40.000000+02:00"}
+{"kind":"findings","agent":"bugs+impl","at":"2026-10-29T21:22:39.437343+02:00"}
+{"kind":"agent_done","agent":"bugs+impl","text":"4 findings","at":"2026-10-29T21:22:39.437408+02:00"}
+{"kind":"findings","agent":"adversarial","at":"2026-10-29T21:23:42.934357+02:00"}
+{"kind":"agent_done","agent":"adversarial","text":"2 findings","at":"2026-10-29T21:23:42.934504+02:00"}
+{"kind":"stage","stage":"synthesis","at":"2026-10-29T21:23:42.938278+02:00"}
+{"kind":"agent_started","agent":"synthesis","text":"merging 6 findings","at":"2026-10-29T21:23:42.938689+02:00"}
+{"kind":"agent_done","agent":"synthesis","text":"6 findings","at":"2026-10-29T21:23:53.355896+02:00"}
+{"kind":"stage","stage":"verify","at":"2026-10-29T21:23:53.357789+02:00"}
+{"kind":"agent_started","agent":"verify src","text":"src","at":"2026-10-29T21:23:53.359465+02:00"}
+{"kind":"agent_started","agent":"verify docs","text":"README.md","at":"2026-10-29T21:23:53.359481+02:00"}
+{"kind":"agent_started","agent":"verify vendor","text":"vendor","at":"2026-10-29T21:23:53.359490+02:00"}
+{"kind":"agent_done","agent":"verify src","text":"4 of 4 kept","at":"2026-10-29T21:24:19.707172+02:00"}
+{"kind":"agent_degraded","agent":"verify docs","text":"exit 1","at":"2026-10-29T21:24:20.013389+02:00"}

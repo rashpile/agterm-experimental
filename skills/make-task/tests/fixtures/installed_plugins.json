@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "plugins": {
+    "planning@umputun-cc-thingz": [
+      {
+        "scope": "user",
+        "installPath": "@PLUGINS@/cache/umputun-cc-thingz/planning/3.8.4",
+        "version": "3.8.4"
+      }
+    ],
+    "revmux@revmux": [
+      {
+        "scope": "user",
+        "installPath": "@PLUGINS@/cache/revmux/revmux/0.5.5",
+        "version": "0.5.5"
+      }
+    ],
+    "other@market": [
+      {
+        "scope": "user",
+        "installPath": "@PLUGINS@/cache/market/other/1.0.0",
+        "version": "1.0.0"
+      }
+    ]
+  }
+}

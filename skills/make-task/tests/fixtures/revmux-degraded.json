@@ -1,0 +1,21 @@
+{
+  "scope": {"task": "session-store", "run": "02-after-fix", "scope_path": "/abs/.revmux/tasks/session-store/02-after-fix/input/scope.md"},
+  "sources": {
+    "expected": 2, "reported": 1, "degraded": ["adversarial"],
+    "agents": [
+      {"name": "bugs+impl", "lenses": ["bugs", "impl"], "executor": "claude", "requested_model": "opus",
+       "actual_model": "claude-opus-5-5", "effort": "high", "tokens": 41000, "raised": 1, "degraded": false},
+      {"name": "adversarial", "lenses": ["adversarial"], "executor": "codex", "requested_model": "gpt",
+       "actual_model": "", "effort": "high", "tokens": 0, "raised": 0, "degraded": true}
+    ]
+  },
+  "findings": [
+    {"id": "bugs+impl-1", "file": "src/store.go", "line": 52, "end_line": 0, "severity": "minor", "confidence": 60,
+     "title": "Lock held across the log call", "body": "...", "fix": "...",
+     "sources": ["bugs+impl"], "lenses": ["bugs"], "verdict": "confirmed"}
+  ],
+  "open_questions": [],
+  "pre_existing": [],
+  "immaterial": [],
+  "stats": {"duration_ms": 120000, "tokens": 41000, "stages": []}
+}
