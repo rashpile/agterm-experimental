@@ -557,6 +557,12 @@ def test_wait_rejects_a_bad_poll_interval(mt, review_run, monkeypatch, bad):
     assert r.code == 1 and "MT_REVIEW_POLL must be a positive number" in r.err
 
 
+def test_default_wait_deadline_stays_under_the_bash_limit():
+    """`review wait` runs under the Bash tool's 600 s limit: its default wait ends before it."""
+    assert MT.REVIEW_DEADLINE < MT.BASH_LIMIT
+    assert MT.build_parser().parse_args(["review", "wait", "--round", "1"]).deadline == MT.REVIEW_DEADLINE
+
+
 def test_wait_deadline_reached(mt, review_run, spawn):
     spawn("--task", TASK, "--run", "01-initial")
     t0 = time.monotonic()

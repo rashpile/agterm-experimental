@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 from conftest import MT, git, init, init_args, profile_config, write_run_profile
+from test_agterm import PANE_ID, SID, tree
 
 
 def parse_state_js(text: str) -> dict:
@@ -68,6 +69,26 @@ def test_init_creates_run_dir_pointer_and_json_line(mt, git_repo, isolate, run_s
     assert all(p["status"] == "pending" for p in state["phases"])
     assert state["started"] and state["finished"] is None
     assert state["events"][0]["text"] == "make-task started"
+
+
+def test_init_reports_no_cards_outside_agterm(mt, git_repo, run_state):
+    info = init(mt, git_repo)
+    assert "cards" not in info
+    assert "cards" not in run_state(Path(info["state_dir"]))
+
+
+def test_init_reports_no_cards_in_agterm(mt, git_repo, isolate, monkeypatch, run_state):
+    """Questions are AskUserQuestions in the terminal: the dashboard opens, and nothing reports cards."""
+    monkeypatch.setenv("AGTERM_ENABLED", "1")
+    monkeypatch.setenv("AGTERM_SESSION_ID", SID)
+    monkeypatch.setenv("AGTERM_PANE_ID", PANE_ID)
+    monkeypatch.setenv("MT_NO_CARDS", "1")
+    isolate.agterm_replies.write_text(json.dumps({"tree": {"stdout": json.dumps(tree())}}))
+    info = init(mt, git_repo)
+    run = Path(info["state_dir"])
+    assert info["agterm"] is True, "MT_NO_CARDS means nothing any more: the dashboard opens"
+    assert "cards" not in info and "cards" not in run_state(run)
+    assert not (run / "cards").exists()
 
 
 def test_init_pointer_per_agterm_session(mt, git_repo, isolate, monkeypatch):
@@ -557,6 +578,24 @@ def test_state_js_parses_and_escapes_script_close(mt, git_repo, run_state):
     assert parse_state_js(js) == run_state(run)
 
 
+HOSTILE = '</script><script>alert(1)</script><!-- <img src=x onerror="alert(2)"> & "q" ü'
+
+
+def test_script_json_escapes_markup_and_round_trips():
+    data = {"title": f"Title {HOSTILE}", "list": [HOSTILE, 1, None], f"key {HOSTILE}": True}
+    out = MT.script_json(data)
+    assert "<" not in out and ">" not in out and "&" not in out, "no </script>, <!-- or entity can start"
+    assert "\\u003c/script\\u003e" in out and "\\u003c!--" in out and "\\u0026" in out
+    assert "ü" in out, "non-ASCII is kept as it is"
+    assert json.loads(out) == data
+
+
+def test_script_json_of_plain_values():
+    assert MT.script_json("plain") == '"plain"'
+    assert MT.script_json([]) == "[]"
+    assert MT.script_json(None) == "null"
+
+
 def test_writes_leave_no_tmp_files(mt, git_repo):
     run = Path(init(mt, git_repo)["state_dir"])
     mt("event", "one")
@@ -651,6 +690,35 @@ def test_activity_wait_and_error_recovery(mt, git_repo, run_state):
     assert mt("activity", "Retrying").code == 0
     s = run_state(run)
     assert s["error"] is None and s["now_kind"] == "" and s["phases"][0]["status"] == "run"
+
+
+def test_activity_wait_is_cleared_by_the_next_activity(mt, git_repo, run_state):
+    """A question: `activity --wait` before the AskUserQuestion, `decide` and a normal `activity` after it."""
+    run = Path(init(mt, git_repo)["state_dir"])
+    mt("phase", "brainstorm")
+    assert mt("activity", "Waiting for your answer · Session length", "--wait").code == 0
+    s = run_state(run)
+    assert (s["activity"], s["now_kind"]) == ("Waiting for your answer · Session length", "wait")
+    assert mt("decide", "How long should a session live?", "30 days, sliding").code == 0
+    assert run_state(run)["now_kind"] == "wait", "decide leaves the wait to the next activity"
+    assert mt("activity", "Brainstorm · writing the design").code == 0
+    s = run_state(run)
+    assert (s["activity"], s["now_kind"]) == ("Brainstorm · writing the design", "")
+    assert s["decisions"] == [{"q": "How long should a session live?", "a": "30 days, sliding"}]
+
+
+def test_decide_records_every_answer_in_order(mt, git_repo, run_state):
+    """A gate asked again records each answer; the last one with its title is the one Gates reads."""
+    run = Path(init(mt, git_repo)["state_dir"])
+    assert mt("decide", "Gate: plan", "Revise").code == 0
+    assert mt("decide", "Gate: plan", 'split task 3 </script> & keep "ü"').code == 0
+    assert mt("decide", "Gate: plan", "Approve").code == 0
+    assert run_state(run)["decisions"] == [
+        {"q": "Gate: plan", "a": "Revise"},
+        {"q": "Gate: plan", "a": 'split task 3 </script> & keep "ü"'},
+        {"q": "Gate: plan", "a": "Approve"},
+    ]
+    assert "</" not in (run / "state.js").read_text()
 
 
 def test_assume_decide_event(mt, git_repo, run_state):
@@ -797,6 +865,15 @@ def test_command_without_active_run(mt, args):
     r = mt(*args)
     assert r.code == 1
     assert "no active run" in r.err
+
+
+def test_ask_is_an_unknown_command(mt, git_repo, tmp_path):
+    init(mt, git_repo)
+    card = tmp_path / "card.json"
+    card.write_text('{"title": "Q?", "options": [{"id": "a", "label": "A", "recommended": true}]}')
+    r = mt("ask", str(card))
+    assert r.code == 2 and "invalid choice: 'ask'" in r.err
+    assert "ask" not in MT.build_parser().format_help().split()
 
 
 def test_pointer_to_deleted_run(mt, git_repo):

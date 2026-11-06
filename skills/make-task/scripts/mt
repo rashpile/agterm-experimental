@@ -6,7 +6,7 @@
 """mt - run state, journal and agterm UI for the make-task skill.
 
 The make-task orchestrator calls mt at every step boundary. mt owns the run
-directory (state.json, state.js for the dashboard, artifacts, cards) and is the
+directory (state.json, state.js for the dashboard, artifacts) and is the
 only thing that talks to agtermctl. Every command loads the state fresh, changes
 it and saves it atomically right away.
 
@@ -32,7 +32,6 @@ Usage:
     mt [--run DIR] review result FILE --round N [--not-gating ID=REASON ...]
                                 [--deferred ID=REASON ...] [--confirming]
     mt [--run DIR] review verify-final
-    mt [--run DIR] ask CARD.json
     mt [--run DIR] done --status S [--note N]
     mt [--run DIR] revmux aside --state-dir DIR --toplevel DIR
     mt [--run DIR] revmux put-back --state-dir DIR --toplevel DIR
@@ -56,11 +55,8 @@ Environment:
                       called as `MT_VIEW SRC -o OUT` when executable, else through `uv run -q --script`
     MT_PGREP          process matcher for `review wait` (default pgrep; called as `MT_PGREP -f -- PATTERN`)
     MT_REVIEW_POLL    seconds between `review wait` polls (default 2)
-    MT_ASK_DEADLINE   seconds `ask` waits for a card before closing it (default 540)
     MT_PROFILE_LOCK_WAIT
                       seconds a profile command waits for another one changing the same profile (default 60)
-    MT_NO_CARDS       set (to anything but 0) to turn question cards off: init reports cards false
-                      and `ask` exits 3, so questions go to AskUserQuestion; the dashboard stays
     AGTERM_ENABLED, AGTERM_SESSION_ID, AGTERM_PANE_ID
                       agterm is used only when the first two are set; nothing calls agtermctl otherwise
 
@@ -106,17 +102,6 @@ drops `.revmux/` and the --exclude paths, stores the rest as stash_paths and pri
 {"paths": [...], "quoted": "<shell-quoted paths>", "unstage": [...], "unstage_quoted": "..."}
 for the in-place stash; `unstage` are the paths in HEAD the index no longer has (staged
 deletions, rename sources), the only ones the stash recipe unstages.
-
-Question cards: `ask` validates the card (1-4 options, unique ids other than `other`
-and `delegate`, exactly one recommended), writes cards/<n>.json and cards/<n>.html,
-sets the status blocked with a sound, opens the card with `--block` and waits up to
-MT_ASK_DEADLINE seconds (then closes it); the whole call stays under the Bash tool's
-600 s limit. It prints {"choice": "<id>"},
-{"choice": "other", "text": "..."} or {"choice": "delegate", "id": "<recommended>"}
-and records a decision (an assumption for delegate), exit 0; {"choice": null} with
-exit 2 when the card was dismissed, expired or gave an unusable answer, and with
-exit 3 when it cannot be shown (not in agterm, a run without agterm, MT_NO_CARDS set,
-agtermctl failed).
 
 Completion: `done --status S` (clean, "not clean", "review skipped", "review stale",
 stopped) stamps the run and its running phase finished (an `error` phase keeps its
@@ -222,7 +207,7 @@ use it unquoted, so install-default, a rewriting import or fetch refuse any othe
 reports a phases path that is not one, and a rewrite refuses a ${CLAUDE_SKILL_DIR} whose skill
 dir is not.
 
-Exit codes: 0 ok, 1 failure (message on stderr); `ask` also uses 2 and 3.
+Exit codes: 0 ok, 1 failure (message on stderr).
 """
 
 from __future__ import annotations
@@ -289,12 +274,9 @@ RENDER_TIMEOUT = 120
 
 ASSETS = Path(__file__).resolve().parent.parent / "assets"
 AGTERM_TIMEOUT = 15.0
-# `mt ask` and `mt review wait` run under the Bash tool's limit (timeout: 600000); both waits end before it
+# `mt review wait` runs under the Bash tool's limit (timeout: 600000); its wait ends before it
 BASH_LIMIT = 600.0
 REVIEW_DEADLINE = 570.0
-ASK_DEADLINE = 540.0
-# the agtermctl calls around a card's wait; short, so `mt ask` stays well under BASH_LIMIT
-ASK_CALL_TIMEOUT = 5.0
 # detect-branch.sh's last step asks the remote (`git remote show origin`), and the script is the profile's copy
 DETECT_BRANCH_TIMEOUT = 60.0
 
@@ -380,6 +362,12 @@ def atomic_write(path: Path, text: str) -> None:
 def state_js(state: dict[str, Any]) -> str:
     body = json.dumps(state, ensure_ascii=False).replace("</", "<\\/")
     return f"window.mtState({body});\n"
+
+
+def script_json(data: Any) -> str:
+    """JSON safe inside a <script> element: every `<`, `>` and `&` as a \\u escape (covers `</` and `<!--`)."""
+    body = json.dumps(data, ensure_ascii=False)
+    return body.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
 
 
 def load(run: Path) -> dict[str, Any]:
@@ -568,11 +556,6 @@ def agterm_session() -> str | None:
     return os.environ["AGTERM_SESSION_ID"]
 
 
-def cards_disabled() -> bool:
-    """MT_NO_CARDS turns question cards off (any value but empty or 0); the dashboard is not affected."""
-    return os.environ.get("MT_NO_CARDS", "").strip() not in ("", "0")
-
-
 def agtermctl(*args: str, timeout: float | None = None) -> AgCall:
     """The one place mt runs agtermctl (default timeout AGTERM_TIMEOUT). Outside agterm nothing runs."""
     if agterm_session() is None:
@@ -743,7 +726,6 @@ def cmd_init(args: argparse.Namespace) -> int:
         "stash_ref": None,
         "start_cwd": cwd,
         "agterm": False,
-        "cards": False,
         "created_split": False,
         "agterm_session": None,
         "dashboard_pane": None,
@@ -794,8 +776,6 @@ def cmd_init(args: argparse.Namespace) -> int:
         if not state["agterm"]:
             add_event(state, "No dashboard: agterm is not available")
         save(run, state)
-    state["cards"] = bool(state["agterm"]) and not cards_disabled()
-    save(run, state)
 
     out_keys = (
         "state_dir",
@@ -812,7 +792,6 @@ def cmd_init(args: argparse.Namespace) -> int:
         "dirty_paths",
         "start_cwd",
         "agterm",
-        "cards",
         "created_split",
         "dashboard_pane",
         *PROFILE_STATE_KEYS,
@@ -2082,258 +2061,6 @@ def cmd_review_verify_final(args: argparse.Namespace) -> int:
     return 0
 
 
-# ---------------------------------------------------------------- question cards
-
-MAX_OPTIONS = 4  # the AskUserQuestion fallback carries at most 4
-RESERVED_OPTION_IDS = ("other", "delegate")
-
-
-def card_text(card: dict[str, Any], key: str, where: str, required: bool = False) -> str:
-    value = card.get(key)
-    if value is None and not required:
-        return ""
-    if not isinstance(value, str) or (required and not value.strip()):
-        raise MtError(f"ask: {where}{key} must be a {'non-empty ' if required else ''}string")
-    return value.strip() if required else value
-
-
-def validate_card(data: Any) -> dict[str, Any]:
-    """The card with defaults filled in; MtError names the first problem.
-
-    1-4 options, unique non-empty ids (not `other` or `delegate`, which the answer uses),
-    non-empty labels, exactly one recommended; pro, con, context and phase are optional strings.
-    """
-    if not isinstance(data, dict):
-        raise MtError("ask: the card must be a JSON object")
-    card: dict[str, Any] = {
-        "phase": card_text(data, "phase", ""),
-        "title": card_text(data, "title", "", required=True),
-        "context": card_text(data, "context", ""),
-    }
-    allow_other = data.get("allow_other", True)
-    if not isinstance(allow_other, bool):
-        raise MtError("ask: allow_other must be true or false")
-    card["allow_other"] = allow_other
-    options = data.get("options")
-    if not isinstance(options, list) or not 1 <= len(options) <= MAX_OPTIONS:
-        count = len(options) if isinstance(options, list) else "no"
-        raise MtError(f"ask: a card needs 1 to {MAX_OPTIONS} options, got {count}")
-    out: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for i, o in enumerate(options, 1):
-        where = f"option {i}: "
-        if not isinstance(o, dict):
-            raise MtError(f"ask: {where}must be a JSON object")
-        oid = card_text(o, "id", where, required=True)
-        if oid in RESERVED_OPTION_IDS:
-            raise MtError(f"ask: {where}id {oid!r} is reserved ({', '.join(RESERVED_OPTION_IDS)})")
-        if oid in seen:
-            raise MtError(f"ask: duplicate option id {oid!r}")
-        seen.add(oid)
-        rec = o.get("recommended", False)
-        if not isinstance(rec, bool):
-            raise MtError(f"ask: {where}recommended must be true or false")
-        out.append(
-            {
-                "id": oid,
-                "label": card_text(o, "label", where, required=True),
-                "pro": card_text(o, "pro", where),
-                "con": card_text(o, "con", where),
-                "recommended": rec,
-            }
-        )
-    recommended = sum(o["recommended"] for o in out)
-    if recommended != 1:
-        raise MtError(f"ask: exactly one option must be recommended, got {recommended}")
-    card["options"] = out
-    return card
-
-
-def render_context(text: str) -> str:
-    """Markdown to HTML with raw HTML disabled (markdown-it also refuses javascript: links)."""
-    from markdown_it import MarkdownIt
-
-    return MarkdownIt("commonmark", {"html": False}).render(text) if text.strip() else ""
-
-
-def script_json(data: Any) -> str:
-    """JSON safe inside a <script> element: every `<`, `>` and `&` as a \\u escape (covers `</` and `<!--`)."""
-    body = json.dumps(data, ensure_ascii=False)
-    return body.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
-
-
-def card_page(card: dict[str, Any], n: int, run_title: str) -> str:
-    """cards/<n>.html: assets/card.html with its title and the embedded card JSON filled in."""
-    try:
-        template = (ASSETS / "card.html").read_text(encoding="utf-8")
-    except OSError as e:
-        raise MtError(f"ask: cannot read {ASSETS / 'card.html'}: {e}") from e
-    labels = dict(PHASES)
-    who = labels.get(card["phase"], card["phase"]) or "make-task"
-    embedded = {
-        "n": n,
-        "from": f"{who} needs your call",
-        "run_title": run_title,
-        "title": card["title"],
-        "context_html": render_context(card["context"]),
-        "options": card["options"],
-        "allow_other": card["allow_other"],
-    }
-    page = template.replace("{{TITLE}}", f"make-task question {n}")
-    return page.replace("{{CARD}}", script_json(embedded))
-
-
-def next_card_number(cards: Path) -> int:
-    numbers = [int(p.stem) for p in cards.glob("*.json") if p.stem.isdigit()] if cards.is_dir() else []
-    return max(numbers, default=0) + 1
-
-
-def ask_deadline() -> float:
-    raw = os.environ.get("MT_ASK_DEADLINE")
-    if not raw:
-        return ASK_DEADLINE
-    try:
-        value = float(raw)
-    except ValueError:
-        value = 0
-    if value <= 0:
-        raise MtError(f"ask: MT_ASK_DEADLINE must be a positive number of seconds, got {raw!r}")
-    return value
-
-
-def block_outcome(out: str) -> tuple[str | None, Any]:
-    """(outcome, value) from `overlay open --block` output; (None, None) when it does not parse."""
-    try:
-        reply = json.loads(out.strip().splitlines()[-1]) if out.strip() else None
-    except ValueError:
-        return None, None
-    if isinstance(reply, dict) and "outcome" not in reply and isinstance(reply.get("result"), dict):
-        reply = reply["result"]
-    if not isinstance(reply, dict):
-        return None, None
-    return reply.get("outcome"), reply.get("value")
-
-
-def normalize_answer(card: dict[str, Any], value: Any) -> dict[str, Any] | None:
-    """The page's submitted value as mt's answer, or None when it is not a valid answer to this card."""
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except ValueError:
-            return None
-    if not isinstance(value, dict):
-        return None
-    choice = value.get("choice")
-    if choice == "delegate":
-        rec = next(o for o in card["options"] if o["recommended"])
-        return {"choice": "delegate", "id": rec["id"]}
-    if choice == "other":
-        text = value.get("text")
-        if card["allow_other"] and isinstance(text, str) and text.strip():
-            return {"choice": "other", "text": text.strip()}
-        return None
-    if any(o["id"] == choice for o in card["options"]):
-        return {"choice": choice}
-    return None
-
-
-def cmd_ask(args: argparse.Namespace) -> int:
-    """Show a question card, wait for it, print the normalized answer.
-
-    0 + the answer (a decision is recorded, or an assumption for delegate); 2 + {"choice": null}
-    when the card was dismissed, the deadline passed or the answer was unusable; 3 + {"choice": null}
-    when the card cannot be shown (not in agterm, the run has no agterm, MT_NO_CARDS, or agtermctl failed).
-    """
-    path = Path(args.card).expanduser()
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except OSError as e:
-        raise MtError(f"ask: cannot read {path}: {e.strerror or e}") from e
-    except ValueError as e:
-        raise MtError(f"ask: {path} is not valid JSON: {e}") from e
-    card = validate_card(data)
-    deadline = ask_deadline()
-    run = resolve_run(args.run)
-    state = load(run)
-    none = json.dumps({"choice": None})
-
-    if cards_disabled():
-        warn("ask: question cards are off (MT_NO_CARDS); ask in the terminal")
-        print(none)
-        return 3
-    sid = agterm_session()
-    if sid is None or not state.get("agterm"):
-        print(none)
-        return 3
-
-    cards = run / "cards"
-    try:
-        cards.mkdir(exist_ok=True)
-        n = next_card_number(cards)
-        page = cards / f"{n}.html"
-        atomic_write(cards / f"{n}.json", json.dumps(card, ensure_ascii=False, indent=1) + "\n")
-        atomic_write(page, card_page(card, n, state.get("title") or ""))
-    except OSError as e:
-        raise MtError(f"ask: cannot write the card in {cards}: {e}") from e
-
-    prev_activity, prev_kind = state.get("activity"), state.get("now_kind") or ""
-    waiting = f"Waiting for your answer · {card['title']}"
-    state["activity"], state["now_kind"] = waiting, "wait"
-    add_event(state, f"Question {n}: {card['title']}")
-    save(run, state)
-    set_status(state, "blocked", sound="default", timeout=ASK_CALL_TIMEOUT)
-
-    r = agtermctl(
-        "session", "overlay", "open", "--html", str(page), "--js", "--chromeless",
-        "--size-percent", "85", "--block", "--follow", "--target", sid,
-        timeout=deadline,
-    )  # fmt: skip
-    if r.timed_out:
-        c = agtermctl("session", "overlay", "close", "--target", sid, timeout=ASK_CALL_TIMEOUT)
-        if not c.ok:
-            warn(f"agtermctl session overlay close: {c.why()}")
-    set_status(state, "active", timeout=ASK_CALL_TIMEOUT)
-
-    outcome, value = (None, None) if r.timed_out else block_outcome(r.out)
-    answer: dict[str, Any] | None = None
-    code = 2
-    if r.timed_out:
-        note = f"Question {n} expired after {deadline:g}s"
-    elif r.code == 2 or outcome == "dismissed":
-        note = f"Question {n} dismissed"
-    elif r.ok and outcome == "submitted":
-        answer = normalize_answer(card, value)
-        note = f"Question {n}: unusable answer {value!r}"
-        if answer is None:
-            warn(f"card {n} returned an answer that does not fit the card: {value!r}")
-    else:
-        code = 3
-        note = f"Question {n} could not be shown"
-        warn(f"agtermctl session overlay open: {r.why()}")
-
-    state = load(run)
-    if state.get("activity") == waiting:
-        state["activity"], state["now_kind"] = prev_activity, prev_kind
-    if answer is not None:
-        code = 0
-        if answer["choice"] == "other":
-            text = answer["text"]
-            state.setdefault("decisions", []).append({"q": card["title"], "a": text})
-        else:
-            oid = answer["id"] if answer["choice"] == "delegate" else answer["choice"]
-            text = next(o["label"] for o in card["options"] if o["id"] == oid)
-            if answer["choice"] == "delegate":
-                why = "delegated on the card (Decide for me): took the recommended option"
-                state.setdefault("assumptions", []).append({"text": f"{card['title']} → {text}", "why": why})
-            else:
-                state.setdefault("decisions", []).append({"q": card["title"], "a": text})
-        note = f"Answer {n}: {text}"
-    add_event(state, note)
-    save(run, state)
-    print(json.dumps(answer, ensure_ascii=False) if answer is not None else none)
-    return code
-
-
 # ---------------------------------------------------------------- .revmux/ working copies
 #
 # Everything here is bytes: paths come from `git ls-files -s -z` as raw NUL-delimited records and are never
@@ -2666,7 +2393,7 @@ AUTONOMY_PRESETS: dict[str, tuple[str, ...]] = {
     "default": (),
     "interactive": GATES,
 }
-# `defaults` answer the worktree and leftovers cards under `autonomous`; defaults.mode goes to `mt set mode=`
+# `defaults` answer the worktree and leftovers questions under `autonomous`; defaults.mode goes to `mt set mode=`
 DEFAULTS_CHOICES = {"mode": SET_CHOICES["mode"], "leftovers": ("leave", "fix")}
 PROFILE_KEYS = ("schema", "template", "autonomy", "gates", "defaults", "phases")
 # the path variables a profile install rewrites (import, install-default, fetch)
@@ -4199,18 +3926,6 @@ def build_parser() -> argparse.ArgumentParser:
     r.set_defaults(func=cmd_review_result)
     v = rv.add_parser("verify-final", help="check that finalize kept the reviewed content (rebased)")
     v.set_defaults(func=cmd_review_verify_final)
-
-    p = sub.add_parser(
-        "ask",
-        help="show a question card (1-4 options) and print the answer (exit 0 answered, 2 dismissed/expired, "
-        "3 not shown: not in agterm, a run without agterm, or agtermctl failed)",
-    )
-    p.add_argument(
-        "card",
-        metavar="CARD.json",
-        help='{"phase","title","context","options":[{"id","label","pro","con","recommended"}],"allow_other"}',
-    )
-    p.set_defaults(func=cmd_ask)
 
     p = sub.add_parser("done", help="finish the run with a final status; sidebar status completed")
     p.add_argument(

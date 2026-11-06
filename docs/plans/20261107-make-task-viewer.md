@@ -175,12 +175,13 @@
 - Delete: `skills/make-task/tests/test_ask.py`
 - Modify: `skills/make-task/tests/test_scenarios.py`
 - Modify: `skills/make-task/tests/test_state.py`
+- ➕ Modify: `skills/make-task/tests/test_review.py` (keeps test_ask's `REVIEW_DEADLINE < BASH_LIMIT` check)
 
-- [ ] remove `cmd_ask`, its parser entry, `card_page`, `render_context`, `ASK_DEADLINE`/`ASK_CALL_TIMEOUT` when unused, the `cards` init/state field, `MT_NO_CARDS`, the `cards/` directory handling and the docstring lines about cards; keep `script_json`, which Task 4 reuses
-- [ ] delete `assets/card.html` and `tests/test_ask.py`; move `script_json`'s test to the file that tests the helpers that stay
-- [ ] update `test_scenarios.py` to answer with `mt decide`
-- [ ] write tests in `test_state.py`: `mt ask` is an unknown command; `mt init` reports no `cards`; `mt activity --wait` marks the wait and a following `mt activity` clears it; `mt decide` records the answer
-- [ ] run tests - must pass before task 3
+- [x] remove `cmd_ask`, its parser entry, `card_page`, `render_context`, `ASK_DEADLINE`/`ASK_CALL_TIMEOUT` when unused, the `cards` init/state field, `MT_NO_CARDS`, the `cards/` directory handling and the docstring lines about cards; keep `script_json`, which Task 4 reuses
+- [x] delete `assets/card.html` and `tests/test_ask.py`; move `script_json`'s test to the file that tests the helpers that stay
+- [x] update `test_scenarios.py` to answer with `mt decide`
+- [x] write tests in `test_state.py`: `mt ask` is an unknown command; `mt init` reports no `cards`; `mt activity --wait` marks the wait and a following `mt activity` clears it; `mt decide` records the answer
+- [x] run tests - must pass before task 3
 
 ### Task 3: Built-in markdown renderer replaces view.py
 
