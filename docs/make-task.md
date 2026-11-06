@@ -93,26 +93,26 @@ The profile's autonomy level picks which classes reach you:
 | `default` | class 3 | written once | none |
 | `interactive` | classes 2 and 3 | approved section by section | design, plan, each review round |
 
-After brainstorm nothing is asked at any level, apart from the gates, the leftovers card at the end and
-the error cards. Every other judgment call becomes an assumption with a reason, and the dashboard lists
-all of them. Under `autonomous` the worktree and leftovers cards are answered from the profile's
+After brainstorm nothing is asked at any level, apart from the gates, the leftovers question at the end
+and the error questions. Every other judgment call becomes an assumption with a reason, and the dashboard
+lists all of them. Under `autonomous` the worktree and leftovers questions are answered from the profile's
 `defaults`.
 
 ---
 
-## Question cards
+## Questions
 
-Inside agterm a question is a floating card over the session:
+Every question is an `AskUserQuestion` in the terminal, inside agterm or outside it, also in a remote
+session:
 
-- 1 to 4 options, each with a pro and a con, one marked recommended
-- a free-text answer
-- **Decide for me** (`D`), which takes the recommended option and records it as an assumption
+- 2 to 4 options, the recommended one first and marked "(Recommended)", each described by what it gets you
+  and what it costs
+- a free-text answer through "Other"
+- a short context in the question itself. Long material (the design, the plan, the review's findings) is
+  named by its artifact, which the dashboard opens
 
-<img src="images/make-task-card-question.png" width="620" alt="A brainstorm question card with three options">
-
-A card waits up to 9 minutes. If you dismiss it or it times out, the same question comes back as a
-plain `AskUserQuestion` in the terminal. Outside agterm, or with `MT_NO_CARDS=1`, every question is an
-`AskUserQuestion` from the start.
+While a question waits, the dashboard's Now strip says so. Your answer is recorded with the run's
+decisions.
 
 ---
 
@@ -123,7 +123,7 @@ The plan is a checklist, and the loop works through it:
 1. Find the first `### Task N` with an unchecked box.
 2. Start one subagent with the task prompt and wait for it.
 3. Re-read the plan. All boxes checked, go to the next task. Not checked, retry once with a fresh agent
-   and the error appended. A second failure shows an error card (retry or stop).
+   and the error appended. A second failure asks an error question (retry or stop).
 
 Only the checkboxes count. The orchestrator ignores what the agent says it did, and it never fixes or
 debugs code itself.
@@ -153,7 +153,7 @@ List every case the fix touches and write tests that tell them apart. Re-read th
 fix before committing.
 
 The loop stops when a round is clean, when the gating count stops dropping and a finding repeats, or
-after five rounds. Whatever is still open goes to the leftovers card. Open majors can get one fixer
+after five rounds. Whatever is still open goes to the leftovers question. Open majors can get one fixer
 round and a confirming round with revmux's `final` profile, or stay, and then the run ends `not clean`.
 Minors left on their own do not stop a run from ending `clean`.
 
@@ -169,13 +169,13 @@ dashed until the run ends.
 
 ---
 
-## The leftovers card
+## The leftovers question
 
-<img src="images/make-task-card-leftovers.png" width="620" alt="The leftovers card after a clean review">
-
-Round 3 came back clean with one minor finding open, so the run asks once more before finalize. With
-open majors the options read "Fix the remaining majors" and "Leave them and finalize (run ends as not
-clean)".
+When the loop ends with findings open, the run asks once more before finalize. With open majors the
+options read "Fix the remaining majors" and "Leave them and finalize" (the run then ends `not clean`).
+With only minors or open questions left they read "Fix the listed minors" and "Leave them", and typed
+text answers the open questions or narrows the list. The findings themselves are in the Review
+artifact.
 
 ---
 
@@ -194,7 +194,7 @@ The run ends with one of five statuses:
 | `not clean` | findings left open, a degraded last round, commits after the last round, or a failed rebase or test run |
 | `review stale` | the finalize step changed what the review saw |
 | `review skipped` | no review ran: the profile skips it, or revmux was unavailable |
-| `stopped` | the run stopped on an error card |
+| `stopped` | the run stopped on an error question |
 
 `mt done` refuses `clean` unless the journal backs it, so the orchestrator cannot claim it on its own
 word.
@@ -205,7 +205,7 @@ word.
 
 <img src="images/make-task-done.png" width="560" alt="Dashboard of a run that finished clean">
 
-Three review rounds and 1h 20m in total. The user answered three cards, and the run took six decisions
+Three review rounds and 1h 20m in total. The user answered three questions, and the run took six decisions
 on its own, each with its reason. After the run the artifact buttons show the time each artifact last
 changed, and Stats is filled in. The timeline ends with the `verify-final` check and the final status.
 
@@ -213,13 +213,11 @@ changed, and Stats is filled in. The timeline ends with the `verify-final` check
 
 ## Your working tree stays yours
 
-The last brainstorm card asks where the run happens:
+The last brainstorm question asks where the run happens:
 
 - **worktree.** A new branch under `.claude/worktrees/`. Your checkout is not touched.
 - **in place.** The feature branch is created in your checkout. Your uncommitted edits are stashed
   before execution and restored at the end.
-
-<img src="images/make-task-card-worktree.png" width="620" alt="The worktree card on a dirty tree">
 
 In place, the stash is guarded at every step:
 
@@ -229,7 +227,7 @@ In place, the stash is guarded at every step:
   gives the command to run by hand
 - every stop, errors included, gives the stash back
 
-Started inside a linked worktree, the run skips the card and stays in place. That is the case in the
+Started inside a linked worktree, the run skips the question and stays in place. That is the case in the
 screenshot (`mode inplace` is the first assumption). make-task never pushes.
 
 ---
@@ -245,7 +243,7 @@ After an auto-compact, a crash or a long wait, the orchestrator runs `mt status`
 
 - a task checkpoint begun but not ended: re-read the plan's checkboxes, rerun the task if they are open
 - a review round started without a result: check the revmux process and its report
-- a card already answered: not asked again
+- a question already answered: not asked again
 
 ---
 
@@ -292,7 +290,7 @@ The review needs:
 | `jq` | the revmux preflight reads `revmux config` with it |
 | `claude`, `codex` | the reviewers revmux starts, as its review profile names them |
 
-When the preflight fails, a card during brainstorm offers to run without review or to stop. A run
+When the preflight fails, a question during brainstorm offers to run without review or to stop. A run
 without review ends `review skipped`, never `clean`.
 
 The brainstorm, planning and revmux plugins are not needed. The profile carries its own copies of them.
@@ -301,7 +299,7 @@ Optional:
 
 | tool | adds | without it |
 |---|---|---|
-| [agterm](https://agterm.com) | the dashboard, question cards, sidebar status | questions come as `AskUserQuestion` in the terminal; artifacts are still rendered in the state directory |
+| [agterm](https://agterm.com) | the dashboard, sidebar status | no dashboard; artifacts are still rendered in the state directory |
 | [`revdiff`](https://github.com/umputun/revdiff) | the Changes button | the button stays disabled |
 | the `view` skill at `~/.claude/skills/view/scripts/view.py`, or `MT_VIEW` | renders Design, Plan, Progress log, Review and Stats | those buttons stay disabled; a plugin-installed `view` is not found |
 | `gh` | files an issue proposal from the `--update` interview | no proposal is filed |

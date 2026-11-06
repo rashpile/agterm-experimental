@@ -147,7 +147,6 @@ def test_skill_md_names_mt_calls() -> None:
         "review wait",
         "review result",
         "review verify-final",
-        "ask",
         "profile resolve",
         "profile check",
         "profile install-default",
@@ -212,8 +211,7 @@ def test_set_keys_and_stop_reasons_documented() -> None:
     for mode in MT.SET_CHOICES["mode"]:
         assert f"mt set mode={mode}" in TEXT
     assert "timeout: 600000" in TEXT
-    for code in ("Exit `0`", "Exit `1`", "exit `3`"):
-        assert code in TEXT
+    assert "Exit codes: `0` ok, `1` failure with the message on stderr." in TEXT
 
 
 def section(text: str, head: str, nxt: str | None = None) -> str:
@@ -227,7 +225,16 @@ def test_phases_run_in_overview_order() -> None:
     completion, each a section of SKILL.md in that order; brainstorm, plan and review read the profile's
     companion entry, exec runs this file's playbook on the exec companion's scripts."""
     heads = re.findall(r"^#{2,3} (.+)$", TEXT, re.MULTILINE)
-    order = ["Brainstorm", "Plan", "Exec", "Review", "Leftovers card", "Finalize", "Stats (best-effort)", "Completion"]
+    order = [
+        "Brainstorm",
+        "Plan",
+        "Exec",
+        "Review",
+        "Leftovers question",
+        "Finalize",
+        "Stats (best-effort)",
+        "Completion",
+    ]
     assert [h for h in heads if h in order] == order
     for head, nxt, entry in (
         ("## Brainstorm", "## Plan", "<brainstorm_entry>"),
@@ -287,20 +294,20 @@ def test_start_step_0_sets_up_and_checks_the_profile_before_init() -> None:
     ]
     assert order == sorted(order)
     assert "`/make-task [--profile=<name>] [--update] [task text]`" in step0
-    assert "AskUserQuestion" in step0 and "no card" in step0
+    assert "plain `AskUserQuestion`s with no `mt` call before or after them" in flat(step0)
     for level in MT.AUTONOMY_PRESETS:
         assert f"`{level}`" in step0, f"the first-use question does not offer {level}"
     assert "`autonomy:` line" in step0 and "with Edit" in flat(step0)
     assert "`--update` without task text → stop" in step0
-    assert "No `mt init`, no run, no card" in step0
+    assert "No `mt init`, no run." in step0
     assert "`updates` non-empty" in step0 and "/make-task --update" in step0
     assert "(cd <main_checkout> && bash <review_scripts>/preflight.sh)" in start
     assert "`review_entry` is null" in start
 
 
 def test_question_rule_names_the_presets_and_gates() -> None:
-    """The preset table matches mt's AUTONOMY_PRESETS; autonomous answers both cards from `defaults`; the gate
-    table covers mt's GATES; interactive validates the design section by section."""
+    """The preset table matches mt's AUTONOMY_PRESETS; autonomous answers both questions from `defaults`; the
+    gate table covers mt's GATES; interactive validates the design section by section."""
     rule = section(TEXT, "## Question rule", "## Subagent prompts")
     rows = {
         m.group(1): m.group(2)
@@ -310,83 +317,141 @@ def test_question_rule_names_the_presets_and_gates() -> None:
     for level, gates in MT.AUTONOMY_PRESETS.items():
         assert set(re.findall(r"`([a-z-]+)`", rows[level])) == set(gates), f"{level} preset gates"
     assert "validated section by section" in rule
-    gate_rows = re.findall(r"^\| `([a-z-]+)` \| `[a-z]+` \|", rule[rule.index("### Gates") :], re.MULTILINE)
-    assert gate_rows == list(MT.GATES)
+    gate_table = rule[rule.index("| gate | when | the question names | a revision |") :]
+    gate_rows = re.findall(r"^\| `([a-z-]+)` \| ([^|]+) \|", gate_table, re.MULTILINE)
+    assert [g for g, _ in gate_rows] == list(MT.GATES)
+    for gate, when in gate_rows:
+        assert not re.fullmatch(r"`[a-z]+`", when.strip()), f"the {gate} row still has the phase column"
     for key in ("`defaults.mode`", "`defaults.leftovers`"):
         assert key in rule
     assert "never overrides the linked-worktree rule" in flat(rule)
     brainstorm = section(TEXT, "## Brainstorm", "## Plan")
     assert "mt set mode=<defaults.mode>" in brainstorm and "`autonomous`" in brainstorm
-    leftovers = section(TEXT, "### Leftovers card", "### Finalize")
+    leftovers = section(TEXT, "### Leftovers question", "### Finalize")
     assert "`defaults.leftovers`" in leftovers and "`autonomous`" in leftovers
 
 
+@pytest.mark.parametrize(("doc", "text"), [("SKILL.md", TEXT), ("profiles.md", PROFILES_TEXT)])
+def test_no_card_is_left(doc: str, text: str) -> None:
+    """Questions are `AskUserQuestion`s in the terminal: no floating card, no `mt ask`, no `MT_NO_CARDS`."""
+    assert not re.search(r"\bcards?\b", text, re.IGNORECASE), f"{doc} still names a card"
+    assert "mt ask" not in text, f"{doc} still names `mt ask`"
+    assert "MT_NO_CARDS" not in text, f"{doc} still names MT_NO_CARDS"
+    assert "ask.json" not in text and "delegate`" not in text
+
+
+def test_questions_section_is_the_one_way_to_ask() -> None:
+    """Every question is an `AskUserQuestion`: the waiting mark before it (but not before an error question,
+    which `mt fail` already shows), `mt decide` after it, and a one-option error question is not asked."""
+    questions = flat(section(TEXT, "### Questions", "### Gates"))
+    assert "is one `AskUserQuestion`, one at a time" in questions
+    for kind in ("a brainstorm question", "the preflight question", "the worktree question", "a gate"):
+        assert kind in questions, kind
+    assert "an error question, the leftovers question" in questions
+    wait = '`mt activity "Waiting for your answer · <topic>" --wait`'
+    decide = '`mt decide "<question>" "<answer>"`'
+    order = [
+        questions.index(wait),
+        questions.index("except before an error question (`mt fail` already shows the error)"),
+        questions.index(decide),
+        questions.index("then a normal `mt activity`"),
+    ]
+    assert order == sorted(order)
+    assert 'its label ends in "(Recommended)"' in questions and "There is no delegate option" in questions
+    assert "An option's pro and con become its description" in questions
+    assert "A gate's question is its exact title" in questions
+    assert 'an "Other" answer that maps to no option asks the same question again' in questions
+    one = questions[questions.index("**One option.**") :]
+    assert "An error question with one option (`stop`, `keep`) is not asked" in one
+    assert "the run takes that option and says why" in one
+    # long material is named by its artifact, registered before the question
+    for call in (
+        "`mt artifact design <state_dir>/design.md` before the `design` gate",
+        "`mt artifact design <state_dir>/design-draft.md`",
+        "`mt artifact plan <absolute plan path>` before the `plan` gate",
+        "for the `review-round` gate and the leftovers question",
+    ):
+        assert call in questions, call
+    brainstorm = flat(section(TEXT, "## Brainstorm", "## Plan"))
+    step2 = brainstorm[brainstorm.index("2. Read `<brainstorm_entry>`") : brainstorm.index("3. The preflight")]
+    assert step2.index("`<state_dir>/design-draft.md`") < step2.index("asks its question again")
+    errors = flat(section(TEXT, "## Errors", "## Outside agterm"))
+    assert "| condition | mt call | question options | next |" in errors
+    assert "A row with one option (`stop`, `keep`) asks nothing" in errors
+
+
 def test_gates_sit_where_the_gate_table_says() -> None:
-    """design before `mt artifact design`, plan after the reviewer's findings and before Exec, review-round
-    before the fixer's checkpoint."""
+    """design after `mt artifact design` (the question names the artifact, so it is registered first), plan
+    after the reviewer's findings and `mt artifact plan`, before Exec, review-round before the fixer's
+    checkpoint."""
     brainstorm = section(TEXT, "## Brainstorm", "## Plan")
     step5 = brainstorm[brainstorm.index("5. Write `<state_dir>/design.md`") :]
-    assert step5.index("the `design` gate") < step5.index("`mt artifact design <state_dir>/design.md`")
+    assert step5.index("`mt artifact design <state_dir>/design.md`") < step5.index("the `design` gate")
     plan = section(TEXT, "## Plan", "## Exec")
     assert plan.index("Plan review") < plan.index("The `plan` gate")
+    step4 = plan[plan.index("4. The `plan` gate") :]
+    assert step4.index("`mt artifact plan <absolute plan path>`") < step4.index("then the gate (Gates)")
+    recovery = flat(section(TEXT, "## Recovery", "## Start"))
+    assert "(`mt artifact design`, then the `design` gate when `<gates>` has it and it has not passed)" in recovery
     each = section(TEXT, "### Each round `<n>`", "### Reconciling a round")
     step8 = each[each.index("8. Stop per loop.md") :]
     assert step8.index("the `review-round` gate") < step8.index("`mt checkpoint begin review.fix.<n>`")
 
 
 def test_brainstorm_and_review_skip() -> None:
-    """A profile may skip brainstorm (the cards still run, a minimal design.md) or review (no round, no card)."""
+    """A profile may skip brainstorm (the questions are still asked, a minimal design.md) or review (no round, no
+    question)."""
     brainstorm = section(TEXT, "## Brainstorm", "## Plan")
     skipped = flat(brainstorm[brainstorm.index("**Brainstorm skipped**") :])
     assert "`mt phase brainstorm --skipped" in skipped
-    assert "(the preflight card when the preflight failed, and the worktree card, are still asked)" in skipped
+    assert "(the preflight question when the preflight failed, and the worktree question, are still asked)" in skipped
     assert "minimal `design.md`" in skipped
     review = flat(section(TEXT, "## Review", "## The end of the run"))
-    assert "no round runs and no leftovers card shows" in review
+    assert "no round runs and no leftovers question is asked" in review
     assert "the run ends `review skipped`" in review
 
 
-def test_review_skipped_by_the_profile_shows_no_preflight_card() -> None:
+def test_review_skipped_by_the_profile_asks_no_preflight_question() -> None:
     """`phases.review: skip` is the profile's choice, not a failure: an assumption and a skipped review phase,
-    never the preflight card, at every autonomy level (so an `autonomous` run never stops on it). The card stays
-    for a real preflight failure: preflight.sh fails, or a `requires` command is missing."""
+    never the preflight question, at every autonomy level (so an `autonomous` run never stops on it). The
+    question stays for a real preflight failure: preflight.sh fails, or a `requires` command is missing."""
     start = section(TEXT, "## Start", "## Question rule")
     step3 = start[start.index("3. **Review check.**") : start.index("\n4. ")]
     cut = step3.index("- Otherwise the revmux preflight")
     skip, preflight = flat(step3[:cut]), flat(step3[cut:])
     assert "`review_entry` is null (the profile's `phases.review` is `skip`)" in skip
     assert '`mt assume "no revmux review" --why "profile <profile_name> skips review"`' in skip
-    assert "no preflight and no preflight card, at every autonomy level" in skip
-    assert "preflight.sh" not in skip and "card during brainstorm" not in skip and "Errors row" not in skip
+    assert "no preflight and no preflight question, at every autonomy level" in skip
+    assert "preflight.sh" not in skip and "question during brainstorm" not in skip and "Errors row" not in skip
     assert "`(cd <main_checkout> && bash <review_scripts>/preflight.sh)`" in preflight
     assert (
         "init's `warnings` name a review `requires` command missing on PATH (that counts as a failed preflight: preflight.sh does not read `requires`)"
         in preflight
     )
     assert '`mt assume "no revmux review" --why "<what preflight or the warning said>"`' in preflight
-    assert "the preflight card during brainstorm" in preflight
+    assert "the preflight question during brainstorm" in preflight
 
     brainstorm = section(TEXT, "## Brainstorm", "## Plan")
-    step3 = flat(brainstorm[brainstorm.index("\n3. The preflight card") : brainstorm.index("\n4. ")])
+    step3 = flat(brainstorm[brainstorm.index("\n3. The preflight question") : brainstorm.index("\n4. ")])
     assert "only when Start step 3's preflight failed" in step3
-    assert "A review the profile skips has no card." in step3
+    assert "A review the profile skips has no question." in step3
     assert "found no review to run" not in TEXT
 
     review = section(TEXT, "## Review", "## The end of the run")
     head = review[: review.index("revmux runs as one loop")]
     by_profile = flat(head[head.index("- `review_entry` is null") : head.index("- the preflight failed")])
-    by_card = flat(head[head.index("- the preflight failed") :])
+    by_question = flat(head[head.index("- the preflight failed") :])
     assert '`mt phase review --skipped --note "skipped by profile"`' in by_profile
-    assert "No card, at every autonomy level." in by_profile
-    assert "preflight card" not in by_profile
-    assert "`noreview` on the preflight card" in by_card
-    assert '`mt phase review --skipped --note "revmux unavailable"`' in by_card
+    assert "No question, at every autonomy level." in by_profile
+    assert "preflight question" not in by_profile
+    assert "`noreview` on the preflight question" in by_question
+    assert '`mt phase review --skipped --note "revmux unavailable"`' in by_question
 
     errors = section(TEXT, "## Errors", "## Outside agterm")
     row = next(line for line in errors.splitlines() if line.startswith("| revmux preflight fails at Start"))
     assert "`noreview`" in row and "`requires` command missing on PATH" in row
     assert "review_entry" not in row and "phases.review" not in row and "skip" not in row.split("|")[1]
-    assert "A review the profile skips (`review_entry` null) is not an error and shows no card" in flat(errors)
+    assert "A review the profile skips (`review_entry` null) is not an error and asks no question" in flat(errors)
 
 
 def test_plan_reviewer_runs_as_a_read_only_agent_without_bypass() -> None:
@@ -638,7 +703,8 @@ def test_gates_have_fixed_titles_and_a_passed_rule() -> None:
     gates = flat(section(TEXT, "### Gates", "## Subagent prompts"))
     for title in ("`Gate: design`", "`Gate: plan`", "`Gate: review-round <n>`"):
         assert title in gates
-    assert '`approve` labelled "Approve" (recommended) and `revise` labelled "Revise"' in gates
+    assert 'Its options are "Approve (Recommended)" and "Revise"; typed text is the change the user wants.' in gates
+    assert 'Each answer is recorded with `mt decide "<the gate\'s title>" "<Approve, Revise or the text>"`' in gates
     assert "the last entry in `decisions` with its title is `Approve`" in gates
     assert "`assumptions` hold `<its title> → Approve`" in gates
     recovery = flat(section(TEXT, "## Recovery", "## Start"))
@@ -703,7 +769,7 @@ def test_plan_reviewer_edit_to_the_plan_is_reverted_and_nothing_else_stops_the_r
     ]
     assert order == sorted(order)
     assert "Compare nothing else (no HEAD or `git status` check)" in step3
-    for gone in ("rev-parse HEAD", "status --porcelain", "mt fail", "stop card"):
+    for gone in ("rev-parse HEAD", "status --porcelain", "mt fail", "Errors"):
         assert gone not in step3, gone
     errors = section(TEXT, "## Errors", "## Outside agterm")
     assert "plan reviewer changed" not in errors
@@ -723,8 +789,8 @@ def test_revmux_rules_on_the_users_data_stay_in_the_base() -> None:
 
 def test_autonomous_worktree_names_a_branch_it_may_not_hold() -> None:
     brainstorm = flat(section(TEXT, "## Brainstorm", "## Plan"))
-    step4 = brainstorm[brainstorm.index("4. **Last card") : brainstorm.index("5. Write")]
-    auto = step4[: step4.index("Otherwise the card:")]
+    step4 = brainstorm[brainstorm.index("4. **Last question") : brainstorm.index("5. Write")]
+    auto = step4[: step4.index("Otherwise the question:")]
     assert "`branch` set and not `default_branch`" in auto and "`worktree.baseRef`" in auto
 
 

@@ -17,7 +17,7 @@ install-default, import, fetch, accept and raise-schema hold the profile's lock 
 sessions never interleave them; one that waits too long for another session's fails with `another make-task
 command is changing profile <name>` and changes nothing: run it once more (that Errors row says so too).
 
-No run exists here, so there is no dashboard and no card. Every question is an `AskUserQuestion`, one at a
+No run exists here, so there is no dashboard. Every question is an `AskUserQuestion`, one at a
 time, with the recommended option first. A question that `## Preferences` already answers is not asked.
 
 ## What a profile holds
@@ -55,10 +55,10 @@ The `phases` map in `profile.md` names a companion for each phase and paths insi
 | `review` | `companion`, `entry`, `scripts` | `requires` | yes |
 
 `requires` (review only) lists commands that must be on PATH. A missing one is a `check` warning, and
-SKILL.md Start step 3 counts it as a failed preflight, so the run asks the preflight card. Finalize is not
+SKILL.md Start step 3 counts it as a failed preflight, so the run asks the preflight question. Finalize is not
 in the map: it always runs with the exec companion. `autonomy` is `autonomous`, `default` or
 `interactive`; `gates`, when present, replaces the preset's gates; `defaults.mode` and
-`defaults.leftovers` answer the worktree and leftovers cards under `autonomous` (SKILL.md Question rule).
+`defaults.leftovers` answer the worktree and leftovers questions under `autonomous` (SKILL.md Question rule).
 
 The body of `UPDATE.md` has three sections:
 
@@ -109,7 +109,7 @@ one line or one map entry at a time, never by rewriting the whole frontmatter.
 
 1. **Autonomy.** `autonomous`, `default` or `interactive`, with SKILL.md's preset table in the question
    and the current value recommended. Write the answer into the `autonomy:` line.
-   - `autonomous` answers the worktree and leftovers cards from `defaults`. Show `defaults.mode` and
+   - `autonomous` answers the worktree and leftovers questions from `defaults`. Show `defaults.mode` and
      `defaults.leftovers` and ask whether to keep them.
    - Gates only when the user wants other gates than the preset's: write `gates: [<gate>, ...]` with
      `design`, `plan` and `review-round` to pick from. `gates: []` turns them off; no `gates:` line means
@@ -125,7 +125,7 @@ one line or one map entry at a time, never by rewriting the whole frontmatter.
      goes into every task prompt.
    - `skip`: write `<phase>: skip` in the `phases` map. Say what it means first. Without brainstorm the
      task text is the design. Without review no review round runs and the run ends `review skipped`,
-     never `clean`; make-task records that as an assumption and asks no card about it.
+     never `clean`; make-task records that as an assumption and asks no question about it.
    - `replace`: Replacing a phase, below.
 4. **Preferences.** Ask whether make-task should remember anything for later updates and interviews
    (free text; "nothing" is the recommended option). Write each answer as one line under `## Preferences`.
@@ -157,7 +157,8 @@ The new companion becomes a copy inside the profile, like the shipped ones.
    points to, and change the copy (`companions/<id>/`, never `upstream/<id>/`) wherever it would break a
    run:
    - a question to the user → the question goes to the orchestrator's question handling (make-task
-     decides it, records an assumption or asks a card), never straight to `AskUserQuestion`;
+     decides it, records an assumption or asks it as one of its own questions), never straight to
+     `AskUserQuestion`;
    - a menu or a "what next" offer at the end → not shown; the result goes back to the orchestrator;
    - a commit, branch, stash, push or worktree step → not done: SKILL.md owns every git state change;
    - a command of make-task's own `mt` → removed: the copies never name one;
@@ -205,7 +206,7 @@ lacks one of them.
 - `scripts` holds `preflight.sh` (exit 0 when revmux can run; an optional revmux profile argument checks
   that profile's agents) and `task-state.sh`.
 - `requires: [revmux]` names the CLI. Without it on PATH the run counts the preflight as failed and asks
-  the preflight card (the bundled `preflight.sh` fails on a missing `revmux` too).
+  the preflight question (the bundled `preflight.sh` fails on a missing `revmux` too).
 
 ### Where the exec prompts come from
 
@@ -302,7 +303,7 @@ follows the plugins and holds make-task's edits, and the user's `## Changes` lis
 ## Issue proposal
 
 A profile chooses the skill for each phase, adapts its copy, sets the autonomy and picks the gates. It
-cannot add a phase or reorder the phases, add a card, a gate or a dashboard view, run a review that is not
+cannot add a phase or reorder the phases, add a question, a gate or a dashboard view, run a review that is not
 revmux, or run an exec that does not meet the exec contract. Those need a change to `mt`, the dashboard or
 SKILL.md. When the user asks for one:
 

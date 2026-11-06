@@ -115,7 +115,7 @@ worded — because the fix did not answer it and the next one will not either. N
 cap.** Say so in the round report — "round 3: 2 gating again, both new, continuing" — or the user reads a
 flat number as a stall. The five-round cap is the bound on that case and it does not need a second one.
 
-**Under make-task the closing question below is not asked.** make-task's leftovers card replaces it, at
+**Under make-task the closing question below is not asked.** make-task's leftovers question replaces it, at
 whichever stop leaves something open.
 
 On a clean exit with findings left, ask **once** what to do with them, as a single question offering
@@ -124,7 +124,7 @@ question**, not only in the report above it — at most five, ranked, each with 
 leaving it costs, since that is what he decides against. Fix what he picks and stop either way; no
 review round runs after that question.
 
-**Under make-task one review round does run after the leftovers card.** When its answer is to fix, one
+**Under make-task one review round does run after the leftovers question.** When its answer is to fix, one
 confirming round under `final` follows the fix, its `goal.md` written as the merge gate. That
 deliberately overrides "no review round runs after that question" above. Whatever that round reports is
 final: no further loop.
