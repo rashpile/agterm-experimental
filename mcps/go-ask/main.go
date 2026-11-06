@@ -1,9 +1,14 @@
-// go-ask is an MCP server (stdio) that types a message into another agterm session.
+// go-ask is an MCP server (stdio) that types a message into another agterm session and, from a
+// Claude agent, gets the reply later.
 //
 // Tools:
 //
 //	sessions(agents?)      list panes that can be addressed
-//	ask(text, session_id?) paste text into a pane's input and press Enter; no reply is awaited
+//	ask(text, session_id?) paste text into a pane's input and press Enter; returns a request_id at once
+//	answer(request_id?)    the reply to an ask, or the state saying why there is none yet; never waits
+//
+// `go-ask hook` is Claude's UserPromptSubmit and Stop hook: it records each turn of the pane the
+// agent runs in to the journal answer reads.
 //
 // Without flags it serves one client over stdio. With -http it serves many over Streamable HTTP
 // at /mcp; each client names its own pane in the X-Agterm-Session-Id and X-Agterm-Pane headers.
@@ -17,15 +22,35 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"os"
+	"strings"
+	"sync"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
 
 type server struct {
 	ctl  agtermctl
 	self selfAddr
+	dir  string // state dir: turn journals and requests
+
+	mu            sync.Mutex
+	lastRequestID string // the request_id this MCP session's last ask returned
+}
+
+func (s *server) setLastRequest(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastRequestID = id
+}
+
+func (s *server) lastRequest() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastRequestID
 }
 
 type sessionsIn struct {
@@ -42,10 +67,27 @@ type askIn struct {
 }
 
 type askOut struct {
-	Sent   bool   `json:"sent"`
-	Target string `json:"target"`
-	Name   string `json:"name"`
-	Agent  string `json:"agent,omitempty"`
+	Sent      bool   `json:"sent"`
+	Target    string `json:"target"`
+	Name      string `json:"name"`
+	Agent     string `json:"agent,omitempty"`
+	RequestID string `json:"request_id" jsonschema:"pass to answer to get the reply to this message"`
+}
+
+type answerIn struct {
+	RequestID string `json:"request_id,omitempty" jsonschema:"the request_id ask returned. Omitted: the last ask of this MCP session"`
+}
+
+type answerOut struct {
+	RequestID  string `json:"request_id"`
+	State      string `json:"state" jsonschema:"done, interrupted, running, blocked, pending, lost or unsupported"`
+	Reply      string `json:"reply,omitempty" jsonschema:"the agent's final text for the turn, when state is done"`
+	Final      bool   `json:"final" jsonschema:"true when the result can no longer change: the message opened a turn of its own, that turn's Stop is in the journal, the agent's next turn has started, and no message was queued in that Claude session. Otherwise a later call can return another result"`
+	Target     string `json:"target"`
+	Name       string `json:"name"`
+	SentAt     int64  `json:"sent_at" jsonschema:"when ask sent the message, Unix milliseconds"`
+	FinishedAt int64  `json:"finished_at,omitempty" jsonschema:"when the turn ended, Unix milliseconds"`
+	Detail     string `json:"detail,omitempty" jsonschema:"why there is no reply yet, or what could not be checked"`
 }
 
 func (s *server) sessions(ctx context.Context, _ *mcp.CallToolRequest, in sessionsIn) (*mcp.CallToolResult, sessionsOut, error) {
@@ -82,10 +124,86 @@ func (s *server) ask(ctx context.Context, _ *mcp.CallToolRequest, in askIn) (*mc
 	if err := checkSendable(p); err != nil {
 		return nil, askOut{}, err
 	}
+	id, err := newRequestID()
+	if err != nil {
+		return nil, askOut{}, fmt.Errorf("new request_id: %w", err)
+	}
+	// The request is saved before the send: a reply must never arrive for a request that answer
+	// cannot find. The hash is of the text pastePayload types, which has ESC removed.
+	req := request{
+		ID:     id,
+		Target: p.Target,
+		PaneID: p.paneID,
+		Name:   p.Name,
+		Agent:  p.Agent,
+		Hash:   promptHash(strings.ReplaceAll(in.Text, "\x1b", "")),
+		SentAt: time.Now().UnixMilli(),
+	}
+	if err := saveRequest(s.dir, req); err != nil {
+		return nil, askOut{}, fmt.Errorf("save request: %w. Nothing was sent", err)
+	}
 	if err := s.ctl.send(ctx, p, in.Text); err != nil {
 		return nil, askOut{}, fmt.Errorf("send to %s: %w", p.Target, err)
 	}
-	return nil, askOut{Sent: true, Target: p.Target, Name: p.Name, Agent: p.Agent}, nil
+	s.setLastRequest(id)
+	return nil, askOut{Sent: true, Target: p.Target, Name: p.Name, Agent: p.Agent, RequestID: id}, nil
+}
+
+func (s *server) answer(ctx context.Context, _ *mcp.CallToolRequest, in answerIn) (*mcp.CallToolResult, answerOut, error) {
+	id := in.RequestID
+	if id == "" {
+		id = s.lastRequest()
+	}
+	if id == "" {
+		return nil, answerOut{}, errors.New("no request_id and no ask in this session; pass the request_id ask returned")
+	}
+	r, err := loadRequest(s.dir, id)
+	if err != nil {
+		return nil, answerOut{}, err
+	}
+	var recs []turnRecord
+	target, tree := Pane{}, treeUnavailable
+	// A final result and a non-Claude target are answered from the request alone.
+	if !r.Final && r.Agent == "claude" {
+		if recs, err = readTurns(journalPath(s.dir, r.PaneID)); err != nil {
+			return nil, answerOut{}, fmt.Errorf("read the turn journal of %s: %w", r.Target, err)
+		}
+		target, tree = s.findTarget(ctx, r.PaneID)
+	}
+	res := requestState(r, recs, target, tree)
+	if !r.Final && res.Final && (res.State == stateDone || res.State == stateInterrupted) {
+		// Only a final result is stored; later calls return it without reading the journal. The
+		// caller gets the result even when it cannot be stored; the next call computes it again.
+		next := r
+		next.State, next.Reply, next.FinishedAt, next.Final = res.State, res.Reply, res.FinishedAt, true
+		if err := saveRequest(s.dir, next); err != nil {
+			log.Printf("answer %s: store the result: %v", r.ID, err)
+		}
+	}
+	return nil, answerOut{
+		RequestID:  r.ID,
+		State:      res.State,
+		Reply:      res.Reply,
+		Final:      res.Final,
+		Target:     r.Target,
+		Name:       r.Name,
+		SentAt:     r.SentAt,
+		FinishedAt: res.FinishedAt,
+		Detail:     res.Detail,
+	}, nil
+}
+
+// findTarget looks up the pane with agterm pane id paneID in the tree. A failing tree is not an
+// error: answer still answers from the journal, without the blocked check.
+func (s *server) findTarget(ctx context.Context, paneID string) (Pane, treeLookup) {
+	panes, err := s.ctl.panes(ctx, s.self)
+	if err != nil {
+		return Pane{}, treeUnavailable
+	}
+	if p, ok := findPaneByID(panes, paneID); ok {
+		return p, paneInTree
+	}
+	return Pane{}, paneNotInTree
 }
 
 // newMCPServer builds one MCP server around s. stdio runs one for the process; HTTP runs one per
@@ -102,17 +220,32 @@ func newMCPServer(s *server) *mcp.Server {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "ask",
 		Description: "Type text into another agterm session's input and press Enter, as if a user sent it. " +
-			"Returns as soon as the text is submitted; it does not wait for or return a reply. " +
+			"Returns as soon as the text is submitted, with a request_id; it does not wait for the reply. " +
+			"Pass the request_id to answer later to get the reply. " +
 			"Without session_id it goes to the pane the user has focus on in agterm. " +
 			"Whatever was already typed in the target's input is cleared first. " +
 			"Refuses the caller's own pane and any pane at a bare shell, where the text would run as commands.",
 	}, s.ask)
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "answer",
+		Description: "Get the reply to a message sent with ask. Returns at once and never waits: state done with the reply, " +
+			"or a state saying why there is none yet (running, blocked, pending, lost, interrupted, unsupported) " +
+			"with a detail sentence. Call it once when the user asks for the answer, not in a loop. " +
+			"Without request_id it answers the last ask of this MCP session. " +
+			"final says the result can no longer change; once any message reached the agent while it was busy, " +
+			"no result from that Claude session is final, and the reply is the best guess. " +
+			"Supports Claude agents only for now.",
+	}, s.answer)
 	return srv
 }
 
 const defaultAddr = "127.0.0.1:7275"
 
 func main() {
+	// `go-ask hook` is Claude's hook entry point; it takes no flags.
+	if len(os.Args) > 1 && os.Args[1] == "hook" {
+		os.Exit(hookMain(os.Stdin, os.Stderr, os.Getenv, stateDir(), time.Now))
+	}
 	httpMode := flag.Bool("http", false, "serve MCP over Streamable HTTP instead of stdio")
 	addr := flag.String("addr", defaultAddr, "listen address in -http mode")
 	tokenFile := flag.String("token-file", "", "file with the bearer token clients must send in -http mode; required off loopback")
@@ -125,14 +258,15 @@ func main() {
 	log.SetFlags(0)
 	log.SetPrefix("go-ask: ")
 	ctl := agtermctl{bin: findAgtermctl()}
+	dir := stateDir()
 
 	if *httpMode {
-		if err := serveHTTP(*addr, *tokenFile, ctl); err != nil {
+		if err := serveHTTP(*addr, *tokenFile, dir, ctl); err != nil {
 			log.Fatal(err)
 		}
 		return
 	}
-	s := &server{ctl: ctl, self: selfFromEnv()}
+	s := &server{ctl: ctl, self: selfFromEnv(), dir: dir}
 	if err := newMCPServer(s).Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		log.Fatal(err)
 	}

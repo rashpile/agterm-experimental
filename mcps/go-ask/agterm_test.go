@@ -9,14 +9,16 @@ import (
 const treeJSON = `{"workspaces":[
  {"name":"ops","active":true,"sessions":[
   {"id":"AAAA1111-0000","name":"agent","cwd":"/a","status":"idle",
-   "foreground":["claude","--resume","x"],"surfaces":[{"kind":"left"}]},
+   "foreground":["claude","--resume","x"],"surfaces":[{"kind":"left","paneID":"PANE-A1-LEFT"}]},
   {"id":"BBBB2222-0000","name":"sh:kobo","cwd":"/b","status":"active","statusPane":"right","active":true,
    "foreground":["/bin/bash","/x/nvim-tree.sh"],"splitForeground":["zsh","-ilc","codex"],
-   "surfaces":[{"kind":"left"},{"kind":"right","active":true}]},
-  {"id":"AAAA3333-0000","name":"shell","cwd":"/c","surfaces":[{"kind":"left"}]}
+   "surfaces":[{"kind":"left","paneID":"PANE-B2-LEFT"},{"kind":"scratch","paneID":"PANE-B2-SCRATCH"},
+    {"kind":"right","active":true,"paneID":"PANE-B2-RIGHT"}]},
+  {"id":"AAAA3333-0000","name":"shell","cwd":"/c","surfaces":[{"kind":"left","paneID":"PANE-A3-LEFT"}]}
  ]},
  {"name":"me","sessions":[
-  {"id":"CCCC4444-0000","name":"agent","cwd":"/d","foreground":["claude"],"active":true,"surfaces":[{"kind":"left","active":true}]}
+  {"id":"CCCC4444-0000","name":"agent","cwd":"/d","foreground":["claude"],"active":true,
+   "surfaces":[{"kind":"left","active":true,"paneID":"PANE-C4-LEFT"}]}
  ]}
 ]}`
 
@@ -52,6 +54,53 @@ func TestPanesFromTree(t *testing.T) {
 		if p.Focused != (i == 2) {
 			t.Errorf("pane %d %s focused = %v", i, p.Target, p.Focused)
 		}
+	}
+}
+
+func TestPanesFromTreePaneID(t *testing.T) {
+	panes := testPanes(t, selfAddr{})
+	want := []string{"PANE-A1-LEFT", "PANE-B2-LEFT", "PANE-B2-RIGHT", "PANE-A3-LEFT", "PANE-C4-LEFT"}
+	if len(panes) != len(want) {
+		t.Fatalf("want %d panes, got %d", len(want), len(panes))
+	}
+	for i, p := range panes {
+		if p.paneID != want[i] {
+			t.Errorf("pane %d %s: paneID %q, want %q", i, p.Target, p.paneID, want[i])
+		}
+	}
+
+	// An agterm without pane ids in its tree gives panes without one.
+	var tr rawTree
+	if err := json.Unmarshal([]byte(`{"workspaces":[{"name":"w","sessions":[{"id":"X","name":"x",
+		"surfaces":[{"kind":"left"},{"kind":"right"}]}]}]}`), &tr); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range panesFromTree(tr, selfAddr{}) {
+		if p.paneID != "" {
+			t.Errorf("%s: paneID %q, want none", p.Target, p.paneID)
+		}
+	}
+}
+
+func TestFindPaneByID(t *testing.T) {
+	panes := testPanes(t, selfAddr{})
+	for id, target := range map[string]string{
+		"PANE-A1-LEFT":  "AAAA1111-0000",
+		"PANE-B2-RIGHT": "BBBB2222-0000:right",
+		"PANE-C4-LEFT":  "CCCC4444-0000",
+	} {
+		if p, ok := findPaneByID(panes, id); !ok || p.Target != target {
+			t.Errorf("findPaneByID(%q) = %q, %v; want %q", id, p.Target, ok, target)
+		}
+	}
+	// A scratch pane is not addressable, and an empty id never matches a pane without one.
+	for _, id := range []string{"PANE-B2-SCRATCH", "nope", ""} {
+		if p, ok := findPaneByID(panes, id); ok {
+			t.Errorf("findPaneByID(%q) found %s", id, p.Target)
+		}
+	}
+	if _, ok := findPaneByID([]Pane{{Target: "X"}}, ""); ok {
+		t.Error("empty id matched a pane without a pane id")
 	}
 }
 
