@@ -43,6 +43,9 @@
   tool calls is folded into that turn (`queued_command`, seen in this session's transcript); every
   `AGTERM_*` variable is inherited by child processes, so a `claude -p` started inside a pane fires
   the same hooks into the same journal.
+- ⚠️ measured in Task 6: Stop does not run on a user interrupt (confirmed), but a message sent
+  mid-turn is not left without a turn: `UserPromptSubmit` fires for it at once, while the turn
+  still runs. The state rules misread that case; see the Task 6 notes.
 
 ## Development Approach
 
@@ -303,11 +306,33 @@ skipped and `detail` says which; that alone never makes a request `lost`.
 
 ### Task 6: Verify acceptance criteria
 
-- [ ] verify all requirements from Overview are implemented
-- [ ] verify edge cases are handled (every row of the state table has a test)
-- [ ] run full test suite: `cd mcps/go-ask && gofmt -l . && go vet ./... && go test ./...`
-- [ ] live end-to-end check against a real Claude in agterm, nothing committed and nothing in the user's settings changed. Setup: build the binary to a temp path; start a background agterm session (`agtermctl session new --no-select --after "$AGTERM_SESSION_ID" --cwd <temp dir> --command "<claude> --model haiku --setting-sources project,local --strict-mcp-config --settings <temp settings.json>"`, `<claude>` = `/Users/pkoptilin/.local/bin/claude`) whose settings hold only `UserPromptSubmit` and `Stop` hooks running `GO_ASK_STATE_DIR=<temp state> <temp binary> hook`, plus a `UserPromptSubmit` hook that once writes `env | grep ^AGTERM_` to a temp file; answer a first-run trust prompt with `\r` if one shows. Then, from a stdio client of the temp binary with the same `GO_ASK_STATE_DIR`: (a) `ask` a short message, `answer` right away (expect `pending` or `running`), wait for the turn, `answer` again (expect `done` with the reply); (b) the same with a long multi-line message containing a tab (expect `done`); (c) `ask` a message that makes a long reply, send ESC into the session (`agtermctl session type --stdin --target <id>` with `\x1b`) before it ends, then `ask` another message, and record the journal records and the first request's state (expect `interrupted`); (d) `ask` while a turn is running and record the state after both turns end. Close the session with `agtermctl session close`. Write the observed states, the journal records of (c) and (d), and whether `AGTERM_PANE_ID` was in the hook env into the progress file `/tmp/progress-20261106-go-ask-answer-tool.txt`
-- [ ] verify test coverage: every new function has tests (`go test -cover ./...` reported in the progress file)
+- [x] verify all requirements from Overview are implemented
+- [x] verify edge cases are handled (every row of the state table has a test)
+- [x] run full test suite: `cd mcps/go-ask && gofmt -l . && go vet ./... && go test ./...`
+- [x] live end-to-end check against a real Claude in agterm, nothing committed and nothing in the user's settings changed. Setup: build the binary to a temp path; start a background agterm session (`agtermctl session new --no-select --after "$AGTERM_SESSION_ID" --cwd <temp dir> --command "<claude> --model haiku --setting-sources project,local --strict-mcp-config --settings <temp settings.json>"`, `<claude>` = `/Users/pkoptilin/.local/bin/claude`) whose settings hold only `UserPromptSubmit` and `Stop` hooks running `GO_ASK_STATE_DIR=<temp state> <temp binary> hook`, plus a `UserPromptSubmit` hook that once writes `env | grep ^AGTERM_` to a temp file; answer a first-run trust prompt with `\r` if one shows. Then, from a stdio client of the temp binary with the same `GO_ASK_STATE_DIR`: (a) `ask` a short message, `answer` right away (expect `pending` or `running`), wait for the turn, `answer` again (expect `done` with the reply); (b) the same with a long multi-line message containing a tab (expect `done`); (c) `ask` a message that makes a long reply, send ESC into the session (`agtermctl session type --stdin --target <id>` with `\x1b`) before it ends, then `ask` another message, and record the journal records and the first request's state (expect `interrupted`); (d) `ask` while a turn is running and record the state after both turns end. Close the session with `agtermctl session close`. Write the observed states, the journal records of (c) and (d), and whether `AGTERM_PANE_ID` was in the hook env into the progress file `/tmp/progress-20261106-go-ask-answer-tool.txt`
+- [x] verify test coverage: every new function has tests (`go test -cover ./...` reported in the progress file)
+- ⚠️ live check results (Claude Code 2.1.319, haiku): (a) `pending` right after `ask`, then `done`
+  "ALPHA"; (b) a 1685-character, 22-line message with tabs: `pending`, then `done` "BRAVO";
+  (c) ESC, then a new `ask`: no Stop ran for the first turn, first request `interrupted`, second
+  `done` "CHARLIE". `AGTERM_PANE_ID` was in the hook env and equals the tree's `paneID`.
+  Journal records are in the progress file.
+- ⚠️ a message sent while a turn runs gets a prompt record at once (`UserPromptSubmit` fires when
+  the message is queued, never again when it starts), so `lost` does not happen for it. Two
+  shapes were measured, and the state rules misread both:
+  - turn with a tool call, case (d): the message is folded into the turn; one Stop, whose text
+    answers it. Journal: prompt A, prompt B, stop "ECHO". B is `done` "ECHO" (right). A is
+    `interrupted` as soon as B's prompt record lands, while the turn still runs, and that is
+    stored as final.
+  - turn without a tool call: the turn ends with its own Stop, then the queued message runs as
+    its own turn with a second Stop and no prompt record. Journal: prompt A, prompt B, stop
+    <essay>, stop "GOLF". A is `interrupted` (wrong: the essay finished and is A's reply). B is
+    `done` "GOLF" once both stops are in, but `done` with A's essay if `answer` is called between
+    the two stops, and that wrong reply is stored as final.
+- ⚠️ the fix needs a design decision, not made here. Hook input carries `prompt_id`: a queued
+  message's `UserPromptSubmit` carries the running turn's `prompt_id`; a message sent after an
+  interrupt gets a new one; each Stop carries the `prompt_id` of the turn it ends, and the Stop of
+  a queued message that runs as its own turn carries a `prompt_id` no `UserPromptSubmit` had.
+  Journaling `prompt_id` would tell the interrupt case from the queued one.
 
 ### Task 7: [Final] Update documentation
 
