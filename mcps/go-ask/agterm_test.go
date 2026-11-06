@@ -148,6 +148,18 @@ func TestCheckSendable(t *testing.T) {
 	if err := checkSendable(panes[4]); err == nil || !strings.Contains(err.Error(), "your own pane") {
 		t.Errorf("self accepted: %v", err)
 	}
+	blocked := panes[0]
+	blocked.Status = "blocked"
+	if err := checkSendable(blocked); err == nil || !strings.Contains(err.Error(), "is blocked") {
+		t.Errorf("blocked pane accepted: %v", err)
+	}
+	for _, st := range []string{"", "idle", "active", "completed"} {
+		p := panes[0]
+		p.Status = st
+		if err := checkSendable(p); err != nil {
+			t.Errorf("status %q refused: %v", st, err)
+		}
+	}
 }
 
 func TestPastePayload(t *testing.T) {

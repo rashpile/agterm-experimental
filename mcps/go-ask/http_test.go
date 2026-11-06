@@ -13,19 +13,34 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// fakeAgtermctl writes a script that answers every call with the test tree.
+// fakeAgtermctl writes a script that answers `tree` with the test tree and every other call
+// with an ok envelope.
 func fakeAgtermctl(t *testing.T) agtermctl {
 	t.Helper()
+	ctl, _ := fakeAgtermctlTree(t, treeJSON)
+	return ctl
+}
+
+// fakeAgtermctlTree is fakeAgtermctl with a given tree. calls returns the argument lines the
+// script has received so far.
+func fakeAgtermctlTree(t *testing.T, tree string) (ctl agtermctl, calls func() string) {
+	t.Helper()
 	dir := t.TempDir()
-	tree := filepath.Join(dir, "tree.json")
-	if err := os.WriteFile(tree, []byte(`{"result":{"tree":`+treeJSON+`}}`), 0o600); err != nil {
+	treeFile := filepath.Join(dir, "tree.json")
+	logFile := filepath.Join(dir, "calls.log")
+	if err := os.WriteFile(treeFile, []byte(`{"result":{"tree":`+tree+`}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	script := "#!/bin/sh\necho \"$*\" >> '" + logFile + "'\n" +
+		"case \"$1\" in tree) cat '" + treeFile + "' ;; *) echo '{\"ok\":true,\"result\":{}}' ;; esac\n"
 	bin := filepath.Join(dir, "agtermctl")
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\ncat '"+tree+"'\n"), 0o700); err != nil {
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	return agtermctl{bin: bin}
+	return agtermctl{bin: bin}, func() string {
+		b, _ := os.ReadFile(logFile)
+		return string(b)
+	}
 }
 
 type headerRT struct {
@@ -220,5 +235,36 @@ func TestAskDefaultsToFocused(t *testing.T) {
 	s.self = selfAddr{SessionID: "BBBB2222-0000", Pane: "right"}
 	if _, _, err := s.ask(context.Background(), nil, askIn{Text: "hi"}); err == nil || !strings.Contains(err.Error(), "your own pane") {
 		t.Errorf("focused pane is the caller's own, want a refusal: %v", err)
+	}
+}
+
+// blockedTreeJSON has two agents waiting on a prompt: the focused one, and one on the right
+// split of a session whose left pane is free.
+const blockedTreeJSON = `{"workspaces":[{"name":"w","active":true,"sessions":[
+ {"id":"DDDD5555-0000","name":"waiting","status":"blocked","active":true,
+  "foreground":["claude"],"surfaces":[{"kind":"left","active":true}]},
+ {"id":"EEEE6666-0000","name":"split","status":"blocked","statusPane":"right",
+  "foreground":["claude"],"splitForeground":["codex"],"surfaces":[{"kind":"left"},{"kind":"right"}]}
+]}]}`
+
+func TestAskRefusesBlocked(t *testing.T) {
+	ctl, calls := fakeAgtermctlTree(t, blockedTreeJSON)
+	s := &server{ctl: ctl}
+	for _, target := range []string{"", "focused", "DDDD5555-0000", "waiting", "EEEE6666-0000:right"} {
+		_, _, err := s.ask(context.Background(), nil, askIn{Text: "yes", SessionID: target})
+		if err == nil || !strings.Contains(err.Error(), "is blocked") || !strings.Contains(err.Error(), "Nothing was sent") {
+			t.Errorf("ask to %q: err %v, want a blocked refusal", target, err)
+		}
+	}
+	if strings.Contains(calls(), "session type") {
+		t.Fatalf("typed into a blocked session:\n%s", calls())
+	}
+
+	// The status belongs to the right pane only, so the left pane of the same session is free.
+	if _, out, err := s.ask(context.Background(), nil, askIn{Text: "hi", SessionID: "EEEE6666-0000"}); err != nil || out.Target != "EEEE6666-0000" {
+		t.Errorf("ask to the free left pane: %+v, %v", out, err)
+	}
+	if !strings.Contains(calls(), "session type --stdin --target EEEE6666-0000") {
+		t.Errorf("the free left pane got nothing typed:\n%s", calls())
 	}
 }
