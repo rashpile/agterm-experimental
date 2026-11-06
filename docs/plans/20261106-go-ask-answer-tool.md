@@ -249,11 +249,11 @@ skipped and `detail` says which; that alone never makes a request `lost`.
 - Create: `mcps/go-ask/hook_test.go`
 - Modify: `mcps/go-ask/main.go`
 
-- [ ] add `hookMain(stdin, stderr, getenv, dir, now) int` in `mcps/go-ask/hook.go` per Technical Details (prompt and stop records with `session`, other events ignored, no `AGTERM_PANE_ID` → no-op, always returns 0)
-- [ ] dispatch `go-ask hook` in `main()` before flag parsing: `os.Exit(hookMain(os.Stdin, os.Stderr, os.Getenv, stateDir(), time.Now))`
-- [ ] write tests: UserPromptSubmit and Stop records land in `turns/<pane_id>.jsonl` with the right fields (session, hash of the normalized prompt, reply); unknown event ignored; no `AGTERM_PANE_ID` → no file
-- [ ] write tests for error cases: malformed stdin → one stderr line, no file, result 0; an unwritable state dir → one stderr line, result 0
-- [ ] run tests - must pass before task 3
+- [x] add `hookMain(stdin, stderr, getenv, dir, now) int` in `mcps/go-ask/hook.go` per Technical Details (prompt and stop records with `session`, other events ignored, no `AGTERM_PANE_ID` → no-op, always returns 0)
+- [x] dispatch `go-ask hook` in `main()` before flag parsing: `os.Exit(hookMain(os.Stdin, os.Stderr, os.Getenv, stateDir(), time.Now))`
+- [x] write tests: UserPromptSubmit and Stop records land in `turns/<pane_id>.jsonl` with the right fields (session, hash of the normalized prompt, reply); unknown event ignored; no `AGTERM_PANE_ID` → no file
+- [x] write tests for error cases: malformed stdin → one stderr line, no file, result 0; an unwritable state dir → one stderr line, result 0
+- [x] run tests - must pass before task 3
 
 ### Task 3: Request store, pane id and `request_id` from `ask`
 

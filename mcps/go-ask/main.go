@@ -17,6 +17,8 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"os"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -113,6 +115,10 @@ func newMCPServer(s *server) *mcp.Server {
 const defaultAddr = "127.0.0.1:7275"
 
 func main() {
+	// `go-ask hook` is Claude's hook entry point; it takes no flags.
+	if len(os.Args) > 1 && os.Args[1] == "hook" {
+		os.Exit(hookMain(os.Stdin, os.Stderr, os.Getenv, stateDir(), time.Now))
+	}
 	httpMode := flag.Bool("http", false, "serve MCP over Streamable HTTP instead of stdio")
 	addr := flag.String("addr", defaultAddr, "listen address in -http mode")
 	tokenFile := flag.String("token-file", "", "file with the bearer token clients must send in -http mode; required off loopback")
