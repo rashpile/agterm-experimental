@@ -294,12 +294,12 @@ skipped and `detail` says which; that alone never makes a request `lost`.
 - Modify: `mcps/go-ask/http_test.go`
 - Modify: `mcps/go-ask/answer_test.go`
 
-- [ ] register `answer` in `newMCPServer` with `answerIn`/`answerOut` per Technical Details and a description that says it returns at once and never waits; update the `ask` description to mention `request_id` and `answer`, and the package comment's tool list (with `hook`)
-- [ ] implement the handler: resolve the id (given, else the session's last, else the error), load the request, read the pane's journal, look up the target by pane id in the tree (tree failure → "tree unavailable", not an error), compute the state; on `done`/`interrupted` store the result into the request
-- [ ] bump `version` to `0.2.0`
-- [ ] write tests: `ask` then `answer` without an id through a fake agtermctl and a hand-written journal (done, then the same call again returns the stored reply even after the journal gains a newer matching turn); `answer` with an unknown id; `answer` without id and without a prior ask; a failing tree still answers from the journal; an unreadable journal (a directory in its place) is an error
-- [ ] write an HTTP test: two MCP sessions each `ask`, then `answer` without an id answers each session's own request
-- [ ] run tests - must pass before task 6
+- [x] register `answer` in `newMCPServer` with `answerIn`/`answerOut` per Technical Details and a description that says it returns at once and never waits; update the `ask` description to mention `request_id` and `answer`, and the package comment's tool list (with `hook`)
+- [x] implement the handler: resolve the id (given, else the session's last, else the error), load the request, read the pane's journal, look up the target by pane id in the tree (tree failure → "tree unavailable", not an error), compute the state; on `done`/`interrupted` store the result into the request
+- [x] bump `version` to `0.2.0`
+- [x] write tests: `ask` then `answer` without an id through a fake agtermctl and a hand-written journal (done, then the same call again returns the stored reply even after the journal gains a newer matching turn); `answer` with an unknown id; `answer` without id and without a prior ask; a failing tree still answers from the journal; an unreadable journal (a directory in its place) is an error
+- [x] write an HTTP test: two MCP sessions each `ask`, then `answer` without an id answers each session's own request
+- [x] run tests - must pass before task 6
 
 ### Task 6: Verify acceptance criteria
 

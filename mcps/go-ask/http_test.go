@@ -365,3 +365,63 @@ func TestAskFailedSendIsNotLast(t *testing.T) {
 		t.Errorf("request_id %q, last %q after a failed send; want none", out.RequestID, s.lastRequest())
 	}
 }
+
+// callTool calls a tool that must succeed and decodes its structured output into out.
+func callTool(t *testing.T, cs *mcp.ClientSession, name string, args map[string]any, out any) {
+	t.Helper()
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	if res.IsError {
+		t.Fatalf("%s: %s", name, res.Content[0].(*mcp.TextContent).Text)
+	}
+	raw, _ := json.Marshal(res.StructuredContent)
+	if err := json.Unmarshal(raw, out); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestHTTPAnswerPerSession: each MCP session remembers its own last ask, so answer without a
+// request_id answers that session's request.
+func TestHTTPAnswerPerSession(t *testing.T) {
+	dir := t.TempDir()
+	ts := httptest.NewServer(httpHandler(fakeAgtermctl(t), "", dir))
+	t.Cleanup(ts.Close)
+	url := ts.URL + "/mcp"
+	a := connect(t, url, nil)
+	b := connect(t, url, nil)
+
+	var askA, askB askOut
+	callTool(t, a, "ask", map[string]any{"text": "say ALPHA", "session_id": "AAAA1111-0000"}, &askA)
+	callTool(t, b, "ask", map[string]any{"text": "say BETA", "session_id": "AAAA1111-0000"}, &askB)
+	if askA.RequestID == "" || askA.RequestID == askB.RequestID {
+		t.Fatalf("request ids %q and %q", askA.RequestID, askB.RequestID)
+	}
+	rb, err := loadRequest(dir, askB.RequestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// b asked last, so records after its send are in both windows.
+	writeTurns(t, journalPath(dir, "PANE-A1-LEFT"),
+		promptRec(rb.SentAt+10, mainSID, "say ALPHA"), stopRec(rb.SentAt+20, mainSID, "ALPHA"),
+		promptRec(rb.SentAt+30, mainSID, "say BETA"), stopRec(rb.SentAt+40, mainSID, "BETA"))
+
+	for _, c := range []struct {
+		cs    *mcp.ClientSession
+		id    string
+		reply string
+	}{{a, askA.RequestID, "ALPHA"}, {b, askB.RequestID, "BETA"}} {
+		var out answerOut
+		callTool(t, c.cs, "answer", map[string]any{}, &out)
+		if out.RequestID != c.id || out.State != stateDone || out.Reply != c.reply {
+			t.Errorf("answer = %+v, want done %q for %s", out, c.reply, c.id)
+		}
+	}
+
+	none := connect(t, url, nil)
+	res, err := none.CallTool(context.Background(), &mcp.CallToolParams{Name: "answer", Arguments: map[string]any{}})
+	if err != nil || !res.IsError || !strings.Contains(res.Content[0].(*mcp.TextContent).Text, "no ask in this session") {
+		t.Errorf("answer in a session without ask: %v %+v", err, res)
+	}
+}

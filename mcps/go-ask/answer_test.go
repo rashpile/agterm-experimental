@@ -1,6 +1,10 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -215,4 +219,210 @@ func TestRequestStateTree(t *testing.T) {
 			tree: treeUnavailable,
 			want: requestResult{State: stateInterrupted, FinishedAt: at(20)}},
 	})
+}
+
+// writeTurns appends recs to the journal at path, as the hook would.
+func writeTurns(t *testing.T, path string, recs ...turnRecord) {
+	t.Helper()
+	for _, rec := range recs {
+		if err := appendTurn(path, rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestAnswerAfterAsk(t *testing.T) {
+	dir := t.TempDir()
+	s := &server{ctl: fakeAgtermctl(t), dir: dir}
+	ctx := context.Background()
+	_, sent, err := s.ask(ctx, nil, askIn{Text: "say ALPHA", SessionID: "AAAA1111-0000"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := loadRequest(dir, sent.RequestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal := journalPath(dir, "PANE-A1-LEFT")
+	answer := func(want answerOut, detail string) {
+		t.Helper()
+		_, got, err := s.answer(ctx, nil, answerIn{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(got.Detail, detail) {
+			t.Errorf("detail %q lacks %q", got.Detail, detail)
+		}
+		if detail == "" && got.Detail != "" {
+			t.Errorf("detail %q, want none", got.Detail)
+		}
+		got.Detail = ""
+		if got != want {
+			t.Errorf("answer\n got %+v\nwant %+v", got, want)
+		}
+	}
+	base := answerOut{RequestID: sent.RequestID, Target: "AAAA1111-0000", Name: "agent", SentAt: r.SentAt}
+	with := func(state, reply string, finishedAt int64) answerOut {
+		o := base
+		o.State, o.Reply, o.FinishedAt = state, reply, finishedAt
+		return o
+	}
+
+	answer(with(statePending, "", 0), "hooks may not be installed")
+	writeTurns(t, journal, promptRec(r.SentAt+10, mainSID, "say ALPHA"))
+	answer(with(stateRunning, "", 0), "")
+	if got, _ := loadRequest(dir, sent.RequestID); got.State != "" {
+		t.Errorf("running stored state %q, want none", got.State)
+	}
+
+	writeTurns(t, journal, stopRec(r.SentAt+20, mainSID, "ALPHA"))
+	done := with(stateDone, "ALPHA", r.SentAt+20)
+	answer(done, "")
+	stored, err := loadRequest(dir, sent.RequestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.State != stateDone || stored.Reply != "ALPHA" || stored.FinishedAt != r.SentAt+20 {
+		t.Errorf("stored request %+v, want done ALPHA", stored)
+	}
+
+	// Delivered: a newer matching turn no longer rebinds the request.
+	writeTurns(t, journal, promptRec(r.SentAt+30, mainSID, "say ALPHA"), stopRec(r.SentAt+40, mainSID, "NEWER"))
+	answer(done, "")
+
+	// The stored result needs neither the journal nor the tree.
+	if err := os.Remove(journal); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(journal, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	answer(done, "")
+}
+
+func TestAnswerStoresInterrupted(t *testing.T) {
+	dir := t.TempDir()
+	s := &server{ctl: fakeAgtermctl(t), dir: dir}
+	r := testRequest("0123456789ab")
+	if err := saveRequest(dir, r); err != nil {
+		t.Fatal(err)
+	}
+	writeTurns(t, journalPath(dir, r.PaneID), promptRec(at(10), mainSID, "say ALPHA"), promptRec(at(30), mainSID, "stop"))
+	_, out, err := s.answer(context.Background(), nil, answerIn{RequestID: r.ID})
+	if err != nil || out.State != stateInterrupted || out.FinishedAt != at(30) {
+		t.Fatalf("answer = %+v, %v; want interrupted at %d", out, err, at(30))
+	}
+	if got, _ := loadRequest(dir, r.ID); got.State != stateInterrupted || got.FinishedAt != at(30) {
+		t.Errorf("stored request %+v, want interrupted", got)
+	}
+}
+
+func TestAnswerErrors(t *testing.T) {
+	dir := t.TempDir()
+	s := &server{ctl: fakeAgtermctl(t), dir: dir}
+	ctx := context.Background()
+
+	_, _, err := s.answer(ctx, nil, answerIn{})
+	if err == nil || err.Error() != "no request_id and no ask in this session; pass the request_id ask returned" {
+		t.Errorf("no id and no ask: %v", err)
+	}
+	if _, _, err := s.answer(ctx, nil, answerIn{RequestID: "0123456789ab"}); err == nil ||
+		!strings.Contains(err.Error(), `unknown request_id "0123456789ab"`) {
+		t.Errorf("unknown id: %v", err)
+	}
+	if _, _, err := s.answer(ctx, nil, answerIn{RequestID: "../x"}); err == nil || !strings.Contains(err.Error(), "invalid request_id") {
+		t.Errorf("bad id: %v", err)
+	}
+
+	// A directory in the journal's place: the journal exists but cannot be read.
+	r := testRequest("0123456789ab")
+	if err := saveRequest(dir, r); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(journalPath(dir, r.PaneID), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.answer(ctx, nil, answerIn{RequestID: r.ID}); err == nil || !strings.Contains(err.Error(), "read the turn journal") {
+		t.Errorf("unreadable journal: %v", err)
+	}
+}
+
+// TestAnswerUnsupportedReadsNothing: a non-Claude target is answered from the request alone,
+// without the journal or the tree.
+func TestAnswerUnsupportedReadsNothing(t *testing.T) {
+	dir := t.TempDir()
+	ctl, calls := fakeAgtermctlTree(t, treeJSON)
+	s := &server{ctl: ctl, dir: dir}
+	r := testRequest("0123456789ab")
+	r.Agent = "codex"
+	if err := saveRequest(dir, r); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(journalPath(dir, r.PaneID), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, out, err := s.answer(context.Background(), nil, answerIn{RequestID: r.ID})
+	if err != nil || out.State != stateUnsupported || !strings.Contains(out.Detail, "Claude only") {
+		t.Errorf("answer = %+v, %v; want unsupported", out, err)
+	}
+	if c := calls(); c != "" {
+		t.Errorf("agtermctl called:\n%s", c)
+	}
+	if got, _ := loadRequest(dir, r.ID); got.State != "" {
+		t.Errorf("unsupported stored state %q, want none", got.State)
+	}
+}
+
+// answerTree has the test request's pane as the right split of AAAA1111-0000, with the given
+// status and pane id.
+func answerTree(status, paneID string) string {
+	return fmt.Sprintf(`{"workspaces":[{"name":"w","active":true,"sessions":[
+ {"id":"AAAA1111-0000","name":"agent","status":%q,"statusPane":"right","foreground":["zsh"],"splitForeground":["claude"],
+  "surfaces":[{"kind":"left","paneID":"PANE-A1-LEFT"},{"kind":"right","paneID":%q}]}]}]}`, status, paneID)
+}
+
+// TestAnswerTree: the handler looks the target up in the tree by pane id; a pane missing from
+// the tree or a failing tree still answers from the journal.
+func TestAnswerTree(t *testing.T) {
+	running := []turnRecord{promptRec(at(10), mainSID, "say ALPHA")}
+	finished := []turnRecord{promptRec(at(10), mainSID, "say ALPHA"), stopRec(at(20), mainSID, "ALPHA")}
+	failing := agtermctl{bin: filepath.Join(t.TempDir(), "no-agtermctl")}
+	treeCtl := func(status, paneID string) agtermctl {
+		ctl, _ := fakeAgtermctlTree(t, answerTree(status, paneID))
+		return ctl
+	}
+	for _, tc := range []struct {
+		name   string
+		ctl    agtermctl
+		recs   []turnRecord
+		state  string
+		reply  string
+		detail string // substring of Detail; "" means none
+	}{
+		{"in tree, active", treeCtl("active", "PANE-A1-RIGHT"), running, stateRunning, "", ""},
+		{"in tree, blocked", treeCtl("blocked", "PANE-A1-RIGHT"), running, stateBlocked, "", "answer it in agterm"},
+		{"not in tree, blocked elsewhere", treeCtl("blocked", "PANE-OTHER"), running, stateRunning, "", "not in agterm's tree"},
+		{"tree fails, running", failing, running, stateRunning, "", "tree is unavailable"},
+		{"tree fails, done from the journal", failing, finished, stateDone, "ALPHA", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			s := &server{ctl: tc.ctl, dir: dir}
+			r := testRequest("0123456789ab")
+			if err := saveRequest(dir, r); err != nil {
+				t.Fatal(err)
+			}
+			writeTurns(t, journalPath(dir, r.PaneID), tc.recs...)
+			_, out, err := s.answer(context.Background(), nil, answerIn{RequestID: r.ID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.State != tc.state || out.Reply != tc.reply {
+				t.Errorf("answer %+v, want %s %q", out, tc.state, tc.reply)
+			}
+			if tc.detail == "" && out.Detail != "" || !strings.Contains(out.Detail, tc.detail) {
+				t.Errorf("detail %q, want %q", out.Detail, tc.detail)
+			}
+		})
+	}
 }
