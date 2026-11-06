@@ -166,7 +166,9 @@ Claude asks permission for each tool the first time. To stop the prompts, add bo
   session.
 - go-ask clears the target's input box before typing. A draft left there unsent is lost.
 - The text is submitted, so the other agent starts working on it right away.
-- go-ask won't send to your own pane or to a pane at a bare shell.
+- go-ask won't send to your own pane, to a pane at a bare shell, or to an agent whose status is
+  `blocked`, waiting for someone to answer a permission prompt or a question. Answer it in agterm,
+  then ask again.
 
 ## By hand
 

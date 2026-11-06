@@ -244,13 +244,18 @@ func resolveTarget(panes []Pane, arg string) (Pane, error) {
 	return Pane{}, fmt.Errorf("session %s has no %s pane (is the split open?)", ids[0], want)
 }
 
-// checkSendable refuses targets where typed text would do harm.
+// checkSendable refuses targets where typed text would do harm. A blocked agent shows a menu
+// (permission prompt, question) where the paste and the Enter would pick an answer.
 func checkSendable(p Pane) error {
 	if p.Self {
 		return fmt.Errorf("%s is your own pane; ask another session", p.Target)
 	}
 	if p.Foreground == "" {
 		return fmt.Errorf("%s (%s) is at a bare shell: pasted text would run as commands. Start an agent there first", p.Target, p.Name)
+	}
+	if p.Status == "blocked" {
+		return fmt.Errorf("%s (%s) is blocked: the agent is waiting for a person to answer a permission prompt or a question, "+
+			"and the pasted text and Enter could answer it. Nothing was sent. Answer it in agterm first, then ask again", p.Target, p.Name)
 	}
 	return nil
 }

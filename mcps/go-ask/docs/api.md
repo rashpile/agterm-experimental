@@ -161,11 +161,17 @@ go-ask reads the focus at the moment of the call. A Claude that runs `ask` witho
 the user is looking at it gets its own pane back, and `ask` refuses it. The default is for callers
 the user is not looking at: a Claude on another machine, or one working in a background session.
 
-`ask` refuses three targets:
+`ask` refuses four targets, and types nothing into them:
 
 - the caller's own pane;
 - a pane at a bare shell, because each pasted line would run as a command there;
+- a pane whose `status` is `blocked`. The agent there waits for a person to answer a permission
+  prompt or a question, and the pasted text and the Enter could pick an answer in that menu;
 - `:right` on a session without an open split.
+
+The checks apply to every target, `focused` and the default included. `blocked` is agterm's status,
+set by the agent's hook, and go-ask trusts it as it is. A status left over from an answered prompt
+blocks `ask` until agterm clears it, for example when the user opens the session.
 
 Every send is three writes through `agtermctl session type --stdin`:
 
@@ -220,6 +226,7 @@ not a JSON-RPC error, so the model reads the reason and can retry, for example a
 | `session <id> has no right pane (is the split open?)` | `:right` on a session without a split. |
 | `<target> is your own pane; ask another session` | Target is the caller's own pane. |
 | `<target> (<name>) is at a bare shell: ...` | Target pane runs no program. |
+| `<target> (<name>) is blocked: the agent is waiting for a person ... Nothing was sent. ...` | Target pane's status is `blocked`. Answer the prompt in agterm, then retry. |
 | `a sandbox blocks the agterm socket ...` | The client's sandbox denied access to the agterm socket. |
 | `agtermctl <command>: ...` | Any other agtermctl failure, with its message. |
 

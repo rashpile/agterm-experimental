@@ -9,8 +9,9 @@ with `-addr` and a bearer token from `-token-file`.
 | `sessions` | `agents?: bool` | Lists every session's primary pane and its open right split. `target` is the address for `ask`, `self` marks the caller's own pane, `focused` the pane with focus. `agents=true` keeps only panes running an agent CLI. |
 | `ask` | `text`, `session_id?` | Clears the target's input, pastes `text` as one message and submits it. `session_id` is an id, a unique id prefix or an exact session name, with `:right` for the split pane. Without it, or with `focused`, the message goes to the pane that has focus in agterm. |
 
-`ask` refuses the caller's own pane and any pane at a bare shell, where the pasted lines would run
-as commands.
+`ask` refuses the caller's own pane, any pane at a bare shell, where the pasted lines would run
+as commands, and any agent whose status is `blocked`, where the paste and Enter could answer its
+permission prompt.
 
 ## Docs
 
