@@ -29,8 +29,8 @@ func selfFromHeaders(h http.Header) selfAddr {
 }
 
 // httpHandler serves MCP at /mcp. The SDK calls getServer once per new client session, so
-// every session gets its own server state: self pane from that session's first request, and
-// its own last target. A non-empty token makes every request carry it as a bearer token.
+// every session gets its own self pane, read from that session's first request. A non-empty
+// token makes every request carry it as a bearer token.
 func httpHandler(ctl agtermctl, token string) http.Handler {
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		self := selfFromHeaders(r.Header)

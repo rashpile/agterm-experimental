@@ -146,9 +146,12 @@ Claude calls `sessions` with `agents: true` and lists each pane's name, workspac
 > tell the agent in the right pane of sh:pako-channels to check the last commit
 
 A session can be named by its exact name, its id or a unique id prefix. Add `:right` for the split
-pane. Leave the target out and the message goes where the last one went:
+pane. Leave the target out and the message goes to the pane that has focus in agterm:
 
-> and add: "put the log in /tmp/out.txt"
+> send "check the build" to the agent I'm looking at
+
+That helps a Claude on another machine or in a background session. A Claude you are looking at
+holds the focus itself, so go-ask refuses to send it its own message.
 
 Claude asks permission for each tool the first time. To stop the prompts, add both tools to
 `permissions.allow` in `~/.claude/settings.json`:

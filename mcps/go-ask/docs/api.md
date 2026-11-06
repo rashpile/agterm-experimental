@@ -10,7 +10,6 @@ go-ask speaks MCP as JSON-RPC 2.0, over stdio or over Streamable HTTP. Both carr
 | Who starts it | The client, once per client session | You or launchd, once for all clients |
 | Messages | One JSON message per line on stdin and stdout | `POST /mcp`, replies as JSON or SSE |
 | Caller's own pane | `AGTERM_SESSION_ID` and `AGTERM_PANE` from the env it inherits | `X-Agterm-Session-Id` and `X-Agterm-Pane` headers |
-| Last `ask` target | Kept per process | Kept per MCP session |
 
 Logs go to stderr in both modes. In HTTP mode go-ask logs every new MCP session with the pane it
 treats as the caller's.
@@ -107,6 +106,7 @@ Output is `{"sessions": [pane, ...]}`. Each pane:
 | `agent` | no | Agent CLI found in `foreground`: claude, codex, pi, gemini, opencode, aider, amp, goose, crush, qwen or cursor-agent. |
 | `status` | no | agterm's agent status: `idle`, `active`, `blocked` or `completed`. A session has one status, and it goes on the pane agterm reports it for. |
 | `self` | no | `true` on the caller's own pane, see [Transports](#transports). |
+| `focused` | no | `true` on the pane with keyboard focus: the selected session of the active workspace in agterm's frontmost window, and its left or right pane, whichever has focus. No pane has it when focus is on a scratch pane. |
 
 go-ask finds the agent in the foreground argv. It checks `argv[0]`, the command string of a shell
 started with `-c` such as `zsh -ilc "VAR=x claude"`, and the script of a runtime such as
@@ -145,21 +145,21 @@ Input:
 | Field | Type | Required | Meaning |
 |-------|------|----------|---------|
 | `text` | string | yes | The message. Newlines are kept. |
-| `session_id` | string | no | Which pane to send to, see below. |
+| `session_id` | string | no | Which pane to send to, see below. Omitted means `focused`. |
 
 go-ask resolves `session_id` in this order:
 
-1. A `:right` suffix picks the split pane. `:left` or no suffix picks the primary pane.
-2. An exact session id, case ignored.
-3. A unique prefix of a session id.
-4. An exact session name.
+1. `focused`, case ignored, picks the pane `sessions` marks `focused`. It is also the default.
+2. A `:right` suffix picks the split pane. `:left` or no suffix picks the primary pane.
+3. An exact session id, case ignored.
+4. A unique prefix of a session id.
+5. An exact session name.
 
 A prefix or a name that matches more than one session is an error, and the error lists the ids.
 
-Without `session_id`, the message goes to the target of the last successful `ask` in the same MCP
-session. That is one Claude session in both modes: stdio starts a process per Claude session, and
-HTTP keeps state per MCP session. A `/mcp` reconnect starts a new MCP session and forgets the target.
-The first `ask` of a session without `session_id` fails.
+go-ask reads the focus at the moment of the call. A Claude that runs `ask` without `session_id` while
+the user is looking at it gets its own pane back, and `ask` refuses it. The default is for callers
+the user is not looking at: a Claude on another machine, or one working in a background session.
 
 `ask` refuses three targets:
 
@@ -214,7 +214,7 @@ not a JSON-RPC error, so the model reads the reason and can retry, for example a
 | Message | Cause |
 |---------|-------|
 | `text is empty` | `text` missing or empty. |
-| `no session_id and no previous ask to reuse; ...` | First `ask` of the process came without `session_id`. |
+| `no listed pane has focus: ...` | `focused` or no `session_id`, and focus is on a scratch pane or agterm has no open window. |
 | `no session matches "x"; call sessions to list them` | Nothing matched `session_id`. |
 | `"x" matches N sessions (...); pass a full session id` | A prefix or name matched several sessions. |
 | `session <id> has no right pane (is the split open?)` | `:right` on a session without a split. |

@@ -24,6 +24,7 @@ type Pane struct {
 	Agent      string `json:"agent,omitempty" jsonschema:"agent CLI detected in the foreground"`
 	Status     string `json:"status,omitempty" jsonschema:"agterm agent status: idle, active, blocked or completed"`
 	Self       bool   `json:"self,omitempty" jsonschema:"the caller's own pane"`
+	Focused    bool   `json:"focused,omitempty" jsonschema:"the pane that has focus in agterm's frontmost window"`
 
 	sessionID string
 }
@@ -37,16 +38,35 @@ type rawSession struct {
 	StatusPane      string   `json:"statusPane"`
 	Foreground      []string `json:"foreground"`
 	SplitForeground []string `json:"splitForeground"`
+	SplitFocused    bool     `json:"splitFocused"`
+	Active          bool     `json:"active"` // selected in its workspace
 	Surfaces        []struct {
-		Kind string `json:"kind"`
+		Kind   string `json:"kind"`
+		Active bool   `json:"active"`
 	} `json:"surfaces"`
 }
 
+// rawTree is the frontmost window's tree, which is what agtermctl tree returns by default.
 type rawTree struct {
 	Workspaces []struct {
 		Name     string       `json:"name"`
+		Active   bool         `json:"active"`
 		Sessions []rawSession `json:"sessions"`
 	} `json:"workspaces"`
+}
+
+// focusedPane says which surface of a selected session has keyboard focus: left, right or
+// scratch.
+func focusedPane(s rawSession) string {
+	for _, sf := range s.Surfaces {
+		if sf.Active {
+			return sf.Kind
+		}
+	}
+	if s.SplitFocused {
+		return "right"
+	}
+	return "left"
 }
 
 // selfAddr names the caller's pane, so ask can refuse to type into it.
@@ -73,14 +93,22 @@ func panesFromTree(t rawTree, self selfAddr) []Pane {
 	var out []Pane
 	for _, ws := range t.Workspaces {
 		for _, s := range ws.Sessions {
-			out = append(out, makePane(ws.Name, s, "left", s.Cwd, s.Foreground, self))
+			focus := ""
+			if ws.Active && s.Active {
+				focus = focusedPane(s)
+			}
+			left := makePane(ws.Name, s, "left", s.Cwd, s.Foreground, self)
+			left.Focused = focus == "left"
+			out = append(out, left)
 			for _, sf := range s.Surfaces {
 				if sf.Kind == "right" {
 					cwd := s.SplitCwd
 					if cwd == "" {
 						cwd = s.Cwd
 					}
-					out = append(out, makePane(ws.Name, s, "right", cwd, s.SplitForeground, self))
+					right := makePane(ws.Name, s, "right", cwd, s.SplitForeground, self)
+					right.Focused = focus == "right"
+					out = append(out, right)
 					break
 				}
 			}
@@ -158,10 +186,18 @@ func commandWords(cmd string) []string {
 	return words
 }
 
-// resolveTarget finds the pane an ask goes to. arg is a session id, a unique id prefix or an
-// exact session name, optionally followed by ":right" (or ":left").
+// resolveTarget finds the pane an ask goes to. arg is "focused", a session id, a unique id
+// prefix or an exact session name, optionally followed by ":right" (or ":left").
 func resolveTarget(panes []Pane, arg string) (Pane, error) {
 	arg = strings.TrimSpace(arg)
+	if strings.EqualFold(arg, "focused") {
+		for _, p := range panes {
+			if p.Focused {
+				return p, nil
+			}
+		}
+		return Pane{}, errors.New("no listed pane has focus: agterm has no open window, or focus is on a scratch pane")
+	}
 	want := "left"
 	if i := strings.LastIndex(arg, ":"); i >= 0 {
 		switch strings.ToLower(arg[i+1:]) {

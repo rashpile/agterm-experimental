@@ -209,3 +209,16 @@ func TestServeHTTPRefusesOpenAddrWithoutToken(t *testing.T) {
 		t.Errorf("serveHTTP without token on 10.0.0.2: %v", err)
 	}
 }
+
+func TestAskDefaultsToFocused(t *testing.T) {
+	s := &server{ctl: fakeAgtermctl(t)}
+	_, out, err := s.ask(context.Background(), nil, askIn{Text: "hi"})
+	if err != nil || out.Target != "BBBB2222-0000:right" {
+		t.Errorf("ask without session_id = %+v, %v; want the focused pane BBBB2222-0000:right", out, err)
+	}
+
+	s.self = selfAddr{SessionID: "BBBB2222-0000", Pane: "right"}
+	if _, _, err := s.ask(context.Background(), nil, askIn{Text: "hi"}); err == nil || !strings.Contains(err.Error(), "your own pane") {
+		t.Errorf("focused pane is the caller's own, want a refusal: %v", err)
+	}
+}

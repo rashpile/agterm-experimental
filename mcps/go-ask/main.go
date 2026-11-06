@@ -17,7 +17,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"sync"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -27,9 +26,6 @@ const version = "0.1.0"
 type server struct {
 	ctl  agtermctl
 	self selfAddr
-
-	mu   sync.Mutex
-	last string // target of the last successful ask
 }
 
 type sessionsIn struct {
@@ -42,7 +38,7 @@ type sessionsOut struct {
 
 type askIn struct {
 	Text      string `json:"text" jsonschema:"message to type into the session and submit"`
-	SessionID string `json:"session_id,omitempty" jsonschema:"session id, unique id prefix or exact session name; append :right for the split pane. Omitted: the session the previous ask went to"`
+	SessionID string `json:"session_id,omitempty" jsonschema:"focused for the pane the user has focus on in agterm; or a session id, unique id prefix or exact session name, with :right appended for the split pane. Omitted: the focused pane"`
 }
 
 type askOut struct {
@@ -73,12 +69,7 @@ func (s *server) ask(ctx context.Context, _ *mcp.CallToolRequest, in askIn) (*mc
 	}
 	target := in.SessionID
 	if target == "" {
-		s.mu.Lock()
-		target = s.last
-		s.mu.Unlock()
-		if target == "" {
-			return nil, askOut{}, errors.New("no session_id and no previous ask to reuse; call sessions(agents=true) and pass a target")
-		}
+		target = "focused"
 	}
 	panes, err := s.ctl.panes(ctx, s.self)
 	if err != nil {
@@ -94,26 +85,25 @@ func (s *server) ask(ctx context.Context, _ *mcp.CallToolRequest, in askIn) (*mc
 	if err := s.ctl.send(ctx, p, in.Text); err != nil {
 		return nil, askOut{}, fmt.Errorf("send to %s: %w", p.Target, err)
 	}
-	s.mu.Lock()
-	s.last = p.Target
-	s.mu.Unlock()
 	return nil, askOut{Sent: true, Target: p.Target, Name: p.Name, Agent: p.Agent}, nil
 }
 
 // newMCPServer builds one MCP server around s. stdio runs one for the process; HTTP runs one per
-// client session, so each caller keeps its own self pane and its own last target.
+// client session, so each caller keeps its own self pane.
 func newMCPServer(s *server) *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{Name: "go-ask", Version: version}, nil)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "sessions",
 		Description: "List agterm panes that ask can send to, one entry per pane: a session's primary pane, " +
-			"plus its right split when open. Pass an entry's target to ask. self marks the caller's own pane. " +
+			"plus its right split when open. Pass an entry's target to ask. self marks the caller's own pane, " +
+			"focused the pane the user has focus on. " +
 			"agents=true keeps only panes running an agent CLI.",
 	}, s.sessions)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "ask",
 		Description: "Type text into another agterm session's input and press Enter, as if a user sent it. " +
 			"Returns as soon as the text is submitted; it does not wait for or return a reply. " +
+			"Without session_id it goes to the pane the user has focus on in agterm. " +
 			"Whatever was already typed in the target's input is cleared first. " +
 			"Refuses the caller's own pane and any pane at a bare shell, where the text would run as commands.",
 	}, s.ask)

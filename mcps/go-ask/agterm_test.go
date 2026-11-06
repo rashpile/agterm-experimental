@@ -7,16 +7,16 @@ import (
 )
 
 const treeJSON = `{"workspaces":[
- {"name":"ops","sessions":[
+ {"name":"ops","active":true,"sessions":[
   {"id":"AAAA1111-0000","name":"agent","cwd":"/a","status":"idle",
    "foreground":["claude","--resume","x"],"surfaces":[{"kind":"left"}]},
-  {"id":"BBBB2222-0000","name":"sh:kobo","cwd":"/b","status":"active","statusPane":"right",
+  {"id":"BBBB2222-0000","name":"sh:kobo","cwd":"/b","status":"active","statusPane":"right","active":true,
    "foreground":["/bin/bash","/x/nvim-tree.sh"],"splitForeground":["zsh","-ilc","codex"],
-   "surfaces":[{"kind":"left"},{"kind":"right"}]},
+   "surfaces":[{"kind":"left"},{"kind":"right","active":true}]},
   {"id":"AAAA3333-0000","name":"shell","cwd":"/c","surfaces":[{"kind":"left"}]}
  ]},
  {"name":"me","sessions":[
-  {"id":"CCCC4444-0000","name":"agent","cwd":"/d","foreground":["claude"],"surfaces":[{"kind":"left"}]}
+  {"id":"CCCC4444-0000","name":"agent","cwd":"/d","foreground":["claude"],"active":true,"surfaces":[{"kind":"left","active":true}]}
  ]}
 ]}`
 
@@ -46,6 +46,29 @@ func TestPanesFromTree(t *testing.T) {
 	}
 	if !panes[4].Self || panes[0].Self {
 		t.Errorf("self marking wrong: %+v / %+v", panes[4], panes[0])
+	}
+	// CCCC4444 is selected and focused in its workspace, but that workspace is not the active one.
+	for i, p := range panes {
+		if p.Focused != (i == 2) {
+			t.Errorf("pane %d %s focused = %v", i, p.Target, p.Focused)
+		}
+	}
+}
+
+func TestFocusedPane(t *testing.T) {
+	var s rawSession
+	if got := focusedPane(s); got != "left" {
+		t.Errorf("no surfaces: %q", got)
+	}
+	s.SplitFocused = true
+	if got := focusedPane(s); got != "right" {
+		t.Errorf("splitFocused: %q", got)
+	}
+	if err := json.Unmarshal([]byte(`{"surfaces":[{"kind":"left"},{"kind":"scratch","active":true}]}`), &s); err != nil {
+		t.Fatal(err)
+	}
+	if got := focusedPane(s); got != "scratch" {
+		t.Errorf("scratch: %q", got)
 	}
 }
 
@@ -82,6 +105,8 @@ func TestResolveTarget(t *testing.T) {
 		{"BBBB:right", "BBBB2222-0000:right", ""},
 		{"sh:kobo", "BBBB2222-0000", ""},
 		{"sh:kobo:right", "BBBB2222-0000:right", ""},
+		{"focused", "BBBB2222-0000:right", ""},
+		{"Focused", "BBBB2222-0000:right", ""},
 		{"AAAA", "", "matches 2 sessions"},
 		{"agent", "", "matches 2 sessions"},
 		{"AAAA1111:right", "", "no right pane"},
@@ -99,6 +124,16 @@ func TestResolveTarget(t *testing.T) {
 		if err != nil || p.Target != c.want {
 			t.Errorf("resolveTarget(%q) = %q, %v; want %q", c.arg, p.Target, err, c.want)
 		}
+	}
+}
+
+func TestResolveFocusedWithoutFocus(t *testing.T) {
+	var tr rawTree
+	if err := json.Unmarshal([]byte(`{"workspaces":[{"name":"w","sessions":[{"id":"X","name":"x","surfaces":[{"kind":"left"}]}]}]}`), &tr); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resolveTarget(panesFromTree(tr, selfAddr{}), "focused"); err == nil || !strings.Contains(err.Error(), "no listed pane has focus") {
+		t.Errorf("focused without focus: %v", err)
 	}
 }
 
