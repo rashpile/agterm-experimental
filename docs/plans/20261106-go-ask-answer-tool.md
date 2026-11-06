@@ -336,10 +336,15 @@ skipped and `detail` says which; that alone never makes a request `lost`.
 
 ### Task 7: [Final] Update documentation
 
-- [ ] update `mcps/go-ask/docs/api.md`: the `answer` tool (input, output, states table, matching and normalization rules, "last matching turn wins until delivered", returns at once), `request_id` in `ask`'s output, the hook and the journal/request files, new errors, `GO_ASK_STATE_DIR` in the Environment table, version `0.2.0` in the `initialize` example, `answer` in the message-flow diagram
-- [ ] update `mcps/go-ask/docs/usage.md`: installing the hooks (the `UserPromptSubmit`/`Stop` JSON for `~/.claude/settings.json` with the absolute binary path, added beside existing hooks), asking for an answer from Claude in plain words, what each state means for the user, Pi not supported yet, `mcp__go-ask__answer` in the `permissions.allow` example, "Things to know" no longer saying no reply comes back, the Tests paragraph
-- [ ] update `mcps/go-ask/README.md`: the tools table gains `answer`; one line on the hook
-- [ ] move this plan to `docs/plans/completed/`
+- [x] update `mcps/go-ask/docs/api.md`: the `answer` tool (input, output, states table, matching and normalization rules, "last matching turn wins until delivered", returns at once), `request_id` in `ask`'s output, the hook and the journal/request files, new errors, `GO_ASK_STATE_DIR` in the Environment table, version `0.2.0` in the `initialize` example, `answer` in the message-flow diagram
+- [x] update `mcps/go-ask/docs/usage.md`: installing the hooks (the `UserPromptSubmit`/`Stop` JSON for `~/.claude/settings.json` with the absolute binary path, added beside existing hooks), asking for an answer from Claude in plain words, what each state means for the user, Pi not supported yet, `mcp__go-ask__answer` in the `permissions.allow` example, "Things to know" no longer saying no reply comes back, the Tests paragraph
+- [x] update `mcps/go-ask/README.md`: the tools table gains `answer`; one line on the hook
+- [x] move this plan to `docs/plans/completed/` (skipped - the harness moves the plan after all phases finish)
+- ➕ the docs describe the code as it is, Task 6's findings included: api.md has a "Messages sent
+  while a turn runs" section with the two measured misreads, the `lost` row points to it, and
+  usage.md's "Things to know" says to send to an idle agent when the reply is wanted back
+- ➕ the docs also cover the hook, the journal and request files, the state dir and the file modes
+  (api.md "Hook" and "State files"), and a "Things to know" note on what the journal keeps
 
 ## Post-Completion
 

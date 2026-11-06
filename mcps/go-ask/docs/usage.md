@@ -128,6 +128,35 @@ launchctl bootout gui/$(id -u)/com.rashpile.go-ask        # stop and unload
 
 agtermctl finds the agterm socket without any env, so launchd needs none.
 
+### Hooks for answer
+
+`answer` reads the replies from a journal that the target Claude writes through two hooks. Install
+them on the Mac where the agents run. The machine that only calls go-ask needs no hooks.
+
+Add `go-ask hook` to `UserPromptSubmit` and `Stop` in `~/.claude/settings.json`, with the binary's
+absolute path:
+
+```json
+{"hooks": {
+  "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "/Users/pkoptilin/.local/bin/go-ask hook"}]}],
+  "Stop": [{"hooks": [{"type": "command", "command": "/Users/pkoptilin/.local/bin/go-ask hook"}]}]
+}}
+```
+
+Most settings already have hooks for these events. Add each `{"hooks": [...]}` object to the
+event's existing array, beside the entries there, and keep the rest of the file as it is.
+
+Restart running Claude sessions to load the hooks. A session that started before you added them
+writes no journal, and `answer` stays `pending` for messages sent to it.
+
+The hook prints nothing, never fails a turn and does nothing outside agterm. It writes to
+`~/.local/state/go-ask/turns/`. If the server runs with `GO_ASK_STATE_DIR`, put the same variable in
+front of the hook command:
+
+```json
+{"type": "command", "command": "GO_ASK_STATE_DIR=/path/to/state /Users/pkoptilin/.local/bin/go-ask hook"}
+```
+
 ### Check and remove
 
 `claude mcp get go-ask` should say `✔ Connected`. Remove it with `claude mcp remove go-ask -s user`.
@@ -153,17 +182,54 @@ pane. Leave the target out and the message goes to the pane that has focus in ag
 That helps a Claude on another machine or in a background session. A Claude you are looking at
 holds the focus itself, so go-ask refuses to send it its own message.
 
-Claude asks permission for each tool the first time. To stop the prompts, add both tools to
+`ask` returns as soon as the message is sent, and Claude carries on with your conversation. When you
+want the reply, ask for it:
+
+> what did sh:kobo answer?
+
+> is the agent in sh:kobo done with the tests?
+
+Claude calls `answer` once, with the `request_id` its `ask` got back, or with none for the last
+`ask` of its MCP session. `answer` returns at once and never waits for the agent, so each check is
+one call. Ask again later if the reply isn't there yet. After go-ask restarts, Claude has to pass
+the `request_id`. It still has it from the `ask` result.
+
+The state tells you where the message is:
+
+| State | What it means |
+|-------|---------------|
+| `done` | The agent finished the turn. Claude shows you its reply. |
+| `running` | The agent is still working on the message. Check again later. |
+| `blocked` | The agent waits for someone to answer a permission prompt or a question. Answer it in agterm. |
+| `pending` | The agent hasn't started on the message. If it stays that way, the target Claude may lack the hooks or may have started before you added them. |
+| `interrupted` | The turn ended without a reply, for example after Esc. Send the message again if you still need it. |
+| `lost` | The message went into a turn the agent was already running, so it has no reply of its own. Read the answer in the session. |
+| `unsupported` | The target is not Claude. |
+
+`done` and `interrupted` stay as they are once Claude has seen them. Send the same text again
+before that, and `answer` follows the newer message.
+
+`answer` supports Claude only for now. For Pi, codex and the other agents it returns
+`unsupported`, and you read the reply in their session.
+
+Claude asks permission for each tool the first time. To stop the prompts, add the tools to
 `permissions.allow` in `~/.claude/settings.json`:
 
 ```json
-{"permissions": {"allow": ["mcp__go-ask__sessions", "mcp__go-ask__ask"]}}
+{"permissions": {"allow": ["mcp__go-ask__sessions", "mcp__go-ask__ask", "mcp__go-ask__answer"]}}
 ```
 
 ## Things to know
 
-- No reply comes back. The other agent gets the text as a user message and answers in its own
-  session.
+- `ask` doesn't wait for the reply. The other agent gets the text as a user message and answers in
+  its own session. From a Claude agent with the hooks installed, `answer` fetches that reply later.
+- Send to an agent that is idle when you want the reply back. A message sent while the agent is in
+  the middle of a turn can give both messages wrong answers. The message of the running turn shows
+  `interrupted` even when that turn finishes, and the new message can get the earlier turn's reply.
+  Both stick. [api.md](api.md#messages-sent-while-a-turn-runs) has the details.
+- The journal in `~/.local/state/go-ask/turns/` holds the final text of every turn of every hooked
+  Claude session in agterm, up to about 1 MiB per pane. Only your user can read it. go-ask never
+  deletes the request files in `~/.local/state/go-ask/requests/`.
 - go-ask clears the target's input box before typing. A draft left there unsent is lost.
 - The text is submitted, so the other agent starts working on it right away.
 - go-ask won't send to your own pane, to a pane at a bare shell, or to an agent whose status is
@@ -211,5 +277,8 @@ go test ./...
 
 The tests cover tree parsing, agent detection, target resolution, the refusals, the paste bytes,
 the per-session pane over HTTP, the 403s for browser and rebinding requests, the bearer token, the
-token file checks and the refusal to listen off loopback without a token. They run against a fake
-agtermctl and don't touch agterm.
+token file checks and the refusal to listen off loopback without a token. For `answer` they cover
+the text normalization with the shapes Claude was seen to send, the journal with its trim and file
+modes, `go-ask hook` with good and bad input, the request store, every row of the state rules,
+`ask` saving its request, and `answer` over stdio and over two HTTP sessions. They run against a
+fake agtermctl and a temp state dir, and touch neither agterm nor `~/.local/state`.
