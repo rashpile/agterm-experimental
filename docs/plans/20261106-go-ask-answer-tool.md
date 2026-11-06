@@ -236,11 +236,11 @@ skipped and `detail` says which; that alone never makes a request `lost`.
 - Create: `mcps/go-ask/turns.go`
 - Create: `mcps/go-ask/turns_test.go`
 
-- [ ] add `stateDir()`, `normalizePrompt`, `promptHash` to `mcps/go-ask/turns.go` as specified in Technical Details (unwrapping without backreferences)
-- [ ] add the journal: `turnRecord` (`event`, `t`, `session`, `hash`, reply as `*string` so `""` is kept), `journalPath(dir, paneID)`, `appendTurn(path, rec)` with the 1 MiB → 512 KiB trim and mode 0600 files / 0700 dirs, `readTurns(path)` that skips bad lines and returns no error for a missing file
-- [ ] write tests for `normalizePrompt`/`promptHash`: the measured long-paste wrapper (exact shape from Context), two wrapped blocks in one prompt, an opening tag without a closing tag left as text, tabs, `\r`, trailing spaces, a decomposed `é` kept, a short multi-line text unchanged, two different texts hashing differently
-- [ ] write tests for the journal: append/read round trip, `""` reply kept, malformed line skipped, missing file, pane id sanitizing, file mode 0600, trim past 1 MiB keeps the newest lines within 512 KiB, records of two sessions interleaved in one file read back in order
-- [ ] run tests - must pass before task 2
+- [x] add `stateDir()`, `normalizePrompt`, `promptHash` to `mcps/go-ask/turns.go` as specified in Technical Details (unwrapping without backreferences)
+- [x] add the journal: `turnRecord` (`event`, `t`, `session`, `hash`, reply as `*string` so `""` is kept), `journalPath(dir, paneID)`, `appendTurn(path, rec)` with the 1 MiB → 512 KiB trim and mode 0600 files / 0700 dirs, `readTurns(path)` that skips bad lines and returns no error for a missing file
+- [x] write tests for `normalizePrompt`/`promptHash`: the measured long-paste wrapper (exact shape from Context), two wrapped blocks in one prompt, an opening tag without a closing tag left as text, tabs, `\r`, trailing spaces, a decomposed `é` kept, a short multi-line text unchanged, two different texts hashing differently
+- [x] write tests for the journal: append/read round trip, `""` reply kept, malformed line skipped, missing file, pane id sanitizing, file mode 0600, trim past 1 MiB keeps the newest lines within 512 KiB, records of two sessions interleaved in one file read back in order
+- [x] run tests - must pass before task 2
 
 ### Task 2: `go-ask hook` subcommand
 
