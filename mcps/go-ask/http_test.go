@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -90,7 +91,7 @@ func selfTargets(t *testing.T, cs *mcp.ClientSession) []string {
 }
 
 func TestHTTPSelfPerSession(t *testing.T) {
-	ts := httptest.NewServer(httpHandler(fakeAgtermctl(t), ""))
+	ts := httptest.NewServer(httpHandler(fakeAgtermctl(t), "", t.TempDir()))
 	t.Cleanup(ts.Close) // registered first, so it runs after the clients' Close
 	url := ts.URL + "/mcp"
 
@@ -116,7 +117,7 @@ func TestHTTPSelfPerSession(t *testing.T) {
 }
 
 func TestHTTPRejectsBrowserAndRebinding(t *testing.T) {
-	ts := httptest.NewServer(httpHandler(fakeAgtermctl(t), ""))
+	ts := httptest.NewServer(httpHandler(fakeAgtermctl(t), "", t.TempDir()))
 	defer ts.Close()
 	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`
 
@@ -145,7 +146,7 @@ func TestHTTPRejectsBrowserAndRebinding(t *testing.T) {
 
 func TestHTTPBearerToken(t *testing.T) {
 	const token = "0123456789abcdef0123"
-	ts := httptest.NewServer(httpHandler(fakeAgtermctl(t), token))
+	ts := httptest.NewServer(httpHandler(fakeAgtermctl(t), token, t.TempDir()))
 	t.Cleanup(ts.Close)
 	url := ts.URL + "/mcp"
 
@@ -219,14 +220,14 @@ func TestIsLoopback(t *testing.T) {
 }
 
 func TestServeHTTPRefusesOpenAddrWithoutToken(t *testing.T) {
-	err := serveHTTP("10.0.0.2:0", "", agtermctl{})
+	err := serveHTTP("10.0.0.2:0", "", t.TempDir(), agtermctl{})
 	if err == nil || !strings.Contains(err.Error(), "-token-file") {
 		t.Errorf("serveHTTP without token on 10.0.0.2: %v", err)
 	}
 }
 
 func TestAskDefaultsToFocused(t *testing.T) {
-	s := &server{ctl: fakeAgtermctl(t)}
+	s := &server{ctl: fakeAgtermctl(t), dir: t.TempDir()}
 	_, out, err := s.ask(context.Background(), nil, askIn{Text: "hi"})
 	if err != nil || out.Target != "BBBB2222-0000:right" {
 		t.Errorf("ask without session_id = %+v, %v; want the focused pane BBBB2222-0000:right", out, err)
@@ -249,7 +250,7 @@ const blockedTreeJSON = `{"workspaces":[{"name":"w","active":true,"sessions":[
 
 func TestAskRefusesBlocked(t *testing.T) {
 	ctl, calls := fakeAgtermctlTree(t, blockedTreeJSON)
-	s := &server{ctl: ctl}
+	s := &server{ctl: ctl, dir: t.TempDir()}
 	for _, target := range []string{"", "focused", "DDDD5555-0000", "waiting", "EEEE6666-0000:right"} {
 		_, _, err := s.ask(context.Background(), nil, askIn{Text: "yes", SessionID: target})
 		if err == nil || !strings.Contains(err.Error(), "is blocked") || !strings.Contains(err.Error(), "Nothing was sent") {
@@ -266,5 +267,101 @@ func TestAskRefusesBlocked(t *testing.T) {
 	}
 	if !strings.Contains(calls(), "session type --stdin --target EEEE6666-0000") {
 		t.Errorf("the free left pane got nothing typed:\n%s", calls())
+	}
+}
+
+func TestAskSavesRequest(t *testing.T) {
+	ctl, calls := fakeAgtermctlTree(t, treeJSON)
+	dir := t.TempDir()
+	s := &server{ctl: ctl, dir: dir}
+	text := "say ALPHA\n\tthen \x1bstop"
+	before := time.Now().UnixMilli()
+	_, out, err := s.ask(context.Background(), nil, askIn{Text: text, SessionID: "AAAA1111-0000"})
+	after := time.Now().UnixMilli()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !requestIDPattern.MatchString(out.RequestID) {
+		t.Fatalf("request_id %q, want 12 lowercase hex", out.RequestID)
+	}
+	if got := s.lastRequest(); got != out.RequestID {
+		t.Errorf("last request_id %q, want %q", got, out.RequestID)
+	}
+	r, err := loadRequest(dir, out.RequestID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.SentAt < before || r.SentAt > after {
+		t.Errorf("sent_at %d outside [%d, %d]", r.SentAt, before, after)
+	}
+	want := request{
+		ID:     out.RequestID,
+		Target: "AAAA1111-0000",
+		PaneID: "PANE-A1-LEFT",
+		Name:   "agent",
+		Agent:  "claude",
+		Hash:   promptHash("say ALPHA\n\tthen stop"), // pastePayload types the text without ESC
+		SentAt: r.SentAt,
+	}
+	if r != want {
+		t.Errorf("request\n got %+v\nwant %+v", r, want)
+	}
+	if !strings.Contains(calls(), "session type --stdin --target AAAA1111-0000") {
+		t.Errorf("nothing typed:\n%s", calls())
+	}
+
+	// A right split gets its own pane id, and a second ask becomes the session's last.
+	_, out2, err := s.ask(context.Background(), nil, askIn{Text: "hi", SessionID: "BBBB2222-0000:right"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out2.RequestID == out.RequestID || s.lastRequest() != out2.RequestID {
+		t.Errorf("second ask: request_id %q, last %q, first %q", out2.RequestID, s.lastRequest(), out.RequestID)
+	}
+	if r2, err := loadRequest(dir, out2.RequestID); err != nil || r2.PaneID != "PANE-B2-RIGHT" || r2.Agent != "codex" {
+		t.Errorf("right split request: %+v, %v", r2, err)
+	}
+}
+
+func TestAskUnsavableRequestSendsNothing(t *testing.T) {
+	ctl, calls := fakeAgtermctlTree(t, treeJSON)
+	// A file where the state dir should be: the requests dir cannot be created.
+	dir := filepath.Join(t.TempDir(), "state")
+	if err := os.WriteFile(dir, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, d := range map[string]string{"unwritable state dir": dir, "no state dir": ""} {
+		t.Run(name, func(t *testing.T) {
+			s := &server{ctl: ctl, dir: d}
+			_, out, err := s.ask(context.Background(), nil, askIn{Text: "hi", SessionID: "AAAA1111-0000"})
+			if err == nil || !strings.Contains(err.Error(), "save request") || !strings.Contains(err.Error(), "Nothing was sent") {
+				t.Errorf("err %v, want a save request error", err)
+			}
+			if out.RequestID != "" || s.lastRequest() != "" {
+				t.Errorf("request_id %q, last %q; want none", out.RequestID, s.lastRequest())
+			}
+		})
+	}
+	if strings.Contains(calls(), "session type") {
+		t.Fatalf("typed after a failed save:\n%s", calls())
+	}
+}
+
+func TestAskFailedSendIsNotLast(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "agtermctl")
+	// tree works, session type fails
+	script := "#!/bin/sh\ncase \"$1\" in tree) echo '{\"result\":{\"tree\":" + strings.ReplaceAll(treeJSON, "\n", "") +
+		"}}' ;; *) echo '{\"ok\":false,\"error\":\"no such session\"}' ;; esac\n"
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s := &server{ctl: agtermctl{bin: bin}, dir: t.TempDir()}
+	_, out, err := s.ask(context.Background(), nil, askIn{Text: "hi", SessionID: "AAAA1111-0000"})
+	if err == nil || !strings.Contains(err.Error(), "no such session") {
+		t.Fatalf("err %v, want the send error", err)
+	}
+	if out.RequestID != "" || s.lastRequest() != "" {
+		t.Errorf("request_id %q, last %q after a failed send; want none", out.RequestID, s.lastRequest())
 	}
 }

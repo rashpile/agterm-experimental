@@ -30,8 +30,9 @@ func selfFromHeaders(h http.Header) selfAddr {
 
 // httpHandler serves MCP at /mcp. The SDK calls getServer once per new client session, so
 // every session gets its own self pane, read from that session's first request. A non-empty
-// token makes every request carry it as a bearer token.
-func httpHandler(ctl agtermctl, token string) http.Handler {
+// token makes every request carry it as a bearer token. dir is the state dir every session's
+// server keeps its requests in.
+func httpHandler(ctl agtermctl, token, dir string) http.Handler {
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		self := selfFromHeaders(r.Header)
 		if self.SessionID == "" {
@@ -39,7 +40,7 @@ func httpHandler(ctl agtermctl, token string) http.Handler {
 		} else {
 			log.Printf("new session from %s, self %s:%s", r.RemoteAddr, self.SessionID, self.Pane)
 		}
-		return newMCPServer(&server{ctl: ctl, self: self})
+		return newMCPServer(&server{ctl: ctl, self: self, dir: dir})
 	}, &mcp.StreamableHTTPOptions{SessionTimeout: 24 * time.Hour})
 
 	mux := http.NewServeMux()
@@ -103,7 +104,7 @@ func isLoopback(addr string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func serveHTTP(addr, tokenFile string, ctl agtermctl) error {
+func serveHTTP(addr, tokenFile, dir string, ctl agtermctl) error {
 	var token string
 	if tokenFile != "" {
 		var err error
@@ -114,7 +115,7 @@ func serveHTTP(addr, tokenFile string, ctl agtermctl) error {
 	if token == "" && !isLoopback(addr) {
 		return fmt.Errorf("%s accepts connections from other machines, and anyone who connects can type into your sessions; pass -token-file", addr)
 	}
-	srv := &http.Server{Addr: addr, Handler: httpHandler(ctl, token), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Addr: addr, Handler: httpHandler(ctl, token, dir), ReadHeaderTimeout: 10 * time.Second}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

@@ -27,6 +27,7 @@ type Pane struct {
 	Focused    bool   `json:"focused,omitempty" jsonschema:"the pane that has focus in agterm's frontmost window"`
 
 	sessionID string
+	paneID    string // agterm's stable pane id, the AGTERM_PANE_ID the pane's shell gets
 }
 
 type rawSession struct {
@@ -43,6 +44,7 @@ type rawSession struct {
 	Surfaces        []struct {
 		Kind   string `json:"kind"`
 		Active bool   `json:"active"`
+		PaneID string `json:"paneID"`
 	} `json:"surfaces"`
 }
 
@@ -99,6 +101,7 @@ func panesFromTree(t rawTree, self selfAddr) []Pane {
 			}
 			left := makePane(ws.Name, s, "left", s.Cwd, s.Foreground, self)
 			left.Focused = focus == "left"
+			left.paneID = surfacePaneID(s, "left")
 			out = append(out, left)
 			for _, sf := range s.Surfaces {
 				if sf.Kind == "right" {
@@ -108,6 +111,7 @@ func panesFromTree(t rawTree, self selfAddr) []Pane {
 					}
 					right := makePane(ws.Name, s, "right", cwd, s.SplitForeground, self)
 					right.Focused = focus == "right"
+					right.paneID = sf.PaneID
 					out = append(out, right)
 					break
 				}
@@ -115,6 +119,30 @@ func panesFromTree(t rawTree, self selfAddr) []Pane {
 		}
 	}
 	return out
+}
+
+// surfacePaneID is the pane id of the session's first surface of the given kind, or "".
+func surfacePaneID(s rawSession, kind string) string {
+	for _, sf := range s.Surfaces {
+		if sf.Kind == kind {
+			return sf.PaneID
+		}
+	}
+	return ""
+}
+
+// findPaneByID returns the pane with agterm pane id id. An empty id matches nothing, so a tree
+// without pane ids never matches.
+func findPaneByID(panes []Pane, id string) (Pane, bool) {
+	if id == "" {
+		return Pane{}, false
+	}
+	for _, p := range panes {
+		if p.paneID == id {
+			return p, true
+		}
+	}
+	return Pane{}, false
 }
 
 func makePane(ws string, s rawSession, pane, cwd string, fg []string, self selfAddr) Pane {

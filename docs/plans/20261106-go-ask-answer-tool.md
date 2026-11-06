@@ -266,14 +266,14 @@ skipped and `detail` says which; that alone never makes a request `lost`.
 - Modify: `mcps/go-ask/http.go`
 - Modify: `mcps/go-ask/http_test.go`
 
-- [ ] add the pane id to the tree parsing (`rawSession.Surfaces[].PaneID`, `Pane.paneID` from the surface of the same kind) and `findPaneByID` in `mcps/go-ask/agterm.go`
-- [ ] add `request`, `newRequestID()`, `saveRequest(dir, r)` (temp + rename, 0600), `loadRequest(dir, id)` (id must match `^[0-9a-f]{12}$`) in `mcps/go-ask/requests.go`
-- [ ] give `server` a state dir field and a mutex-guarded last `request_id`; pass the dir explicitly: `httpHandler(ctl, token, dir)` and `serveHTTP(addr, tokenFile, dir, ctl)`, `main` passes `stateDir()`; every existing test that builds a `server` or calls `httpHandler` passes `t.TempDir()`
-- [ ] in `ask`, after the target checks and before `send`: take `sent_at`, build the request (hash of the text with ESC removed, target, pane id, name, agent), save it, then send; a failed save returns the error and sends nothing; return `request_id` in `askOut` and remember it as the session's last
-- [ ] write tests for the pane id: `panesFromTree` sets it for left and right panes (add `paneID` to the `treeJSON` fixture), `findPaneByID` found and not found
-- [ ] write tests for the store: save/load round trip, file mode 0600, a bad id (`../x`, uppercase, wrong length) refused, unknown id error
-- [ ] write tests for `ask`: the request file exists with the right hash, pane id and fields and `request_id` is returned (fake agtermctl, temp state dir); an unwritable state dir sends nothing (the fake's call log has no `session type`); existing `ask` tests still pass and `git status` stays clean after `go test`
-- [ ] run tests - must pass before task 4
+- [x] add the pane id to the tree parsing (`rawSession.Surfaces[].PaneID`, `Pane.paneID` from the surface of the same kind) and `findPaneByID` in `mcps/go-ask/agterm.go`
+- [x] add `request`, `newRequestID()`, `saveRequest(dir, r)` (temp + rename, 0600), `loadRequest(dir, id)` (id must match `^[0-9a-f]{12}$`) in `mcps/go-ask/requests.go`
+- [x] give `server` a state dir field and a mutex-guarded last `request_id`; pass the dir explicitly: `httpHandler(ctl, token, dir)` and `serveHTTP(addr, tokenFile, dir, ctl)`, `main` passes `stateDir()`; every existing test that builds a `server` or calls `httpHandler` passes `t.TempDir()`
+- [x] in `ask`, after the target checks and before `send`: take `sent_at`, build the request (hash of the text with ESC removed, target, pane id, name, agent), save it, then send; a failed save returns the error and sends nothing; return `request_id` in `askOut` and remember it as the session's last
+- [x] write tests for the pane id: `panesFromTree` sets it for left and right panes (add `paneID` to the `treeJSON` fixture), `findPaneByID` found and not found
+- [x] write tests for the store: save/load round trip, file mode 0600, a bad id (`../x`, uppercase, wrong length) refused, unknown id error
+- [x] write tests for `ask`: the request file exists with the right hash, pane id and fields and `request_id` is returned (fake agtermctl, temp state dir); an unwritable state dir sends nothing (the fake's call log has no `session type`); existing `ask` tests still pass and `git status` stays clean after `go test`
+- [x] run tests - must pass before task 4
 
 ### Task 4: Request state from the journal
 

@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -28,6 +30,22 @@ const version = "0.1.0"
 type server struct {
 	ctl  agtermctl
 	self selfAddr
+	dir  string // state dir: turn journals and requests
+
+	mu            sync.Mutex
+	lastRequestID string // the request_id this MCP session's last ask returned
+}
+
+func (s *server) setLastRequest(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastRequestID = id
+}
+
+func (s *server) lastRequest() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastRequestID
 }
 
 type sessionsIn struct {
@@ -44,10 +62,11 @@ type askIn struct {
 }
 
 type askOut struct {
-	Sent   bool   `json:"sent"`
-	Target string `json:"target"`
-	Name   string `json:"name"`
-	Agent  string `json:"agent,omitempty"`
+	Sent      bool   `json:"sent"`
+	Target    string `json:"target"`
+	Name      string `json:"name"`
+	Agent     string `json:"agent,omitempty"`
+	RequestID string `json:"request_id" jsonschema:"pass to answer to get the reply to this message"`
 }
 
 func (s *server) sessions(ctx context.Context, _ *mcp.CallToolRequest, in sessionsIn) (*mcp.CallToolResult, sessionsOut, error) {
@@ -84,10 +103,29 @@ func (s *server) ask(ctx context.Context, _ *mcp.CallToolRequest, in askIn) (*mc
 	if err := checkSendable(p); err != nil {
 		return nil, askOut{}, err
 	}
+	id, err := newRequestID()
+	if err != nil {
+		return nil, askOut{}, fmt.Errorf("new request_id: %w", err)
+	}
+	// The request is saved before the send: a reply must never arrive for a request that answer
+	// cannot find. The hash is of the text pastePayload types, which has ESC removed.
+	req := request{
+		ID:     id,
+		Target: p.Target,
+		PaneID: p.paneID,
+		Name:   p.Name,
+		Agent:  p.Agent,
+		Hash:   promptHash(strings.ReplaceAll(in.Text, "\x1b", "")),
+		SentAt: time.Now().UnixMilli(),
+	}
+	if err := saveRequest(s.dir, req); err != nil {
+		return nil, askOut{}, fmt.Errorf("save request: %w. Nothing was sent", err)
+	}
 	if err := s.ctl.send(ctx, p, in.Text); err != nil {
 		return nil, askOut{}, fmt.Errorf("send to %s: %w", p.Target, err)
 	}
-	return nil, askOut{Sent: true, Target: p.Target, Name: p.Name, Agent: p.Agent}, nil
+	s.setLastRequest(id)
+	return nil, askOut{Sent: true, Target: p.Target, Name: p.Name, Agent: p.Agent, RequestID: id}, nil
 }
 
 // newMCPServer builds one MCP server around s. stdio runs one for the process; HTTP runs one per
@@ -131,14 +169,15 @@ func main() {
 	log.SetFlags(0)
 	log.SetPrefix("go-ask: ")
 	ctl := agtermctl{bin: findAgtermctl()}
+	dir := stateDir()
 
 	if *httpMode {
-		if err := serveHTTP(*addr, *tokenFile, ctl); err != nil {
+		if err := serveHTTP(*addr, *tokenFile, dir, ctl); err != nil {
 			log.Fatal(err)
 		}
 		return
 	}
-	s := &server{ctl: ctl, self: selfFromEnv()}
+	s := &server{ctl: ctl, self: selfFromEnv(), dir: dir}
 	if err := newMCPServer(s).Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		log.Fatal(err)
 	}
