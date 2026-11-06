@@ -111,10 +111,10 @@ func strp(s string) *string { return &s }
 func TestJournalRoundTrip(t *testing.T) {
 	path := journalPath(t.TempDir(), "pane-1")
 	recs := []turnRecord{
-		{Event: "prompt", T: 1000, Session: "s1", Hash: promptHash("say ALPHA")},
-		{Event: "stop", T: 2000, Session: "s1", Reply: strp("ALPHA")},
+		{Event: "prompt", T: 1000, Session: "s1", PromptID: "p1", Hash: promptHash("say ALPHA")},
+		{Event: "stop", T: 2000, Session: "s1", PromptID: "p1", Reply: strp("ALPHA")},
 		{Event: "prompt", T: 3000, Session: "s1", Hash: promptHash("again")},
-		{Event: "stop", T: 4000, Session: "s1", Reply: strp("")},
+		{Event: "stop", T: 4000, Session: "s1", Reply: strp(""), StopHookActive: true},
 	}
 	for _, r := range recs {
 		if err := appendTurn(path, r); err != nil {
@@ -141,6 +141,12 @@ func TestJournalRoundTrip(t *testing.T) {
 	}
 	if strings.Contains(lines[0], `"reply"`) || !strings.Contains(lines[3], `"reply":""`) {
 		t.Errorf("reply field on the wrong records:\n%s", raw)
+	}
+	if !strings.Contains(lines[0], `"prompt_id":"p1"`) || strings.Contains(lines[2], `"prompt_id"`) {
+		t.Errorf("prompt_id field on the wrong records:\n%s", raw)
+	}
+	if strings.Contains(lines[1], `"stop_hook_active"`) || !strings.Contains(lines[3], `"stop_hook_active":true`) {
+		t.Errorf("stop_hook_active field on the wrong records:\n%s", raw)
 	}
 }
 

@@ -12,14 +12,16 @@ import (
 type hookInput struct {
 	Event                string `json:"hook_event_name"`
 	SessionID            string `json:"session_id"`
+	PromptID             string `json:"prompt_id"`
 	Prompt               string `json:"prompt"`
 	LastAssistantMessage string `json:"last_assistant_message"`
+	StopHookActive       bool   `json:"stop_hook_active"`
 }
 
 // hookMain is `go-ask hook`, run by Claude's UserPromptSubmit and Stop hooks with the hook input
 // on stdin. It appends one record to the journal of the pane named by AGTERM_PANE_ID under dir:
-// a prompt record with the prompt's hash, or a stop record with the turn's final text. Any other
-// event, or no AGTERM_PANE_ID, writes nothing.
+// a prompt record with the prompt's hash, or a stop record with the turn's final text, both with
+// the input's prompt_id. Any other event, or no AGTERM_PANE_ID, writes nothing.
 //
 // It never writes to stdout, because UserPromptSubmit stdout becomes prompt context. A problem is
 // one "go-ask hook: ..." line on stderr. The result is always 0, so the journal never blocks
@@ -40,7 +42,7 @@ func hookMain(stdin io.Reader, stderr io.Writer, getenv func(string) string, dir
 		hookError(stderr, "parse input: %v", err)
 		return 0
 	}
-	rec := turnRecord{T: now().UnixMilli(), Session: in.SessionID}
+	rec := turnRecord{T: now().UnixMilli(), Session: in.SessionID, PromptID: in.PromptID}
 	switch in.Event {
 	case "UserPromptSubmit":
 		rec.Event = "prompt"
@@ -49,6 +51,7 @@ func hookMain(stdin io.Reader, stderr io.Writer, getenv func(string) string, dir
 		reply := in.LastAssistantMessage
 		rec.Event = "stop"
 		rec.Reply = &reply
+		rec.StopHookActive = in.StopHookActive
 	default:
 		return 0
 	}

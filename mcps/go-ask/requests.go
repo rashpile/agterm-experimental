@@ -13,8 +13,8 @@ import (
 )
 
 // request is one ask, kept in requests/<id>.json so answer can find its reply later, after a
-// daemon restart too. State stays "" until a final state is stored: a non-empty State means the
-// caller has received it.
+// daemon restart too. State, Reply and FinishedAt stay empty until answer returns a final done or
+// interrupted, which it stores there with Final set; a result that is not final is never stored.
 type request struct {
 	ID         string `json:"id"`
 	Target     string `json:"target"`
@@ -26,6 +26,7 @@ type request struct {
 	State      string `json:"state"`
 	Reply      string `json:"reply"`
 	FinishedAt int64  `json:"finished_at"`
+	Final      bool   `json:"final"`
 }
 
 var requestIDPattern = regexp.MustCompile(`^[0-9a-f]{12}$`)

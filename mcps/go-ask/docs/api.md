@@ -243,6 +243,7 @@ Output:
 | `request_id` | yes | The request answered. |
 | `state` | yes | One of the states below. |
 | `reply` | no | The agent's final text for the turn, when `state` is `done`. |
+| `final` | yes | `true` when the result can no longer change, see [States](#states). |
 | `target` | yes | The target `ask` resolved. |
 | `name` | yes | Session name at the time of the `ask`. |
 | `sent_at` | yes | When `ask` sent the message, Unix milliseconds. |
@@ -253,18 +254,34 @@ Output:
 
 | State | Meaning |
 |-------|---------|
-| `done` | The turn ended with text. `reply` holds it. |
-| `interrupted` | The turn ended without a reply. Either Claude stopped with an empty final message, or the same Claude session started its next turn before this one stopped. Claude runs no `Stop` hook when the user interrupts a turn, so the next prompt is the only sign that it ended. |
+| `done` | The turn stopped with text. `reply` holds it. |
+| `interrupted` | The turn ended without a reply. Either Claude stopped with an empty final message, or the same Claude session started its next turn before this one stopped. Claude runs no `Stop` hook when the user interrupts a turn, so the next turn is the only sign that it ended. |
 | `running` | The turn started and hasn't ended. |
 | `blocked` | The turn started and hasn't ended, and the target's agterm status is `blocked`. The agent waits for a person to answer a permission prompt or a question. |
 | `pending` | No turn has started for this message. If it stays `pending`, the target Claude may lack the go-ask hooks, or Claude changed the text in a way go-ask doesn't undo. |
 | `lost` | No turn matches the message, and a turn that started before the send ended after it. Claude most likely folded the message into that turn, so it has no turn or reply of its own. Claude Code 2.1.319 journals a queued message at once, so this is rare, see [Messages sent while a turn runs](#messages-sent-while-a-turn-runs). |
 | `unsupported` | The target is not Claude, or `ask` found no agent in it. |
 
-`done` and `interrupted` are final. The first `answer` that returns one stores it in the request,
-with `reply` and `finished_at`, and every later call returns the stored result without reading the
-journal. `unsupported` never changes either, since it depends only on the agent `ask` recorded. The
-other states describe the journal at the time of the call.
+`final` says the result can no longer change. A `done` or `interrupted` result is final only when
+all of these hold:
+
+- the matched prompt record opened a turn of its own: no earlier record of its Claude session in the
+  journal has its `prompt_id`;
+- the journal holds the `Stop` of that turn. Claude runs no `Stop` hook when the user interrupts a
+  turn, so a turn interrupted that way is never final;
+- the session's next turn has started: the journal holds a record of the session with another
+  `prompt_id`. A stop record alone doesn't prove the turn is over, since a `Stop` hook can make
+  Claude carry on and stop again with other text;
+- the session's records in the whole journal show no queue: no prompt record has a `prompt_id` an
+  earlier record has, no stop has a `prompt_id` that no prompt record before it has, and every
+  record has a `prompt_id`, see [Messages sent while a turn runs](#messages-sent-while-a-turn-runs);
+- no other prompt record at or after `sent_at` has the same text.
+
+Any other `done` or `interrupted` is go-ask's best answer, with `final` `false`. When it can never
+become final, `detail` says why. The first `answer` that returns a final result stores it in the
+request, and every later call returns the stored result without reading the journal. A result that
+isn't final is never stored. `unsupported` is final too, since it depends only on the agent `ask`
+recorded. The other states describe the journal at the time of the call.
 
 For `blocked`, go-ask looks the target up in agterm's tree by its pane id. The tree lists only the
 frontmost window's sessions, so a target in another window, a closed session or a failing
@@ -278,20 +295,26 @@ The hooks write each turn of the target pane to the pane's journal, see
 [Turn journal](#turn-journal). `answer` reads that journal and:
 
 1. keeps only the records at or after `sent_at`;
-2. groups them into turns per Claude session. A prompt record opens a turn of its session. The turn
-   holds that session's records up to the session's next prompt record, and its reply is its last
-   stop record. A `Stop` hook that makes Claude carry on gives a turn two stop records, and the
-   second one holds the final text;
-3. takes the last prompt record whose hash equals the request's hash, and reports the state of its
-   turn.
+2. takes the last prompt record whose hash equals the request's hash, and reports the state of the
+   turn that answers it.
+
+A turn is the records of one Claude session with one `prompt_id`, and its reply is its last stop
+record. A prompt record with the turn's `prompt_id` is a message queued into the turn, see
+[Messages sent while a turn runs](#messages-sent-while-a-turn-runs). A record of the session with
+another `prompt_id` belongs to a later turn, so the turn is over. A `Stop` hook that makes Claude
+carry on gives a turn two stop records, and the second one holds the final text. Claude marks that
+second `Stop` with `stop_hook_active`, and go-ask counts it to the same turn whatever its
+`prompt_id`.
 
 Grouping by session keeps a nested `claude -p` that runs inside the pane out of the turn. It writes
 to the same journal under its own `session_id`, so it neither ends the turn nor gives its reply.
 
-The last matching turn wins until a final state is delivered. While the request has no stored
-state, a newer turn with the same text takes over the request. Send the same message twice and
-`answer` follows the second one. Once `answer` has returned `done` or `interrupted`, the request
-keeps that result.
+A Claude that sends no `prompt_id` writes records without one. go-ask can't tell a queued message
+from a new turn then, so it ends a turn at the session's next prompt record, and no result is final.
+
+The last matching turn wins until a result is final. Send the same text twice and the first
+request's `answer` follows the second message. Its result is never final, since go-ask can't tell
+which of the two messages is the request's.
 
 No tag goes into the message. go-ask matches the text itself, after both sides go through the same
 normalization:
@@ -311,18 +334,40 @@ it types. These rules undo every change Claude Code 2.1.319 made to the text go-
 ### Messages sent while a turn runs
 
 `ask` sends to a busy agent, and Claude queues the message. Claude Code 2.1.319 fires
-`UserPromptSubmit` for a queued message at once, while the running turn still runs. The state rules
-above read that wrong, in two ways that were measured:
+`UserPromptSubmit` for a queued message at once, while the running turn still runs, with the running
+turn's `prompt_id`. Every `Stop` of that turn has the same `prompt_id`. So the queued message's
+prompt record doesn't end the running turn, and that turn's request gets the turn's own reply.
 
-- the running turn's request becomes `interrupted` as soon as the queued message's prompt record
-  lands, and `answer` stores that as final. Its real reply is never returned;
-- when the running turn makes no tool call, it ends with its own `Stop`, and the queued message then
-  runs as a turn of its own with a second `Stop` and no prompt record. An `answer` for the queued
-  message between those two stops returns `done` with the earlier turn's reply, and stores it.
+Claude then does one of two things with the queued message:
 
-When the queued message lands in a turn with tool calls, Claude folds it into that turn, and the
-queued message's `done` reply is right. To get a reliable answer, send to an agent whose status is
-`idle` or `completed`.
+- when the running turn makes a tool call after the message came in, Claude folds the message into
+  that turn. The turn's one `Stop` answers both messages;
+- otherwise the running turn ends with its own `Stop`, and Claude runs the queued message next as a
+  turn of its own. That turn has a new `prompt_id` and no prompt record, so it starts with a stop
+  record.
+
+The journal shows which one happened only once that second stop shows up, and not always then. A
+message sent while a queued message runs as a turn of its own carries that turn's `prompt_id`, which
+no prompt record has, so it looks like a message that opened a turn of its own. The same holds for
+every message of a chain in which each one comes while the one before it runs as a turn of its own.
+
+So go-ask doesn't guess where a queued message's turn starts. Once the journal shows a queue in a
+Claude session, no result from that session is final, see [States](#states):
+
+- a queued message, one whose `prompt_id` an earlier record of its session has, gets the reply of
+  the turn it was queued into, and a `detail` that says so. If agterm shows the target `active` or
+  `blocked` after that turn stopped, the state is `running` or `blocked` instead. When a stop of a
+  new `prompt_id` follows that turn, that stop's reply, most likely from the message's own turn,
+  replaces the earlier one;
+- any other message gets its turn's last stop as usual, and a `detail` that says the session shows
+  a queue.
+
+The queue stays in the journal until a trim drops it. So once a message reached a busy agent,
+`answer` returns `final` `false` for every message of that Claude session, and a new Claude session
+starts clean. go-ask sees a queue only in the records the journal still holds. When a trim dropped
+the start of one, a message can look like it opened a turn of its own. So can a message sent into a
+turn that Claude started without a prompt, if Claude does that, since nothing shows such a turn
+before its stop. Send to an idle agent to stay clear of all of this.
 
 Example:
 
@@ -334,7 +379,7 @@ Example:
 ```json
 {"jsonrpc": "2.0", "id": 6, "result": {
   "structuredContent": {"request_id": "3f9a0c1b2d4e", "state": "done",
-                        "reply": "All 42 tests pass.", "target": "7E1C11A9-3D4B-4609-AFAB-0DFD423D961C",
+                        "reply": "All 42 tests pass.", "final": true, "target": "7E1C11A9-3D4B-4609-AFAB-0DFD423D961C",
                         "name": "agent", "sent_at": 1793987000000, "finished_at": 1793987041250},
   "content": [{"type": "text", "text": "{\"request_id\":\"3f9a0c1b2d4e\",...}"}]}}
 ```
@@ -342,7 +387,7 @@ Example:
 A call before the turn started:
 
 ```json
-{"request_id": "3f9a0c1b2d4e", "state": "pending", "target": "7E1C11A9-3D4B-4609-AFAB-0DFD423D961C",
+{"request_id": "3f9a0c1b2d4e", "state": "pending", "final": false, "target": "7E1C11A9-3D4B-4609-AFAB-0DFD423D961C",
  "name": "agent", "sent_at": 1793987000000,
  "detail": "No turn has started for this message yet; if this persists, the go-ask hooks may not be installed for this agent, or Claude changed the text."}
 ```
@@ -352,11 +397,13 @@ A call before the turn started:
 `go-ask hook` is the Claude Code hook that feeds `answer`. Install it for `UserPromptSubmit` and
 `Stop`, see [usage.md](usage.md#hooks-for-answer). Claude runs it with the hook input on stdin, in
 the environment of the pane Claude runs in. The hook reads `hook_event_name`, `session_id`,
-`prompt` and `last_assistant_message` from the input, and `AGTERM_PANE_ID` from the environment.
-It appends one record to the pane's journal:
+`prompt_id`, `prompt`, `last_assistant_message` and `stop_hook_active` from the input, and
+`AGTERM_PANE_ID` from the environment. It appends one record to the pane's journal:
 
-- `UserPromptSubmit` gives a prompt record with the hash of the normalized prompt;
-- `Stop` gives a stop record with `last_assistant_message`, which may be `""`.
+- `UserPromptSubmit` gives a prompt record with the `prompt_id` and the hash of the normalized
+  prompt;
+- `Stop` gives a stop record with the `prompt_id`, `last_assistant_message`, which may be `""`, and
+  `stop_hook_active`.
 
 Other events write nothing. So does a Claude outside agterm, which has no `AGTERM_PANE_ID`.
 
@@ -383,8 +430,8 @@ replaced by `-`. Unlike `AGTERM_PANE`, the id stays with the pane through a pane
 One JSON object per line:
 
 ```json
-{"event":"prompt","t":1793987000123,"session":"f1637954-e014-4317-99a6-a9c9c6a07f69","hash":"<64 hex>"}
-{"event":"stop","t":1793987004567,"session":"f1637954-e014-4317-99a6-a9c9c6a07f69","reply":"ALPHA"}
+{"event":"prompt","t":1793987000123,"session":"f1637954-e014-4317-99a6-a9c9c6a07f69","prompt_id":"5d0c2b7e-61a4-4f0e-9b1d-3c8a2e7f4a10","hash":"<64 hex>"}
+{"event":"stop","t":1793987004567,"session":"f1637954-e014-4317-99a6-a9c9c6a07f69","prompt_id":"5d0c2b7e-61a4-4f0e-9b1d-3c8a2e7f4a10","reply":"ALPHA"}
 ```
 
 | Field | Meaning |
@@ -392,8 +439,10 @@ One JSON object per line:
 | `event` | `prompt` or `stop`. |
 | `t` | When the hook ran, Unix milliseconds. |
 | `session` | Claude's `session_id` from the hook input. |
+| `prompt_id` | Claude's `prompt_id` from the hook input, left out when Claude sends none. A message queued while a turn runs gets that turn's id. |
 | `hash` | Prompt records only. The normalized prompt's hash. The journal never holds the prompt. |
 | `reply` | Stop records only, always present, possibly `""`. The turn's final text. |
+| `stop_hook_active` | Stop records only, present as `true` when a `Stop` hook made Claude carry on before this stop. |
 
 When a journal is past 1 MiB, the next append first rewrites it to keep the newest whole lines that
 fit in 512 KiB. A trim that races an append from another process can lose that one record. Readers
@@ -406,7 +455,7 @@ skip lines that don't parse.
 ```json
 {"id":"3f9a0c1b2d4e","target":"7E1C11A9-3D4B-4609-AFAB-0DFD423D961C","pane_id":"8A7B9419-1E6E-4784-88CD-C92A985285F9",
  "name":"agent","agent":"claude","hash":"<64 hex>","sent_at":1793987000000,
- "state":"","reply":"","finished_at":0}
+ "state":"","reply":"","finished_at":0,"final":false}
 ```
 
 | Field | Meaning |
@@ -416,7 +465,8 @@ skip lines that don't parse.
 | `pane_id` | The target pane's agterm pane id, which names its journal. |
 | `hash` | Hash of the normalized text, ESC bytes removed. |
 | `sent_at` | Unix milliseconds, taken right before the send. |
-| `state`, `reply`, `finished_at` | Empty until `answer` returns `done` or `interrupted`, then that result. A non-empty `state` means the caller got it. |
+| `state`, `reply`, `finished_at` | Empty until `answer` returns a final `done` or `interrupted`, then that result. A result that isn't final is never stored. |
+| `final` | `true` once a final result is stored. `answer` then returns it without reading the journal. |
 
 Requests live on disk, so `answer` works long after the `ask` and across server restarts. go-ask
 never deletes them.

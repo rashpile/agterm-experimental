@@ -42,8 +42,9 @@ func TestHookPromptAndStop(t *testing.T) {
 	dir := t.TempDir()
 	prompt := "review this\n\tfunc main() {}  \r\n"
 	in := []string{
-		`{"hook_event_name":"UserPromptSubmit","session_id":"s-1","prompt":` + jsonString(prompt) + `,"cwd":"/x"}`,
-		`{"hook_event_name":"Stop","session_id":"s-1","last_assistant_message":"Done.\nAll good.","stop_hook_active":false}`,
+		`{"hook_event_name":"UserPromptSubmit","session_id":"s-1","prompt_id":"p-1","prompt":` + jsonString(prompt) + `,"cwd":"/x"}`,
+		`{"hook_event_name":"Stop","session_id":"s-1","prompt_id":"p-1","last_assistant_message":"Draft.","stop_hook_active":false}`,
+		`{"hook_event_name":"Stop","session_id":"s-1","prompt_id":"p-1","last_assistant_message":"Done.\nAll good.","stop_hook_active":true}`,
 	}
 	for i, stdin := range in {
 		if stderr := runHook(t, dir, hookPaneID, stdin, int64(1000+i)); stderr != "" {
@@ -55,8 +56,9 @@ func TestHookPromptAndStop(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []turnRecord{
-		{Event: "prompt", T: 1000, Session: "s-1", Hash: promptHash("review this\n    func main() {}")},
-		{Event: "stop", T: 1001, Session: "s-1", Reply: strp("Done.\nAll good.")},
+		{Event: "prompt", T: 1000, Session: "s-1", PromptID: "p-1", Hash: promptHash("review this\n    func main() {}")},
+		{Event: "stop", T: 1001, Session: "s-1", PromptID: "p-1", Reply: strp("Draft.")},
+		{Event: "stop", T: 1002, Session: "s-1", PromptID: "p-1", Reply: strp("Done.\nAll good."), StopHookActive: true},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("journal\n got %+v\nwant %+v", got, want)
@@ -73,8 +75,9 @@ func TestHookStopWithoutMessage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].Event != "stop" || got[0].Reply == nil || *got[0].Reply != "" {
-		t.Fatalf("want one stop record with an empty reply, got %+v", got)
+	if len(got) != 1 || got[0].Event != "stop" || got[0].Reply == nil || *got[0].Reply != "" ||
+		got[0].PromptID != "" || got[0].StopHookActive {
+		t.Fatalf("want one stop record with an empty reply and no prompt id, got %+v", got)
 	}
 }
 

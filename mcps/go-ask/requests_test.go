@@ -50,8 +50,8 @@ func TestRequestRoundTrip(t *testing.T) {
 		t.Errorf("round trip\n got %+v\nwant %+v", got, r)
 	}
 
-	// Storing a final state overwrites the file in place.
-	r.State, r.Reply, r.FinishedAt = "done", "ALPHA", 1793987004567
+	// Storing a result overwrites the file in place.
+	r.State, r.Reply, r.FinishedAt, r.Final = "done", "ALPHA", 1793987004567, true
 	if err := saveRequest(dir, r); err != nil {
 		t.Fatal(err)
 	}
@@ -77,10 +77,10 @@ func TestRequestFileFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// An undelivered request writes its empty state, reply and finished_at too.
+	// A request answer has not returned done or interrupted for writes its empty result too.
 	for _, field := range []string{`"id":"0123456789ab"`, `"target":"AAAA1111-0000:right"`, `"pane_id":"PANE-A1-RIGHT"`,
 		`"name":"agent"`, `"agent":"claude"`, `"hash":"` + promptHash("say ALPHA") + `"`, `"sent_at":1793987000000`,
-		`"state":""`, `"reply":""`, `"finished_at":0`} {
+		`"state":""`, `"reply":""`, `"finished_at":0`, `"final":false`} {
 		if !strings.Contains(string(data), field) {
 			t.Errorf("request file lacks %s:\n%s", field, data)
 		}

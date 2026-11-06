@@ -206,8 +206,10 @@ The state tells you where the message is:
 | `lost` | The message went into a turn the agent was already running, so it has no reply of its own. Read the answer in the session. |
 | `unsupported` | The target is not Claude. |
 
-`done` and `interrupted` stay as they are once Claude has seen them. Send the same text again
-before that, and `answer` follows the newer message.
+The reply can still change until the agent starts its next turn, for example when a Stop hook makes
+Claude carry on. `final` in the result says it no longer can, and go-ask then keeps that result.
+Send the same text twice, and `answer` for the first message follows the newer one and never says
+`final`.
 
 `answer` supports Claude only for now. For Pi, codex and the other agents it returns
 `unsupported`, and you read the reply in their session.
@@ -223,10 +225,11 @@ Claude asks permission for each tool the first time. To stop the prompts, add th
 
 - `ask` doesn't wait for the reply. The other agent gets the text as a user message and answers in
   its own session. From a Claude agent with the hooks installed, `answer` fetches that reply later.
-- Send to an agent that is idle when you want the reply back. A message sent while the agent is in
-  the middle of a turn can give both messages wrong answers. The message of the running turn shows
-  `interrupted` even when that turn finishes, and the new message can get the earlier turn's reply.
-  Both stick. [api.md](api.md#messages-sent-while-a-turn-runs) has the details.
+- A message sent while the agent is in the middle of a turn waits in Claude's queue. go-ask then
+  can't be sure which turn answers which message, so from then on no result from that Claude
+  session is `final`. The reply is go-ask's best guess, and the `detail` says so. Read the session
+  when it matters, and send to an idle agent to avoid it. A new Claude session starts clean.
+  [api.md](api.md#messages-sent-while-a-turn-runs) has the details.
 - The journal in `~/.local/state/go-ask/turns/` holds the final text of every turn of every hooked
   Claude session in agterm, up to about 1 MiB per pane. Only your user can read it. go-ask never
   deletes the request files in `~/.local/state/go-ask/requests/`.
@@ -280,5 +283,6 @@ the per-session pane over HTTP, the 403s for browser and rebinding requests, the
 token file checks and the refusal to listen off loopback without a token. For `answer` they cover
 the text normalization with the shapes Claude was seen to send, the journal with its trim and file
 modes, `go-ask hook` with good and bad input, the request store, every row of the state rules,
-`ask` saving its request, and `answer` over stdio and over two HTTP sessions. They run against a
+messages queued while a turn runs, Stop hook continuations, when a result becomes final, `ask`
+saving its request, and `answer` over stdio and over two HTTP sessions. They run against a
 fake agtermctl and a temp state dir, and touch neither agterm nor `~/.local/state`.

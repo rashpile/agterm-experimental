@@ -82,6 +82,7 @@ type answerOut struct {
 	RequestID  string `json:"request_id"`
 	State      string `json:"state" jsonschema:"done, interrupted, running, blocked, pending, lost or unsupported"`
 	Reply      string `json:"reply,omitempty" jsonschema:"the agent's final text for the turn, when state is done"`
+	Final      bool   `json:"final" jsonschema:"true when the result can no longer change: the message opened a turn of its own, that turn's Stop is in the journal, the agent's next turn has started, and no message was queued in that Claude session. Otherwise a later call can return another result"`
 	Target     string `json:"target"`
 	Name       string `json:"name"`
 	SentAt     int64  `json:"sent_at" jsonschema:"when ask sent the message, Unix milliseconds"`
@@ -162,19 +163,20 @@ func (s *server) answer(ctx context.Context, _ *mcp.CallToolRequest, in answerIn
 	}
 	var recs []turnRecord
 	target, tree := Pane{}, treeUnavailable
-	// A stored result and a non-Claude target are answered from the request alone.
-	if r.State == "" && r.Agent == "claude" {
+	// A final result and a non-Claude target are answered from the request alone.
+	if !r.Final && r.Agent == "claude" {
 		if recs, err = readTurns(journalPath(s.dir, r.PaneID)); err != nil {
 			return nil, answerOut{}, fmt.Errorf("read the turn journal of %s: %w", r.Target, err)
 		}
 		target, tree = s.findTarget(ctx, r.PaneID)
 	}
 	res := requestState(r, recs, target, tree)
-	if r.State == "" && (res.State == stateDone || res.State == stateInterrupted) {
-		r.State, r.Reply, r.FinishedAt = res.State, res.Reply, res.FinishedAt
-		// The caller gets the result even when it cannot be stored; the next call computes it
-		// again from the journal.
-		if err := saveRequest(s.dir, r); err != nil {
+	if !r.Final && res.Final && (res.State == stateDone || res.State == stateInterrupted) {
+		// Only a final result is stored; later calls return it without reading the journal. The
+		// caller gets the result even when it cannot be stored; the next call computes it again.
+		next := r
+		next.State, next.Reply, next.FinishedAt, next.Final = res.State, res.Reply, res.FinishedAt, true
+		if err := saveRequest(s.dir, next); err != nil {
 			log.Printf("answer %s: store the result: %v", r.ID, err)
 		}
 	}
@@ -182,6 +184,7 @@ func (s *server) answer(ctx context.Context, _ *mcp.CallToolRequest, in answerIn
 		RequestID:  r.ID,
 		State:      res.State,
 		Reply:      res.Reply,
+		Final:      res.Final,
 		Target:     r.Target,
 		Name:       r.Name,
 		SentAt:     r.SentAt,
@@ -229,7 +232,9 @@ func newMCPServer(s *server) *mcp.Server {
 			"or a state saying why there is none yet (running, blocked, pending, lost, interrupted, unsupported) " +
 			"with a detail sentence. Call it once when the user asks for the answer, not in a loop. " +
 			"Without request_id it answers the last ask of this MCP session. " +
-			"done and interrupted are final: later calls return the same result. Supports Claude agents only for now.",
+			"final says the result can no longer change; once any message reached the agent while it was busy, " +
+			"no result from that Claude session is final, and the reply is the best guess. " +
+			"Supports Claude agents only for now.",
 	}, s.answer)
 	return srv
 }

@@ -78,12 +78,16 @@ func promptHash(s string) string {
 
 // turnRecord is one line of a pane's journal: a prompt (with the prompt's hash) or a stop
 // (with the turn's final text). Reply is a pointer so an empty reply is written as "".
+// PromptID is Claude's prompt_id: a message queued while a turn runs gets the running turn's id,
+// and so does every Stop of that turn.
 type turnRecord struct {
-	Event   string  `json:"event"` // prompt | stop
-	T       int64   `json:"t"`     // Unix milliseconds
-	Session string  `json:"session"`
-	Hash    string  `json:"hash,omitempty"`
-	Reply   *string `json:"reply,omitempty"`
+	Event          string  `json:"event"` // prompt | stop
+	T              int64   `json:"t"`     // Unix milliseconds
+	Session        string  `json:"session"`
+	PromptID       string  `json:"prompt_id,omitempty"`
+	Hash           string  `json:"hash,omitempty"`
+	Reply          *string `json:"reply,omitempty"`
+	StopHookActive bool    `json:"stop_hook_active,omitempty"` // a stop after a Stop hook made Claude carry on
 }
 
 const (

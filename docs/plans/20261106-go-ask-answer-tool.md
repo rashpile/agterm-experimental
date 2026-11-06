@@ -333,6 +333,28 @@ skipped and `detail` says which; that alone never makes a request `lost`.
   interrupt gets a new one; each Stop carries the `prompt_id` of the turn it ends, and the Stop of
   a queued message that runs as its own turn carries a `prompt_id` no `UserPromptSubmit` had.
   Journaling `prompt_id` would tell the interrupt case from the queued one.
+- ➕ review round 1 fix: the hook journals `prompt_id` and `stop_hook_active`; a turn is one
+  session's records with one `prompt_id`, so a queued message no longer ends the running turn, and
+  a queued message takes its reply from its own turn (the first later turn that starts with a stop).
+  A stop alone is not final: `done`/`interrupted` are stored for good (`final`) only once a record
+  of the session's next turn exists. The first `done`/`interrupted` pins the request to its turn
+  (`prompt_at`) so a later identical message no longer takes it over. Ambiguous queued cases
+  (several messages queued into one turn, a new prompt after the running turn's stop) stay not
+  final. `answer` output gains `final`.
+- ➕ review round 2 fix: a message queued into a queued message's own turn (no prompt record) is
+  queued too: when an earlier record of any kind has its `prompt_id`, when a stop of a new
+  `prompt_id` follows its turn and no other prompt record carries its id, or (a guess, not final
+  until its own turn shows up) when it came right after the stop of a turn with a queued message
+  whose own turn has not shown up. go-ask looks back one queued message only; api.md says so.
+- ➕ review round 3 fix (the user's rule, replacing the round 2 guesses): go-ask no longer guesses
+  where a queued message's own turn starts. A `done`/`interrupted` result is final only when the
+  matched prompt record opened its own turn (no earlier record of its session has its
+  `prompt_id`), that turn's Stop is in the journal, the session's next turn has started, the
+  session's records in the whole journal show no queue (no prompt record sharing a `prompt_id`
+  with an earlier record, no stop whose `prompt_id` no prompt record before it has, no record
+  without a `prompt_id`), and no other prompt record in the window has the same text. Every other
+  result is the best reply with `final: false` and is never stored; the request file loses
+  `prompt_at`. A turn interrupted with no Stop is never final.
 
 ### Task 7: [Final] Update documentation
 

@@ -404,8 +404,8 @@ func TestHTTPAnswerPerSession(t *testing.T) {
 	}
 	// b asked last, so records after its send are in both windows.
 	writeTurns(t, journalPath(dir, "PANE-A1-LEFT"),
-		promptRec(rb.SentAt+10, mainSID, "say ALPHA"), stopRec(rb.SentAt+20, mainSID, "ALPHA"),
-		promptRec(rb.SentAt+30, mainSID, "say BETA"), stopRec(rb.SentAt+40, mainSID, "BETA"))
+		promptRec(rb.SentAt+10, mainSID, "p1", "say ALPHA"), stopRec(rb.SentAt+20, mainSID, "p1", "ALPHA"),
+		promptRec(rb.SentAt+30, mainSID, "p2", "say BETA"), stopRec(rb.SentAt+40, mainSID, "p2", "BETA"))
 
 	for _, c := range []struct {
 		cs    *mcp.ClientSession
