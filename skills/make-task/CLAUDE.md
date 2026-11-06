@@ -12,7 +12,7 @@ nothing.
 
 ## Tests
 
-Run: `uv run --with pytest --with markdown-it-py --with pyyaml pytest skills/make-task/tests -q`
+Run: `uv run --with pytest --with markdown-it-py --with mdit-py-plugins --with pyyaml pytest skills/make-task/tests -q`
 
 Tests often run inside agterm, so they must never reach the live terminal. An autouse fixture in
 `tests/conftest.py` removes every `AGTERM_*` variable, puts a fake `agtermctl` (`tests/fake_agtermctl.py`)

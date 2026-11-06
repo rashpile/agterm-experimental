@@ -4,9 +4,9 @@ Tests run inside agterm (exec subagents included), so one autouse fixture cuts
 every link to the live terminal and to the user's state: no AGTERM_* variables,
 state and profiles (MT_CONFIG_HOME) under tmp_path, the profile templates
 (MT.PROFILE_TEMPLATES) under tmp_path, the profile every `mt init` runs
-(isolate.profile_dir, outside MT_CONFIG_HOME) under tmp_path, a stub renderer, a
-fixture installed_plugins.json (for plugin: sources), a fake agtermctl and a stub
-revmux first on PATH, and git with no global or system config.
+(isolate.profile_dir, outside MT_CONFIG_HOME) under tmp_path, a fixture
+installed_plugins.json (for plugin: sources), a fake agtermctl and a stub revmux
+first on PATH, and git with no global or system config.
 """
 
 from __future__ import annotations
@@ -62,12 +62,6 @@ fi
 echo "${branch:-main}"
 """
 
-VIEW_STUB = """#!{python}
-import pathlib, sys
-src, out = sys.argv[1], sys.argv[sys.argv.index("-o") + 1]
-pathlib.Path(out).write_text("<html><body><pre>" + pathlib.Path(src).read_text() + "</pre></body></html>")
-"""
-
 
 def write_exec(path: Path, text: str) -> Path:
     """Write an executable file, creating its parent directories."""
@@ -88,7 +82,6 @@ class Env:
     plugins_json: Path
     planning_root: Path
     revmux_root: Path
-    view: Path
     agterm_log: Path
     agterm_replies: Path
 
@@ -135,9 +128,6 @@ def isolate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Env:
     monkeypatch.setenv("MT_PLUGINS_JSON", str(plugins_json))
 
     bindir = tmp_path / "bin"
-    view = bindir / "view-stub"
-    write_exec(view, VIEW_STUB.format(python=sys.executable))
-    monkeypatch.setenv("MT_VIEW", str(view))
     # a profile's review phase `requires: [revmux]`; the stub keeps that check quiet (it never runs a review)
     write_exec(bindir / "revmux", "#!/bin/sh\nexit 0\n")
 
@@ -168,7 +158,6 @@ def isolate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Env:
         plugins_json=plugins_json,
         planning_root=planning_root,
         revmux_root=revmux_root,
-        view=view,
         agterm_log=agterm_log,
         agterm_replies=agterm_replies,
     )

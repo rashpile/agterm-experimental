@@ -15,7 +15,7 @@ The first run installs `default` and asks one question, the autonomy. `--update`
 - `uv`: every `scripts/mt` call is `uv run -q --script …`
 - for the review: the `revmux` CLI on PATH, `jq`, and the model CLIs (`claude`, `codex`) its review profile names; the copy's `preflight.sh` checks them. Without them the review is skipped and the run ends `review skipped`, never `clean`
 - no umputun or revmux plugin: the profile's copies take their place
-- optional: agterm for the dashboard and the sidebar status; `revdiff` for the Changes button (disabled without it); the `view` skill at `~/.claude/skills/view/scripts/view.py`, or `MT_VIEW`, to render artifacts (a plugin-installed `view` is not found; without a renderer the artifact buttons stay disabled); network access for a companion with a `git:` source (`--update` only); `gh` to file an issue proposal
+- optional: agterm for the dashboard and the sidebar status; `revdiff` for the Changes button (disabled without it); network access for a companion with a `git:` source (`--update` only); `gh` to file an issue proposal
 
 **What it changes:**
 - the first run creates `~/.config/make-task/profiles/default/`; `--update` and the interview edit `profile.md` and `UPDATE.md` there

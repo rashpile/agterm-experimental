@@ -372,14 +372,6 @@ def test_review_md_skips_rounds_without_result(mt, review_run, tmp_path):
     assert "## Round 2" not in (run / "review.md").read_text()
 
 
-def test_result_without_renderer_registers_artifact(mt, review_run, monkeypatch, run_state):
-    run, _ = review_run
-    monkeypatch.setenv("MT_VIEW", "/nonexistent/view.py")
-    assert mt("review", "result", str(FINDINGS), "--round", "1").code == 0
-    art = next(a for a in run_state(run)["artifacts"] if a["id"] == "review")
-    assert art["html"] is None and (run / "review.md").is_file()
-
-
 # ---------------------------------------------------------------- result errors
 
 

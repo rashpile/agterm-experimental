@@ -197,15 +197,15 @@
 - Modify: `docs/make-task.md`
 - Modify: `skills/make-task/CLAUDE.md`
 
-- [ ] add `mdit-py-plugins` to `mt`'s script dependencies, then run `uv run -q --script skills/make-task/scripts/mt status` once to prove the dependency resolves
-- [ ] add `render_markdown` and `render_inline` as in Technical Details
-- [ ] create `assets/doc.html`: the static page template with the dashboard's tokens and the mockup's doc styles (headings, lists, tables, code blocks, blockquotes, task lists, footnotes)
-- [ ] make `render_artifact` render with `render_markdown` into `artifacts/<id>.html` from `doc.html` (text files as a code block, as `text_as_markdown` does); keep the mtime caching
-- [ ] remove `renderer_path`, `renderer_argv`, `MT_VIEW`, the `renderer` init/state field and the "no renderer" path, everywhere: `mt` (docstring included), `SKILL.md` (Start step 2 fields, the Errors row "revdiff / view renderer missing"), the requirement lines in `skills/make-task/README.md` and `docs/make-task.md`; add `--with mdit-py-plugins` to the test command in `CLAUDE.md`
-- [ ] update tests that used the renderer: `conftest.py` (drop the view stub and `MT_VIEW`), `test_artifacts.py` (the `view_log` stub, `test_no_renderer`, `test_renderer_argv*`, `test_renderer_failure_*`, `test_renderer_writes_nothing`, `test_renderer_timeout_*`; `RENDER_TIMEOUT` goes), `test_state.py` (the `renderer` field, `test_no_renderer`, `test_isolation_holds`), `test_review.py` (`test_result_without_renderer_registers_artifact`)
-- [ ] write tests for `render_markdown` and `render_inline`: tables, task lists, footnotes, `doc-` heading ids and `toc`, raw HTML shown as text, empty input
-- [ ] write tests for `render_artifact`: page written, unchanged mtime skips, text source, missing source warns
-- [ ] run tests - must pass before task 4
+- [x] add `mdit-py-plugins` to `mt`'s script dependencies, then run `uv run -q --script skills/make-task/scripts/mt status` once to prove the dependency resolves
+- [x] add `render_markdown` and `render_inline` as in Technical Details
+- [x] create `assets/doc.html`: the static page template with the dashboard's tokens and the mockup's doc styles (headings, lists, tables, code blocks, blockquotes, task lists, footnotes)
+- [x] make `render_artifact` render with `render_markdown` into `artifacts/<id>.html` from `doc.html` (text files as a code block, as `text_as_markdown` does); keep the mtime caching
+- [x] remove `renderer_path`, `renderer_argv`, `MT_VIEW`, the `renderer` init/state field and the "no renderer" path, everywhere: `mt` (docstring included), `SKILL.md` (Start step 2 fields, the Errors row "revdiff / view renderer missing"), the requirement lines in `skills/make-task/README.md` and `docs/make-task.md`; add `--with mdit-py-plugins` to the test command in `CLAUDE.md`
+- [x] update tests that used the renderer: `conftest.py` (drop the view stub and `MT_VIEW`), `test_artifacts.py` (the `view_log` stub, `test_no_renderer`, `test_renderer_argv*`, `test_renderer_failure_*`, `test_renderer_writes_nothing`, `test_renderer_timeout_*`; `RENDER_TIMEOUT` goes), `test_state.py` (the `renderer` field, `test_no_renderer`, `test_isolation_holds`), `test_review.py` (`test_result_without_renderer_registers_artifact`)
+- [x] write tests for `render_markdown` and `render_inline`: tables, task lists, footnotes, `doc-` heading ids and `toc`, raw HTML shown as text, empty input
+- [x] write tests for `render_artifact`: page written, unchanged mtime skips, text source, missing source warns
+- [x] run tests - must pass before task 4
 
 ### Task 4: Artifact data scripts and the document payload
 

@@ -60,7 +60,7 @@ def test_init_creates_run_dir_pointer_and_json_line(mt, git_repo, isolate, run_s
     assert info["dirty_paths"] == []
     assert info["start_cwd"] == str(git_repo)
     assert info["agterm"] is False
-    assert info["renderer"] == str(isolate.view)
+    assert "renderer" not in info
     assert info["revdiff"] is (MT.shutil.which("revdiff") is not None)
 
     state = run_state(run)
@@ -561,11 +561,6 @@ def test_plugin_entry_prefers_user_scope_and_skips_stale_paths(tmp_path):
     assert MT.plugin_entry({}, "x@m") is None
 
 
-def test_no_renderer(mt, git_repo, isolate, monkeypatch):
-    monkeypatch.setenv("MT_VIEW", str(isolate.tmp / "missing-view"))
-    assert init(mt, git_repo)["renderer"] is None
-
-
 # ---------------------------------------------------------------- state io
 
 
@@ -926,14 +921,13 @@ def test_isolation_holds(isolate):
     assert MT.pointer_path().parent == isolate.state_home
     assert os.environ["PATH"].split(os.pathsep)[0] == str(isolate.tmp / "bin")
     # nothing a test runs reaches the user's make-task state or profiles, the shipped templates, the installed
-    # plugins, the real renderer or the live agterm
+    # plugins or the live agterm
     tmp = isolate.tmp.resolve()
     for name, path in {
         "state root": MT.state_root(),
         "config root": MT.config_root(),
         "profile templates": MT.PROFILE_TEMPLATES,
         "installed plugins": MT.plugins_json_path(),
-        "renderer": Path(MT.renderer_path() or "/"),
         "run profile": isolate.profile_dir,
     }.items():
         assert path.resolve().is_relative_to(tmp), name

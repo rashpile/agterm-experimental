@@ -1,7 +1,7 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["markdown-it-py>=3", "pyyaml>=6"]
+# dependencies = ["markdown-it-py>=3", "mdit-py-plugins>=0.4", "pyyaml>=6"]
 # ///
 """mt - run state, journal and agterm UI for the make-task skill.
 
@@ -51,8 +51,6 @@ Environment:
     MT_CONFIG_HOME    config root override (profiles live in <config root>/profiles/<name>/)
     MT_PLUGINS_JSON   installed_plugins.json, read for plugin: profile sources only
                       (default ~/.claude/plugins/installed_plugins.json)
-    MT_VIEW           markdown renderer (default ~/.claude/skills/view/scripts/view.py);
-                      called as `MT_VIEW SRC -o OUT` when executable, else through `uv run -q --script`
     MT_PGREP          process matcher for `review wait` (default pgrep; called as `MT_PGREP -f -- PATTERN`)
     MT_REVIEW_POLL    seconds between `review wait` polls (default 2)
     MT_PROFILE_LOCK_WAIT
@@ -80,8 +78,11 @@ focus back. Any failing agtermctl call there leaves `agterm: false` and init goe
 sets `blocked`; these are best-effort and only warn on failure.
 
 Artifacts render to <run>/artifacts/<id>.html, again only when the source mtime
-changed (on `artifact`, `plan` and `refresh`). Rendering is best-effort: a
-renderer failure prints a warning and keeps the previous html.
+changed (on `artifact`, `plan` and `refresh`): mt renders the markdown itself
+(markdown-it, raw HTML off, with tables, strikethrough, task lists, footnotes and
+`doc-` heading ids) into assets/doc.html; a source that is not markdown renders as
+a code block. Rendering is best-effort: a source mt cannot read prints a warning
+and keeps the previous html.
 
 Review rounds: `review start` (note: its --run is the revmux run name; the global
 --run DIR goes before the command) records the round's `head` (HEAD of cwd's toplevel: what the
@@ -215,6 +216,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
+import functools
 import hashlib
 import json
 import os
@@ -227,6 +229,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Iterator
+from html import escape as html_escape
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, overload
 
@@ -269,8 +272,15 @@ ID = r"[A-Za-z0-9][A-Za-z0-9._-]*"
 ID_RULE = "letters, digits, '.', '_' and '-', starting with a letter or digit"
 
 ARTIFACT_IDS = ("design", "plan", "progress", "review", "stats", "changes")
+ARTIFACT_LABELS = {
+    "design": "Design",
+    "plan": "Plan",
+    "progress": "Progress log",
+    "review": "Review",
+    "stats": "Stats",
+    "changes": "Changes",
+}
 MARKDOWN_SUFFIXES = {".md", ".markdown", ".mdown", ".mkd"}
-RENDER_TIMEOUT = 120
 
 ASSETS = Path(__file__).resolve().parent.parent / "assets"
 AGTERM_TIMEOUT = 15.0
@@ -310,21 +320,6 @@ def plugins_json_path() -> Path:
     if os.environ.get("MT_PLUGINS_JSON"):
         return Path(os.environ["MT_PLUGINS_JSON"])
     return Path.home() / ".claude" / "plugins" / "installed_plugins.json"
-
-
-def renderer_path() -> str | None:
-    if os.environ.get("MT_VIEW"):
-        p = Path(os.environ["MT_VIEW"]).expanduser()
-        return str(p) if p.exists() else None
-    p = Path.home() / ".claude" / "skills" / "view" / "scripts" / "view.py"
-    return str(p) if p.exists() else None
-
-
-def renderer_argv(renderer: str, src: str, out: str) -> list[str]:
-    """MT_VIEW runs directly when executable; view.py (and anything else) through `uv run -q --script`."""
-    if os.environ.get("MT_VIEW") and os.access(renderer, os.X_OK):
-        return [renderer, src, "-o", out]
-    return ["uv", "run", "-q", "--script", renderer, src, "-o", out]
 
 
 def resolve_run(flag: str | None) -> Path:
@@ -708,7 +703,6 @@ def cmd_init(args: argparse.Namespace) -> int:
         raise MtError(f"cannot create run dir {run}: {e}") from e
 
     branch = git("branch", "--show-current", cwd=toplevel, check=False) or None
-    renderer = renderer_path()
     state: dict[str, Any] = {
         **dict.fromkeys(SET_KEYS),  # the explicit entries below override these
         "title": title,
@@ -731,7 +725,6 @@ def cmd_init(args: argparse.Namespace) -> int:
         "dashboard_pane": None,
         "state_dir": str(run),
         **profile,
-        "renderer": renderer,
         "revdiff": shutil.which("revdiff") is not None,
         "warnings": warnings,
         "started": now(),
@@ -795,7 +788,6 @@ def cmd_init(args: argparse.Namespace) -> int:
         "created_split",
         "dashboard_pane",
         *PROFILE_STATE_KEYS,
-        "renderer",
         "revdiff",
         "warnings",
     )
@@ -1294,63 +1286,85 @@ def text_as_markdown(name: str, text: str) -> str:
     return f"# {name}\n\n{fence}text\n{text.rstrip(chr(10))}\n{fence}\n"
 
 
+def doc_slug(title: str) -> str:
+    """A heading id: `doc-` (the viewer's own ids never start with it) and the GitHub-style slug of the title."""
+    return "doc-" + re.sub(r"[^\w\- ]", "", title.strip().lower()).replace(" ", "-")
+
+
+@functools.cache
+def markdown_parser() -> Any:
+    """commonmark with raw HTML off (markdown-it also refuses javascript: links), tables, strikethrough, task
+    lists, footnotes and ids on ## and ### headings."""
+    from markdown_it import MarkdownIt
+    from mdit_py_plugins.anchors import anchors_plugin
+    from mdit_py_plugins.footnote import footnote_plugin
+    from mdit_py_plugins.tasklists import tasklists_plugin
+
+    md = MarkdownIt("commonmark", {"html": False}).enable(["table", "strikethrough"])
+    return (
+        md.use(tasklists_plugin).use(footnote_plugin).use(anchors_plugin, min_level=2, max_level=3, slug_func=doc_slug)
+    )
+
+
+def render_markdown(text: str) -> tuple[str, list[dict[str, Any]]]:
+    """(html, toc): the document as an HTML fragment, and its ## and ### headings as [{level, id, text}]."""
+    md = markdown_parser()
+    env: dict[str, Any] = {}  # footnotes: parse collects them, render writes them out
+    tokens = md.parse(text, env)
+    toc = []
+    for i, tok in enumerate(tokens):
+        if tok.type == "heading_open" and tok.attrGet("id"):
+            # the heading's text as the anchors plugin reads it for the id
+            title = "".join(c.content for c in tokens[i + 1].children or [] if c.type in ("text", "code_inline"))
+            toc.append({"level": int(tok.tag[1]), "id": tok.attrGet("id"), "text": title.strip()})
+    return md.renderer.render(tokens, md.options, env), toc
+
+
+def render_inline(text: str) -> str:
+    """One line of markdown (a task title, a checklist item) as inline HTML, raw HTML off."""
+    return markdown_parser().renderInline(text)
+
+
+DOC_SLOTS = re.compile(r"<!-- mt:(title|toc|body) -->")
+
+
+def doc_page(title: str, body: str, toc: list[dict[str, Any]]) -> str:
+    """assets/doc.html with the title, the table of contents (left out when there are no headings) and the body."""
+    template = (ASSETS / "doc.html").read_text(encoding="utf-8")
+    nav = ""
+    if toc:
+        links = "".join(
+            f'<a class="l{t["level"]}" href="#{html_escape(t["id"])}">{html_escape(t["text"])}</a>' for t in toc
+        )
+        nav = f'<nav class="toc">{links}</nav>'
+    slots = {"title": html_escape(title), "toc": nav, "body": body}
+    return DOC_SLOTS.sub(lambda m: slots[m.group(1)], template)  # one pass: nothing inserted is read again
+
+
 def render_artifact(run: Path, art: dict[str, Any]) -> str | None:
     """Render art's source to <run>/artifacts/<id>.html when its mtime changed; return a warning or None.
 
-    No renderer: the entry keeps html None (its dashboard button stays disabled). A renderer
-    failure leaves html and mtime as they were, so the previous page stays and the next
-    call retries.
+    A source that is not markdown renders as a code block (text_as_markdown). A failure leaves html and
+    mtime as they were, so the previous page stays and the next call retries.
     """
     aid, src = art["id"], Path(art["source"])
     try:
         mtime = src.stat().st_mtime
     except OSError as e:
         return f"artifact {aid}: cannot stat {src}: {e.strerror or e}"
-    renderer = renderer_path()
-    have_html = bool(art.get("html")) and Path(art["html"]).is_file()
-    if art.get("mtime") == mtime and (have_html or renderer is None):
-        return None
-    if renderer is None:
-        art.update(mtime=mtime, updated=now())
+    if art.get("mtime") == mtime and art.get("html") and Path(art["html"]).is_file():
         return None
     out = run / "artifacts" / f"{aid}.html"
-    tmp_out: str | None = None
-    tmp_md: str | None = None
     try:
-        out.parent.mkdir(exist_ok=True)
-        fd, tmp_out = tempfile.mkstemp(dir=out.parent, prefix=f".{aid}.", suffix=".html")
-        os.close(fd)
-        input_path = str(src)
+        text = src.read_text(encoding="utf-8", errors="replace")
         if src.suffix.lower() not in MARKDOWN_SUFFIXES:
-            text = src.read_text(encoding="utf-8", errors="replace")
-            fd, tmp_md = tempfile.mkstemp(dir=out.parent, prefix=f".{aid}.", suffix=".md")
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(text_as_markdown(src.name, text))
-            input_path = tmp_md
-        r = subprocess.run(
-            renderer_argv(renderer, input_path, tmp_out),
-            capture_output=True,
-            text=True,
-            timeout=RENDER_TIMEOUT,
-            check=False,
-        )
-        if r.returncode != 0 or os.path.getsize(tmp_out) == 0:
-            detail = (r.stderr.strip() or r.stdout.strip())[-300:]
-            return f"artifact {aid}: renderer failed (exit {r.returncode}){': ' + detail if detail else ''}"
-        os.chmod(tmp_out, 0o644)  # mkstemp makes it 0600
-        os.replace(tmp_out, out)
-        tmp_out = None
-    except subprocess.TimeoutExpired:
-        return f"artifact {aid}: renderer timed out after {RENDER_TIMEOUT}s"
+            text = text_as_markdown(src.name, text)
+        body, toc = render_markdown(text)
+        page = doc_page(f"{ARTIFACT_LABELS.get(aid, aid)} · {src.name}", body, toc)
+        out.parent.mkdir(exist_ok=True)
+        atomic_write(out, page)
     except OSError as e:
         return f"artifact {aid}: cannot render {src}: {e}"
-    finally:
-        for leftover in (tmp_out, tmp_md):
-            if leftover:
-                try:
-                    os.unlink(leftover)
-                except OSError:
-                    pass
     art.update(html=str(out), mtime=mtime, updated=now())
     return None
 

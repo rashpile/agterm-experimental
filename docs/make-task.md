@@ -301,7 +301,6 @@ Optional:
 |---|---|---|
 | [agterm](https://agterm.com) | the dashboard, sidebar status | no dashboard; artifacts are still rendered in the state directory |
 | [`revdiff`](https://github.com/umputun/revdiff) | the Changes button | the button stays disabled |
-| the `view` skill at `~/.claude/skills/view/scripts/view.py`, or `MT_VIEW` | renders Design, Plan, Progress log, Review and Stats | those buttons stay disabled; a plugin-installed `view` is not found |
 | `gh` | files an issue proposal from the `--update` interview | no proposal is filed |
 | network access | `--update` checks a companion with a `git:` source | that source is not checked |
 

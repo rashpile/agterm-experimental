@@ -45,7 +45,7 @@ still say where the skill lives.
   `review …`, `fail`, `done`) exiting non-zero → stop the run and report it. `set` refuses an empty
   value (a failed `$(…)`) for every key but `stash_ref` and `worktree_path`, so a failed substitution stops
   the run instead of clearing the key. `reviewed_sha` is written once: `set` refuses a second, different
-  value. Never continue without the journal. UI problems (dashboard, renderer, sidebar status) only print `mt: warning:` and exit 0.
+  value. Never continue without the journal. UI problems (dashboard, artifact pages, sidebar status) only print `mt: warning:` and exit 0.
 - Run `mt review wait` with the Bash tool's `timeout: 600000`. It returns before 600 s.
 - `mt revmux aside` and `mt revmux put-back` (Finalize step 2, Completion step 3) take `--state-dir` and
   `--toplevel`, read no run state and print one `revmux_tree=<outcome>` line; their outcomes and exit codes
@@ -230,7 +230,7 @@ starts a new attempt; `end` on an `ended` key is a harmless no-op. Keys match `[
 2. `mt init --title "<short task title>" --profile-dir <profile_dir>`. Read its one JSON line and keep:
    `state_dir`, `main_checkout`, `toplevel` (the worktree replaces it in worktree mode, see the names
    above), `branch`, `default_branch`, `has_origin`, `linked_worktree`, `dirty_paths`, `agterm`,
-   the profile keys (the table above), `renderer`, `revdiff`, `warnings`. Init runs step 0's check again
+   the profile keys (the table above), `revdiff`, `warnings`. Init runs step 0's check again
    (without the update lookups) and fails (exit 1) on a profile with errors or a template profile,
    creating no run: stop as the Errors row "profile check fails" says. Its `warnings` carry the check's
    warnings, each prefixed `profile <name>: ` (a review `requires` command missing on PATH among them),
@@ -1076,7 +1076,7 @@ here is reported and does not block completion.
 | profile check fails: Start step 0's `mt profile check` prints `ok: false`, or `mt init` exits 1 on the profile (errors, or a template) | none (no run) | — | stop with the errors and how to fix them: `/make-task --update` (the only fix for an older `schema`), or edit `<profile_dir>/profile.md` and the copies; a profile path that is not one plain shell word: set `MT_CONFIG_HOME` to a path without spaces or shell metacharacters (a `phases` path: rename the file or dir and the path); no `mt init` |
 | another `mt profile` command fails at Start step 0 or in `references/profiles.md` | none (no run) | — | stop and report its message; no `mt init`. Except `another make-task command is changing …` (another session held the profile's lock longer than mt waits; nothing changed): run the same command once more first |
 | revmux preflight fails at Start, or init's `warnings` name a review `requires` command missing on PATH | `mt assume "no revmux review" --why …` | asked during brainstorm: `noreview` run without review (recommended) / `stop` | review phase `--skipped`, or `mt done --status stopped` |
-| `revdiff` / view renderer missing | none (init reports it) | — | Changes / artifact buttons disabled |
+| `revdiff` missing | none (init reports it) | — | Changes button disabled |
 | task fails after one retry | `mt fail` | `retry` retry the task / `stop` stop and keep the branch | retry → `mt activity` resumes; stop → `mt done --status stopped` |
 | working dir dirty before round 1 | `mt fail` | `commit` commit the listed changes and continue / `stop` | commit them with a literal pathspec (`git --literal-pathspecs add -- <path> ...` and the same `commit`; never a path under `.revmux/`), `mt activity`; or stop as above |
 | revmux exit 2, `mt review wait` prints `failed`, or degraded round | `mt fail` | `rerun` re-run the round / `skip` skip review and finalize (`review skipped`) / `stop` | rerun → `mt activity`, re-run the round; skip → `mt set stop_reason=skipped`, Finalize; stop as above |

@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title><!-- mt:title --></title>
+<!--
+  make-task artifact page. mt fills the three mt: placeholder comments (the page title, the table of
+  contents and the rendered document) and writes the result to <run>/artifacts/<id>.html.
+  The document is mt's markdown-it output with raw HTML off. No scripts: the page is static.
+  Colors come only from the --agterm-* variables agterm injects (never declared here), with the
+  dashboard's fallbacks when the page is opened outside agterm.
+-->
+<style>
+  .page {
+    --bg: var(--agterm-background, #1d2021);
+    --fg: var(--agterm-foreground, #ebdbb2);
+    --dim: color-mix(in srgb, var(--fg) 58%, transparent);
+    --faint: color-mix(in srgb, var(--fg) 14%, transparent);
+    --wash: color-mix(in srgb, var(--fg) 5%, transparent);
+    --run: var(--agterm-color-4, #83a598);
+    --ok: var(--agterm-color-2, #b8bb26);
+    --warn: var(--agterm-color-3, #fabd2f);
+    --bad: var(--agterm-color-1, #fb4934);
+    --you: var(--agterm-color-5, #d3869b);
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--agterm-background, #1d2021);
+    color: var(--agterm-foreground, #ebdbb2);
+    font: 14px/1.45 -apple-system, "SF Pro Text", system-ui, sans-serif;
+    font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page { padding: 22px 28px 18px; max-width: 1080px; margin: 0 auto; }
+  code { font-family: var(--mono); font-size: 12px; }
+
+  /* the document beside its table of contents */
+  .docwrap { display: flex; gap: 28px; align-items: flex-start; }
+  .doc { flex: 1; min-width: 0; max-width: 78ch; overflow-wrap: anywhere; }
+  .toc { flex: none; width: 190px; position: sticky; top: 12px; font-size: 12.5px; }
+  .toc a { display: block; color: var(--dim); text-decoration: none; padding: 2px 0; }
+  .toc a.l3 { padding-left: 12px; }
+  .toc a:hover { color: var(--fg); }
+  @media (max-width: 760px) { .toc { display: none; } }
+  a:focus-visible { outline: 2px solid var(--run); outline-offset: 2px; }
+
+  /* rendered markdown in the theme */
+  .doc h1 { font: 600 20px/1.25 -apple-system, "SF Pro Display", system-ui, sans-serif; margin: 4px 0 12px; }
+  .doc h2 { font-size: 16px; font-weight: 600; margin: 22px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--faint); }
+  .doc h3 { font-size: 14px; font-weight: 600; margin: 16px 0 6px; }
+  .doc h4, .doc h5, .doc h6 { font-size: 13.5px; font-weight: 600; margin: 14px 0 6px; color: var(--dim); }
+  .doc [id] { scroll-margin-top: 12px; }
+  .doc p, .doc ul, .doc ol { margin: 0 0 10px; }
+  .doc li { margin: 2px 0; }
+  .doc li > ul, .doc li > ol { margin: 2px 0 0; }
+  .doc a { color: var(--run); text-decoration: underline; text-decoration-color: var(--faint); text-underline-offset: 3px; }
+  .doc a:hover { text-decoration-color: var(--run); }
+  .doc code { background: var(--wash); padding: 1px 5px; border-radius: 4px; }
+  .doc pre { background: var(--wash); border: 1px solid var(--faint); border-radius: 6px; padding: 10px 12px; overflow-x: auto; margin: 0 0 12px; }
+  .doc pre code { background: none; padding: 0; font-size: 12.5px; line-height: 1.5; overflow-wrap: normal; }
+  .doc table { border-collapse: collapse; margin: 0 0 12px; font-size: 13px; display: block; overflow-x: auto; }
+  .doc th, .doc td { border: 1px solid var(--faint); padding: 4px 10px; text-align: left; vertical-align: top; }
+  .doc th { background: var(--wash); font-weight: 600; }
+  .doc blockquote { margin: 0 0 10px; padding: 2px 12px; border-left: 3px solid var(--faint); color: var(--dim); }
+  .doc hr { border: 0; border-top: 1px solid var(--faint); margin: 18px 0; }
+  .doc img { max-width: 100%; }
+  .doc s { color: var(--dim); }
+
+  /* task lists */
+  .doc .contains-task-list { list-style: none; padding-left: 4px; }
+  .doc .contains-task-list .contains-task-list { padding-left: 22px; }
+  .doc .task-list-item-checkbox { margin: 0 8px 0 0; vertical-align: -1px; accent-color: var(--ok); }
+
+  /* footnotes */
+  .doc .footnote-ref a { text-decoration: none; font-size: 11px; }
+  .doc .footnotes-sep { margin: 22px 0 10px; }
+  .doc .footnotes { color: var(--dim); font-size: 13px; }
+  .doc .footnotes-list { padding-left: 22px; }
+  .doc .footnote-backref { text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="docwrap">
+    <article class="doc"><!-- mt:body --></article>
+    <!-- mt:toc -->
+  </div>
+</div>
+</body>
+</html>
