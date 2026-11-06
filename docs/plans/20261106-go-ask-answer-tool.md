@@ -281,11 +281,11 @@ skipped and `detail` says which; that alone never makes a request `lost`.
 - Create: `mcps/go-ask/answer.go`
 - Create: `mcps/go-ask/answer_test.go`
 
-- [ ] add the pure `requestState` in `mcps/go-ask/answer.go` implementing the state table in Technical Details (turns grouped per session), returning state, reply, finished_at and detail
-- [ ] write tests for every row of the table: stored state, unsupported, done, interrupted by `""`, interrupted by a later prompt of the same session, blocked, running, lost (an orphan stop in the window and no prompt), pending
-- [ ] write tests for the matching rules: records before `sent_at` ignored; two matching turns → the last one wins; a stop-hook continuation (two stops in one turn) → the last stop's reply; a nested session's prompt and stop interleaved inside the matching turn do not split it and its stop is not taken as the reply; a later prompt of another session does not mark the turn interrupted
-- [ ] write tests for the tree cases: target not found and tree unavailable skip the `blocked` check, never give `lost`, and say so in `detail`
-- [ ] run tests - must pass before task 5
+- [x] add the pure `requestState` in `mcps/go-ask/answer.go` implementing the state table in Technical Details (turns grouped per session), returning state, reply, finished_at and detail
+- [x] write tests for every row of the table: stored state, unsupported, done, interrupted by `""`, interrupted by a later prompt of the same session, blocked, running, lost (an orphan stop in the window and no prompt), pending
+- [x] write tests for the matching rules: records before `sent_at` ignored; two matching turns → the last one wins; a stop-hook continuation (two stops in one turn) → the last stop's reply; a nested session's prompt and stop interleaved inside the matching turn do not split it and its stop is not taken as the reply; a later prompt of another session does not mark the turn interrupted
+- [x] write tests for the tree cases: target not found and tree unavailable skip the `blocked` check, never give `lost`, and say so in `detail`
+- [x] run tests - must pass before task 5
 
 ### Task 5: `answer` tool
 
