@@ -25,6 +25,37 @@ The same fixture isolates profiles: `MT_CONFIG_HOME` points under `tmp_path` (`X
 `profile_factory` fixture for a profile under `MT_CONFIG_HOME`. A test that needs the shipped template sets
 `MT.PROFILE_TEMPLATES = MT.ASSETS / "profiles"` and only reads it; copy it under `tmp_path` before changing it.
 
+The pages' scripts run in node with a stub DOM: `test_viewer.py` for `assets/viewer.html` (`run_viewer`, its
+steps listed in its docstring: inject a `state.js` or `artifacts/<id>.js` text, click, scroll, fail a script
+load, set the clock, fire the timers, snapshot) and `test_agterm.py` for `assets/dashboard.html` (`run_page`,
+clicks and a `reject` message that makes every `agterm.request` fail). Both skip when `node` is missing.
+Build state and payloads with `MT.state_js`, `MT.script_json` and `MT.render_markdown`, so a test sees what
+`mt` writes. A fixture taken from a real run (`tests/fixtures/progress.txt`, `events-round.jsonl`) is trimmed
+and has its home paths scrubbed.
+
+## The dashboard, the viewer and their data
+
+- Pages: `assets/dashboard.html` (`mt init` copies it into the run dir), `assets/viewer.html` (`mt init`
+  writes it as `viewer-<tab>.html`, one per tab, differing only in `<body data-tab>`; the dashboard's file
+  buttons open them) and `assets/doc.html` (the static page `render_artifact` fills for each artifact).
+- A javascript page cannot `fetch()` a `file://` URL, so `mt` writes its data as scripts the pages re-inject
+  every 1.5 s: `state.js` (`window.mtState(<json>)`) and `artifacts/<id>.js` (`window.mtArtifact("<id>", {...})`).
+  `artifact_payload` is the one builder per artifact id and `write_artifact_data` the one writer (new
+  `updated` only when the rest changed). `render_changed` and `review start`/`wait`/`result` all go through
+  them, so a later call never replaces a payload with another shape. The payload shapes are in `mt`'s
+  docstring.
+- The review data is rebuilt each time from the state's round entries, each finished round's report and
+  each round's `events.jsonl` folded by `fold_events`. Finding bodies and fixes never go into `state.json`.
+- The static checks in `test_viewer.py` and `test_agterm.py` hold for every page: no declared `--agterm-*`
+  variable (agterm injects them; the pages only read them), no `fetch(`, no external `<script src>`.
+- Every string from the state or a payload is escaped; only renderer output (the `html` fields, markdown-it
+  with raw HTML off) goes in as HTML.
+- Expanded items, scroll positions, the Progress filter and the picked review round live in the page's
+  script, keyed by id, never read back from the DOM, so a re-render keeps them. Handle clicks, not
+  `toggle` (it does not bubble).
+- A run started before a change keeps its copied dashboard and may lack newer files (`viewer-<tab>.html`):
+  `mt` must keep working for it.
+
 ## Profiles and the default template
 
 A user's profile lives in `~/.config/make-task/profiles/<name>/` (`MT_CONFIG_HOME` or `XDG_CONFIG_HOME` move

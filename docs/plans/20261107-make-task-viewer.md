@@ -405,12 +405,12 @@
   `refresh`, `plan` and `artifact` work and the old dashboard's `html` pages are written
 
 ### Task 14: [Final] Update documentation
-- [ ] update `skills/make-task/README.md` and `docs/make-task.md`: the viewer and its tabs, the live Review
-- [ ] update `skills/make-task/SKILL.md`: `mt review wait` keeps the Review tab live
-- [ ] update `skills/make-task/CLAUDE.md` with the viewer, the data scripts and the node-harness tests
-- [ ] update `mt`'s module docstring (artifacts, viewer, review data)
-- [ ] run tests - `test_skill_md.py` checks `SKILL.md`
-- [ ] move this plan to `docs/plans/completed/`
+- [x] update `skills/make-task/README.md` and `docs/make-task.md`: the viewer and its tabs, the live Review
+- [x] update `skills/make-task/SKILL.md`: `mt review wait` keeps the Review tab live
+- [x] update `skills/make-task/CLAUDE.md` with the viewer, the data scripts and the node-harness tests
+- [x] update `mt`'s module docstring (artifacts, viewer, review data)
+- [x] run tests - `test_skill_md.py` checks `SKILL.md`
+- [x] move this plan to `docs/plans/completed/` (skipped - the make-task harness moves the plan after all phases finish)
 
 ## Post-Completion
 *Items requiring manual intervention or external systems - no checkboxes, informational only*

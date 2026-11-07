@@ -72,11 +72,16 @@ on a run whose state has none of these keys (started before profiles).
 
 Viewer: init writes viewer-<tab>.html into the run dir for each tab (design, plan, progress,
 review, stats): assets/viewer.html with <body data-tab="<tab>">, the tab the page opens on.
+The page re-injects state.js and the current tab's artifacts/<id>.js every 1.5 s and writes
+nothing, so closing it never affects the run; a failure to write the entry pages only warns.
 
 Dashboard: init copies assets/dashboard.html into the run dir. In agterm it shows the
 split when none is shown (created_split records a split mt made), opens the page with
 `--cwd <run> --js --chromeless` over the pane the agent does not run in, and hands the
 focus back. Any failing agtermctl call there leaves `agterm: false` and init goes on.
+Its file buttons open viewer-<tab>.html over the session (Changes opens revdiff). While a
+round is live (live_round's rule, repeated in the page's script) Review shows `live` and
+the round's row in the phase rail gets a compact block from its `live` summary.
 `phase` and `activity` (not `--wait`) re-assert the sidebar status `active`, `fail`
 sets `blocked`; these are best-effort and only warn on failure.
 
@@ -92,6 +97,13 @@ rewritten with a new `updated` only when the rest of it changed: design and stat
 label), plan adds each task's checkbox `items`, progress holds {source, header, entries,
 raw, updated}, the log parsed into entries (parse_progress) and its whole text, review
 holds {rounds, updated} (review_payload), written by `review start`, `wait` and `result`.
+artifact_payload is the only builder of these payloads and write_artifact_data the only
+writer, so every caller writes the same shape. review_payload rebuilds every round from
+three sources: its state entry, its report when it has a result (findings with body and
+fix, capped), and its events.jsonl folded by fold_events (`dropped`, and the whole snapshot
+as `live` for the live round). The live round (live_round) is the highest-numbered one
+when it has started, has no result, its milestone is not `failed` and the run is not
+finished. Bodies and fixes never enter state.json.
 
 Review rounds: `review start` (note: its --run is the revmux run name; the global
 --run DIR goes before the command) records the round's `head` (HEAD of cwd's toplevel: what the

@@ -23,7 +23,8 @@ Paths below are relative to this skill's directory (the one containing this SKIL
 
 ## How to run `mt`
 
-`scripts/mt` holds the run state, the checkpoint journal, the dashboard and the review waits.
+`scripts/mt` holds the run state, the checkpoint journal, the dashboard, the viewer's data and the review
+waits.
 It is the only thing that calls `agtermctl`. In this file **`mt` stands for**
 
 ```bash
@@ -747,6 +748,8 @@ drop them:
    `(cd <main_checkout> && revmux --task <revmux_task> --run <run> --tasks-dir <D> --workdir <toplevel> --profile <profile> --no-tui > <state_dir>/revmux/round-<n>.json 2> <state_dir>/revmux/round-<n>.log)`.
    Never `2>&1` into the report.
 4. Foreground `mt review wait --round <n>` with `timeout: 600000`, repeated while it prints `running`.
+   Each call keeps the Review tab live: as the round's `events.jsonl` grows, it folds it into the
+   `review` artifact and the round's `live` summary, which the viewer and the dashboard show.
    `done` → go on. `failed` (process gone, report does not parse) → Errors row for exit 2.
 5. Read the report: gating is `critical`/`major` in `findings` (loop.md "What gates"); note whether
    `sources.degraded` is non-empty.

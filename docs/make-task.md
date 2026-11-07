@@ -61,12 +61,15 @@ of five tasks.
 
 - **Header.** Task title, repo, branch, worktree or in place, the profile and its autonomy level.
 - **Artifact buttons.** Design, Plan, Progress log, Review, Stats, Changes. Each shows how long ago it
-  changed and opens as a floating panel over the session. Changes runs `revdiff` from the commit where
-  the task's work starts, so you can read the task's commits while it runs. A button stays grey until
-  its artifact exists (Review and Stats in the screenshot).
+  changed. Design to Stats open the viewer (below) on that tab over the session. Changes runs `revdiff`
+  from the commit where the task's work starts, so you can read the task's commits while it runs. A
+  button stays grey until its artifact exists (Review and Stats in the screenshot). While a review round
+  runs, Review shows `● live`.
 - **Now strip.** What the orchestrator is doing right now, and the run's total clock (29m 33s).
 - **Phase rail.** Each phase with its duration: Brainstorm 8m 28s, Plan 13m 28s. Execute lists the
-  plan's tasks with checkbox progress (`0/6`) and a live timer on the running one.
+  plan's tasks with checkbox progress (`0/6`) and a live timer on the running one. During review, a
+  compact block under the running round shows its stage, the findings so far, how many reviewers are
+  done and the latest activity, with a link to the live Review tab.
 - **Assumed for you, You decided.** Every choice the run made on its own, with its reason, and every
   answer you gave. Here it is 23 assumptions and 0 questions: under the `default` autonomy, brainstorm
   found nothing in this task that needed the user.
@@ -74,6 +77,24 @@ of five tasks.
 
 The dashboard is an HTML page that reloads a `state.js` file every 1.5 s. `scripts/mt` writes that file,
 and it is the only part of make-task that talks to agterm.
+
+---
+
+## The viewer
+
+The artifact buttons open one page, the viewer, with five tabs:
+
+| tab | shows |
+|---|---|
+| Design | `design.md` with its table of contents |
+| Plan | the plan's tasks with status, checkbox progress and duration. The running task's checklist is open, every other one opens on a click, and the plan document sits behind "Show the plan document" |
+| Progress | the progress log as a timeline, newest entry first, with decisions, deviations and review lines marked and a filter for each |
+| Review | the review rounds: the running one live, a finished one with its verdict and findings |
+| Stats | time, tokens and tool calls, once the run has ended |
+
+The viewer reloads every 1.5 s and redraws a tab only when its data changed, so your scroll position and
+what you expanded stay. A tab whose artifact does not exist yet says "not yet". The viewer only reads
+files `scripts/mt` writes: closing it never affects the run, also in the middle of a review round.
 
 ---
 
@@ -109,7 +130,7 @@ session:
   and what it costs
 - a free-text answer through "Other"
 - a short context in the question itself. Long material (the design, the plan, the review's findings) is
-  named by its artifact, which the dashboard opens
+  named by its artifact, which the viewer shows
 
 While a question waits, the dashboard's Now strip says so. Your answer is recorded with the run's
 decisions.
@@ -167,6 +188,13 @@ All five tasks are done. Round 1 found one critical and two major findings, a fi
 them, and round 2 is in revmux's verify stage with 3 of 4 reviewers finished. The Stats button stays
 dashed until the run ends.
 
+The viewer's Review tab follows the running round as revmux works: its stages, each reviewer with its
+state and latest activity, and the findings so far by severity, each one opening to its body and fix.
+`mt review wait` keeps the tab current from `events.jsonl`, the event log revmux writes for the round.
+After 30 s without an event the tab marks its data stale. Once the round has a result, the tab shows its
+verdict and the final findings, each gating one marked unresolved, not gating or deferred as the round
+recorded it. A round that ended without a result says so, with the last stage it reached.
+
 ---
 
 ## The leftovers question
@@ -174,8 +202,8 @@ dashed until the run ends.
 When the loop ends with findings open, the run asks once more before finalize. With open majors the
 options read "Fix the remaining majors" and "Leave them and finalize" (the run then ends `not clean`).
 With only minors or open questions left they read "Fix the listed minors" and "Leave them", and typed
-text answers the open questions or narrows the list. The findings themselves are in the Review
-artifact.
+text answers the open questions or narrows the list. The findings themselves are in the viewer's
+Review tab.
 
 ---
 
@@ -280,7 +308,7 @@ Every run needs:
 |---|---|
 | Claude Code | runs the orchestrator and its subagents. The plan review uses the built-in `Plan` agent type; a Claude Code without it skips the plan review and records that |
 | git | the branch, the commits, the stash and the review range. Outside a git repo make-task stops before it starts |
-| [`uv`](https://docs.astral.sh/uv/) | runs `scripts/mt` (`uv run -q --script`) and installs its Python dependencies, `markdown-it-py` and `pyyaml` |
+| [`uv`](https://docs.astral.sh/uv/) | runs `scripts/mt` (`uv run -q --script`) and installs its Python dependencies, `markdown-it-py`, `mdit-py-plugins` and `pyyaml` |
 
 The review needs:
 
@@ -299,7 +327,7 @@ Optional:
 
 | tool | adds | without it |
 |---|---|---|
-| [agterm](https://agterm.com) | the dashboard, sidebar status | no dashboard; artifacts are still rendered in the state directory |
+| [agterm](https://agterm.com) | the dashboard, the viewer, sidebar status | no dashboard or viewer; artifacts are still rendered in the state directory |
 | [`revdiff`](https://github.com/umputun/revdiff) | the Changes button | the button stays disabled |
 | `gh` | files an issue proposal from the `--update` interview | no proposal is filed |
 | network access | `--update` checks a companion with a `git:` source | that source is not checked |
