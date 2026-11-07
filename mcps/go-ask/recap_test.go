@@ -19,11 +19,12 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// recapTreeJSON: one session with claude in both panes, the right one focused; a codex pane; a
-// claude pane with no live claude behind it; a bare shell; a claude whose transcript has no turns
-// yet; a claude pane agterm gives no pane id.
+// recapTreeJSON: one session with claude in both panes, the right one focused and blocked on a
+// prompt; a codex pane; a claude pane with no live claude behind it; a bare shell; a claude whose
+// transcript has no turns yet; a claude pane agterm gives no pane id.
 const recapTreeJSON = `{"workspaces":[{"name":"w","active":true,"sessions":[
- {"id":"RRRR1111-0000","name":"pair","cwd":"/r","active":true,"foreground":["claude"],"splitForeground":["claude","--resume","x"],
+ {"id":"RRRR1111-0000","name":"pair","cwd":"/r","active":true,"status":"blocked","statusPane":"right",
+  "foreground":["claude"],"splitForeground":["claude","--resume","x"],
   "surfaces":[{"kind":"left","paneID":"PANE-R1-LEFT"},{"kind":"right","active":true,"paneID":"PANE-R1-RIGHT"}]},
  {"id":"SSSS2222-0000","name":"coder","foreground":["codex"],"surfaces":[{"kind":"left","paneID":"PANE-S2-LEFT"}]},
  {"id":"TTTT3333-0000","name":"lonely","foreground":["claude"],"surfaces":[{"kind":"left","paneID":"PANE-T3-LEFT"}]},
@@ -99,8 +100,10 @@ func newRecapEnv(t *testing.T) *recapEnv {
 
 	e.loc.claude(t, 100, "sess-left", 1000, paneEnv("PANE-R1-LEFT"))
 	e.loc.claude(t, 200, "sess-right", 2000, paneEnv("PANE-R1-RIGHT", "AGTERM_PANE=right"))
-	// a revmux reviewer started from the right pane's claude: newer, same pane id
-	e.loc.claude(t, 201, "sess-child", 9000, paneEnv("PANE-R1-RIGHT", "CLAUDECODE=1"))
+	// children of the right pane's claude, newer, same pane id, one marker each: a revmux
+	// reviewer (CLAUDECODE stripped, no transcript saved) and a child that saves its transcript
+	e.loc.claude(t, 201, "sess-child", 9000, paneEnv("PANE-R1-RIGHT", "CLAUDE_CODE_CHILD_SESSION=1"))
+	e.loc.claude(t, 202, "sess-sdk-child", 9500, paneEnv("PANE-R1-RIGHT", "CLAUDECODE=1"))
 	e.loc.claude(t, 300, "sess-codex-pane", 1000, "")                    // dead: nothing live in the codex pane
 	e.loc.claude(t, 500, "sess-fresh", 1000, paneEnv("PANE-V5-LEFT"))    // transcript without turns
 	e.loc.claude(t, 700, "0963d564-lost", 1000, paneEnv("PANE-X7-LEFT")) // no transcript on disk
@@ -115,7 +118,7 @@ func newRecapEnv(t *testing.T) *recapEnv {
 		asstLine(t, textBlock("Тесты правой панели зелёные.")),
 	}
 	e.right = e.writeTranscript(t, "-Users-u-right", "sess-right", strings.Join(e.rightLog, "\n")+"\n")
-	e.writeTranscript(t, "-Users-u-right", "sess-child", userLine(t, "11:00", "child prompt")+"\n")
+	e.writeTranscript(t, "-Users-u-right", "sess-sdk-child", userLine(t, "11:00", "child prompt")+"\n")
 	e.writeTranscript(t, "-Users-u-fresh", "sess-fresh",
 		jsonLine(t, map[string]any{"type": "summary", "summary": "x"})+"\n"+metaLine(t, "meta only")+"\n")
 
@@ -228,9 +231,16 @@ func TestRecapExplicitSession(t *testing.T) {
 	}
 }
 
+// TestRecapFocusedAndRight: the right pane is blocked on a prompt, so ask refuses it; recap only
+// reads and recaps it.
 func TestRecapFocusedAndRight(t *testing.T) {
 	e := newRecapEnv(t)
 	cs := connect(t, e.url, nil)
+	res, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "ask",
+		Arguments: map[string]any{"session_id": "RRRR1111-0000:right", "text": "hi"}})
+	if err != nil || !res.IsError || !strings.Contains(res.Content[0].(*mcp.TextContent).Text, "is blocked") {
+		t.Fatalf("ask to the blocked right pane: %v %+v; want a blocked refusal, or this test checks nothing", err, res)
+	}
 	wantDigest := buildDigest(rowsOf(t, e.rightLog...), 6)
 	for _, args := range []map[string]any{
 		{},                                    // the focused pane: RRRR1111-0000's right split
@@ -252,6 +262,9 @@ func TestRecapFocusedAndRight(t *testing.T) {
 		if model != wantModel || digest != wantDigest {
 			t.Errorf("recap %v: Ollama got %q %q, want %q %q", args, model, digest, wantModel, wantDigest)
 		}
+	}
+	if strings.Contains(e.calls(), "session type") {
+		t.Errorf("typed into the blocked pane:\n%s", e.calls())
 	}
 }
 

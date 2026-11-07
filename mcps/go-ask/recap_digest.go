@@ -16,6 +16,20 @@ import (
 // caps, the same text, so the local model sees what recap.py would send. Every cap and slice
 // counts runes, as Python slices code points. A parity test runs recap.py on a shared fixture
 // and compares the two digests. Where Go cannot match Python exactly, a comment says so.
+//
+// Parity holds for rows of the shapes Claude writes. On a row of another shape recap.py often
+// raises and stops; Go never stops on a row:
+//   - Go reads as empty what makes recap.py raise, such as: a user prompt row whose message or
+//     content is null or missing, a user or assistant content that is a number, a text block's
+//     text null, a tool result's content a number, a tool input that is a non-empty string or
+//     list or a number, a Bash command that is a number, a queued prompt that is null, a number
+//     or an object.
+//   - A field whose JSON type differs from its Go field does not decode, and Go drops what holds
+//     it: the line (a timestamp, isMeta, message, attachment or origin of another type) or the
+//     content block (a text, name, id or tool_use_id that is not a string). recap.py raises on
+//     most of these but reads a few on: a numeric tool name comes out as its str(), an isMeta of
+//     "yes" counts as true.
+//   - A line that is not JSON: recap.py stops with an error, Go skips it.
 
 const (
 	recapTextCap     = 600   // an assistant text block mid-turn
@@ -77,8 +91,9 @@ type contentBlock struct {
 // readTranscript reads a Claude transcript and returns its rows from the turns-th real user
 // prompt counted from the end, or all rows when there are fewer prompts (turns below 1 counts as
 // 1). Lines are decoded from the end backwards and decoding stops at that prompt, so a long
-// transcript is never decoded whole. A line that does not parse is skipped (recap.py would stop
-// with an error); a missing or unreadable file is an error.
+// transcript is never decoded whole. A line that does not decode into transcriptRow is skipped
+// (recap.py stops on one that is not JSON; the top of the file says what it does with the rest);
+// a missing or unreadable file is an error.
 func readTranscript(path string, turns int) ([]transcriptRow, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -235,12 +250,13 @@ func buildDigest(rows []transcriptRow, turns int) string {
 
 // toolItem is the one line of a tool call, and records the call in asks when its result is the
 // user's answer (AskUserQuestion, or Bash running `mt … ask`). The detail is the first of
-// description, command (its first 80 runes), file_path, query. recap.py takes any truthy value
-// and str()s it; Go takes strings only and skips any other type. recap.py writes a missing name
-// as "None"; Go writes it empty. Claude always sends string details and a name.
+// description, command (its first 80 runes), file_path, query. recap.py str()s any other truthy
+// value, but raises on a command that is a number when it reads it; Go takes strings only and
+// skips any other type. recap.py writes a missing name as "None"; Go writes it empty. Claude always sends string
+// details and a name.
 func toolItem(b contentBlock, asks map[string]bool) digestItem {
 	var in map[string]json.RawMessage
-	_ = json.Unmarshal(b.Input, &in) // input that is not an object leaves no fields
+	_ = json.Unmarshal(b.Input, &in) // input that is not an object leaves no fields; recap.py raises
 	field := func(k string) string {
 		s, _ := rawString(in[k])
 		return s
@@ -282,7 +298,8 @@ func cleanUser(t string) string {
 }
 
 // textOf is recap.py's text_of: a string content as is, the text blocks of a list joined by a
-// space, anything else "".
+// space, anything else "". text_of gives "" only for an object: it raises on null and on a number,
+// and on a text block whose text is null.
 func textOf(raw json.RawMessage) string {
 	if s, ok := rawString(raw); ok {
 		return s
@@ -299,7 +316,8 @@ func textOf(raw json.RawMessage) string {
 
 // blocksOf decodes a content that is a JSON list into its blocks; ok is false for any other
 // content. An element that is not an object is dropped, as recap.py drops non-dict blocks, and
-// so is one that does not decode.
+// so is one that does not decode into contentBlock, which recap.py reads on or raises on (see the
+// top of the file).
 func blocksOf(raw json.RawMessage) (blocks []contentBlock, ok bool) {
 	var elems []json.RawMessage
 	if jsonKind(raw) != '[' || json.Unmarshal(raw, &elems) != nil {

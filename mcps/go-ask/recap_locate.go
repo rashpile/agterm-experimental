@@ -99,9 +99,20 @@ func isDigits(s string) bool {
 	return true
 }
 
+// childMarkers are the environment entries Claude Code gives the processes it starts (its Bash
+// tool's shell carries both). A claude started from inside another claude (a revmux reviewer,
+// claude -p, an Agent SDK tool) inherits the pane id and at least one of them: revmux strips
+// CLAUDECODE before it starts claude, since claude refuses to start nested, but keeps
+// CLAUDE_CODE_CHILD_SESSION. The pane's own claude carries neither.
+var childMarkers = []string{"CLAUDECODE=1", "CLAUDE_CODE_CHILD_SESSION=1"}
+
+// isChildClaude reports whether a ps -E line holds any of childMarkers as a whole token.
+func isChildClaude(line string) bool {
+	return slices.ContainsFunc(childMarkers, func(m string) bool { return hasToken(line, m) })
+}
+
 // transcriptFor finds the claude whose environment has AGTERM_PANE_ID=<paneID> and returns its
-// session id and transcript path. A claude started from inside another claude (a revmux
-// reviewer, claude -p, an Agent SDK tool) inherits the pane id but also has CLAUDECODE=1, and is
+// session id and transcript path. Child claudes (isChildClaude) inherit the pane id and are
 // skipped. When several match, the newest updatedAt wins. Errors: errNoPaneID, errNoClaude, a
 // wrapped errNoTranscript that names the session id (returned too), or ps failing.
 func (l claudeLocator) transcriptFor(ctx context.Context, paneID string) (sessionID, path string, err error) {
@@ -126,7 +137,7 @@ func (l claudeLocator) transcriptFor(ctx context.Context, paneID string) (sessio
 	var best *claudeRecord
 	for i, r := range recs {
 		line, ok := live[r.pid]
-		if !ok || !hasToken(line, "AGTERM_PANE_ID="+paneID) || hasToken(line, "CLAUDECODE=1") {
+		if !ok || !hasToken(line, "AGTERM_PANE_ID="+paneID) || isChildClaude(line) {
 			continue
 		}
 		if best == nil || r.UpdatedAt > best.UpdatedAt {

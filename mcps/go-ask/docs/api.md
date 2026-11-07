@@ -468,16 +468,21 @@ pane's shell, and the claude started there inherits it. go-ask:
 2. runs `/bin/ps -E -o pid=,command= -p <pids>` once over those pids. `-E` appends each process's
    environment to its command line. A pid that no longer runs drops out;
 3. keeps the processes whose environment holds `AGTERM_PANE_ID=<pane id>` as a whole word and
-   doesn't hold `CLAUDECODE=1`. The pane id is the one agterm's tree lists as `surfaces[].paneID`.
-   A whole word has a space or the line's start before it and a space or the line's end after it,
-   so `AGTERM_PANE_ID=ABC` matches neither `AGTERM_PANE_ID=ABCD` nor `X_AGTERM_PANE_ID=ABC`;
+   holds neither `CLAUDECODE=1` nor `CLAUDE_CODE_CHILD_SESSION=1`. The pane id is the one
+   agterm's tree lists as `surfaces[].paneID`. A whole word has a space or the line's start before
+   it and a space or the line's end after it, so `AGTERM_PANE_ID=ABC` matches neither
+   `AGTERM_PANE_ID=ABCD` nor `X_AGTERM_PANE_ID=ABC`;
 4. takes the one with the newest `updatedAt`;
 5. reads its transcript, `~/.claude/projects/*/<sessionId>.jsonl`, the first match in sorted order.
 
-`CLAUDECODE=1` marks a claude started from inside another claude, such as a revmux reviewer, a
-`claude -p` or an Agent SDK tool. It inherits the pane id too. Without the exclusion, a recap of the
-pane could describe the child's session and not the one the user sees. The match is by pane id, so
-a `:right` split resolves to its own claude.
+Claude Code puts `CLAUDECODE=1` and `CLAUDE_CODE_CHILD_SESSION=1` into the environment of the
+processes it starts, so a claude started from inside another claude, such as a revmux reviewer, a
+`claude -p` or an Agent SDK tool, carries at least one of them and the pane id too. revmux strips
+`CLAUDECODE` before it starts a reviewer, because claude refuses to start nested, but keeps
+`CLAUDE_CODE_CHILD_SESSION`. The pane's own claude carries neither. Without the exclusion, a child
+updates its record more recently than the idle claude that started it, so a recap of the pane would
+fail on the child's unsaved transcript or describe the child's session and not the one the user
+sees. The match is by pane id, so a `:right` split resolves to its own claude.
 
 ps shows no environment for Apple's platform binaries, such as `/bin/zsh`. claude isn't one.
 go-ask reads `~/.claude` of the user it runs as, on the Mac it runs on, so an HTTP server recaps
@@ -490,7 +495,7 @@ The model never gets the raw transcript. go-ask sends it a digest, built by the 
 
 - go-ask reads the transcript file and decodes its lines from the end backwards until it reaches
   the `turns`-th real user prompt, so it never decodes a long transcript whole. A line that isn't
-  JSON is skipped. A real prompt is one the user typed: not a meta row, not a row holding only tool
+  JSON, or has a field of an unexpected JSON type, is skipped. A real prompt is one the user typed: not a meta row, not a row holding only tool
   results, not a `<local-command…>` echo.
 - Each user prompt becomes a `### USER <hh:mm> UTC` heading and the prompt, with a skill's
   invocation echo and body removed, cut to 1500 characters. A message the user sent while a turn
@@ -508,7 +513,10 @@ The model never gets the raw transcript. go-ask sends it a digest, built by the 
 
 Every limit counts Unicode code points, as Python does. One difference from `recap.py` is on
 purpose: a queued message with an image gives its typed text, where `recap.py` prints the Python
-list, base64 image data included.
+list, base64 image data included. The digests match for rows of the shapes Claude writes. On a
+row of another shape, such as a `null` content, a tool input that isn't an object or a `null`
+queued prompt, `recap.py` stops with an error, and go-ask reads the value as empty or skips the
+row or block and goes on.
 
 ### The Ollama request
 

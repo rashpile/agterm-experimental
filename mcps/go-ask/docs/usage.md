@@ -340,9 +340,9 @@ For `recap` they cover the digest and its limits, with Cyrillic text at the cut 
 it with the output of `commands/recap/recap.py --digest` on a shared fixture when `python3` is on
 `PATH`. They cover the transcript reader with long and broken lines, the Ollama request and each
 Ollama error against an `httptest` server, and the pane-to-claude lookup with temp `~/.claude`
-dirs and a fake `ps`, child claudes with `CLAUDECODE=1` included. One test runs the real `/bin/ps`
-on a helper process. Over HTTP they cover the targets, a `:right` split, the caller's own pane, the
-`turns` limits and the errors.
+dirs and a fake `ps`, child claudes with `CLAUDECODE=1` or `CLAUDE_CODE_CHILD_SESSION=1` included.
+One test runs the real `/bin/ps` on a helper process. Over HTTP they cover the targets, a `:right`
+split, the caller's own pane, the `turns` limits and the errors.
 
 All of them run against a fake agtermctl, a temp state dir and a fake Ollama, and touch neither
 agterm, `~/.local/state` nor `~/.claude`.

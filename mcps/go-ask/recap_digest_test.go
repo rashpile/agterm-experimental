@@ -309,6 +309,63 @@ func TestBuildDigestSkipsRows(t *testing.T) {
 	}
 }
 
+// TestBuildDigestMalformedRows: rows of shapes Claude does not write, where recap.py raises or
+// reads on (see the top of recap_digest.go). Go never stops: it reads the odd value as empty or
+// drops the line or block that does not decode.
+func TestBuildDigestMalformedRows(t *testing.T) {
+	ask := asstLine(t, toolUse("a1", "AskUserQuestion", map[string]any{}))
+	for _, tc := range []struct {
+		name  string
+		lines []string
+		want  []string // digest lines after the 09:00 prompt
+	}{
+		// read as empty where recap.py raises
+		{"user message null", []string{jsonLine(t, map[string]any{"type": "user", "message": nil})}, nil},
+		{"user message missing", []string{jsonLine(t, map[string]any{"type": "user"})}, nil},
+		{"user content null", []string{userLine(t, "09:01", nil)}, nil},
+		{"user content a number", []string{userLine(t, "09:01", 5)}, nil},
+		{"user text null", []string{userLine(t, "09:01", []any{map[string]any{"type": "text", "text": nil}})}, nil},
+		{"assistant content a number", []string{jsonLine(t, map[string]any{"type": "assistant", "message": map[string]any{"content": 5}})}, nil},
+		{"assistant text null", []string{asstLine(t, map[string]any{"type": "text", "text": nil}, textBlock("kept"))}, []string{"ASSISTANT: kept"}},
+		{"answer content a number", []string{ask, userLine(t, "09:01", []any{toolResult("a1", 5)})},
+			[]string{"  - tool AskUserQuestion: ", "  - USER ANSWER: "}},
+		{"tool input not an object", []string{asstLine(t,
+			map[string]any{"type": "tool_use", "id": "s", "name": "Bash", "input": "git status"},
+			map[string]any{"type": "tool_use", "id": "l", "name": "Bash", "input": []any{"git status"}},
+			map[string]any{"type": "tool_use", "id": "n", "name": "Bash", "input": 5})},
+			[]string{"  - tool Bash: ", "  - tool Bash: ", "  - tool Bash: "}},
+		{"command a number", []string{asstLine(t, toolUse("c", "Bash", map[string]any{"command": 5, "file_path": "/f"}))},
+			[]string{"  - tool Bash: /f"}},
+		{"queued prompt null, a number, an object", []string{
+			queuedLine(t, "09:01", nil, "human"), queuedLine(t, "09:02", 5, "task-notification"),
+			queuedLine(t, "09:03", map[string]any{"text": "x"}, "human")},
+			[]string{"\n### USER (sent mid-turn) 09:01 UTC\n", "  - subagent report arrived: ", "\n### USER (sent mid-turn) 09:03 UTC\n"}},
+		// the line does not decode and is dropped
+		{"timestamp a number", []string{jsonLine(t, map[string]any{"type": "user", "timestamp": 5, "message": map[string]any{"content": "dropped"}})}, nil},
+		{"isMeta not a bool", []string{ask, jsonLine(t, map[string]any{"type": "user", "isMeta": "yes",
+			"message": map[string]any{"content": []any{toolResult("a1", "dropped")}}})}, []string{"  - tool AskUserQuestion: "}},
+		{"message a string", []string{jsonLine(t, map[string]any{"type": "assistant", "message": "dropped"})}, nil},
+		{"attachment a string", []string{jsonLine(t, map[string]any{"type": "attachment", "attachment": "dropped"})}, nil},
+		{"origin a string", []string{jsonLine(t, map[string]any{"type": "attachment", "timestamp": tsAt("09:01"),
+			"attachment": map[string]any{"type": "queued_command", "prompt": "dropped", "origin": "human"}})}, nil},
+		// the block does not decode and is dropped
+		{"text a number", []string{asstLine(t, map[string]any{"type": "text", "text": 5}, textBlock("kept"))}, []string{"ASSISTANT: kept"}},
+		{"tool name a number", []string{asstLine(t, map[string]any{"type": "tool_use", "id": "x", "name": 5, "input": map[string]any{"query": "q"}})}, nil},
+		{"tool id a number", []string{asstLine(t, map[string]any{"type": "tool_use", "id": 5, "name": "Read", "input": map[string]any{"file_path": "/f"}})}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, err := readTranscript(writeTranscript(t, append([]string{userLine(t, "09:00", "go")}, tc.lines...)...), 6)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := strings.Join(append([]string{"\n### USER 09:00 UTC\ngo"}, tc.want...), "\n")
+			if got := buildDigest(rows, 6); got != want {
+				t.Errorf("\n got %q\nwant %q", got, want)
+			}
+		})
+	}
+}
+
 func TestBuildDigestQueued(t *testing.T) {
 	rows := rowsOf(t,
 		userLine(t, "09:00", "go"),

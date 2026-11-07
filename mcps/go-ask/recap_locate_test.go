@@ -135,24 +135,67 @@ func TestTranscriptForWholeToken(t *testing.T) {
 }
 
 func TestTranscriptForSkipsChildClaude(t *testing.T) {
-	f := newLocatorFixture(t)
-	// a revmux reviewer or claude -p started from the pane's claude: newer, same pane id,
-	// CLAUDECODE=1 inherited from its parent
-	f.claude(t, 100, "parent", 1000, paneEnv("PANE-1"))
-	f.claude(t, 300, "child", 9000, paneEnv("PANE-1", "CLAUDECODE=1", "CLAUDE_CODE_ENTRYPOINT=sdk-ts"))
-	parent := f.transcript(t, "p", "parent")
-	f.transcript(t, "p", "child")
+	// a claude started from the pane's claude: newer, same pane id, and the markers it inherits
+	for _, tc := range []struct {
+		name  string
+		extra []string
+	}{
+		// revmux strips CLAUDECODE before it starts a reviewer (measured: claude --print, pid
+		// under the pane's claude -> zsh -> revmux) and keeps CLAUDE_CODE_CHILD_SESSION
+		{"revmux reviewer", []string{"CLAUDE_CODE_CHILD_SESSION=1", "CLAUDE_CODE_ENTRYPOINT=cli"}},
+		{"CLAUDECODE only", []string{"CLAUDECODE=1", "CLAUDE_CODE_ENTRYPOINT=sdk-ts"}},
+		{"both markers", []string{"CLAUDECODE=1", "CLAUDE_CODE_CHILD_SESSION=1", "CLAUDE_CODE_ENTRYPOINT=cli"}},
+	} {
+		f := newLocatorFixture(t)
+		f.claude(t, 100, "parent", 1000, paneEnv("PANE-1"))
+		f.claude(t, 300, "child", 9000, paneEnv("PANE-1", tc.extra...))
+		parent := f.transcript(t, "p", "parent")
+		f.transcript(t, "p", "child")
+		id, path, err := f.loc.transcriptFor(context.Background(), "PANE-1")
+		if err != nil || id != "parent" || path != parent {
+			t.Errorf("%s: got %s %s %v, want the parent %s", tc.name, id, path, err, parent)
+		}
 
-	id, path, err := f.loc.transcriptFor(context.Background(), "PANE-1")
-	if err != nil || id != "parent" || path != parent {
-		t.Fatalf("got %s %s %v, want the parent %s", id, path, err, parent)
+		// a pane with only a child live (its parent exited): no claude of its own
+		f = newLocatorFixture(t)
+		f.claude(t, 300, "child", 9000, paneEnv("PANE-1", tc.extra...))
+		f.transcript(t, "p", "child")
+		if id, _, err := f.loc.transcriptFor(context.Background(), "PANE-1"); !errors.Is(err, errNoClaude) {
+			t.Errorf("%s alone: got %s %v, want errNoClaude", tc.name, id, err)
+		}
 	}
 
-	// CLAUDECODE=10 is not CLAUDECODE=1: such a claude is still the pane's own
-	f.claude(t, 301, "not-child", 9500, paneEnv("PANE-1", "CLAUDECODE=10"))
-	f.transcript(t, "p", "not-child")
-	if id, _, _ := f.loc.transcriptFor(context.Background(), "PANE-1"); id != "not-child" {
-		t.Errorf("got %s, want not-child", id)
+	// a marker only counts with the value 1 as a whole token: such a claude is still the pane's own
+	for _, extra := range []string{"CLAUDECODE=10", "CLAUDE_CODE_CHILD_SESSION=10", "X_CLAUDE_CODE_CHILD_SESSION=1", "NOTE=CLAUDECODE=1"} {
+		f := newLocatorFixture(t)
+		f.claude(t, 100, "parent", 1000, paneEnv("PANE-1"))
+		f.claude(t, 301, "not-child", 9500, paneEnv("PANE-1", extra))
+		f.transcript(t, "p", "parent")
+		f.transcript(t, "p", "not-child")
+		if id, _, err := f.loc.transcriptFor(context.Background(), "PANE-1"); err != nil || id != "not-child" {
+			t.Errorf("%s: got %s %v, want not-child", extra, id, err)
+		}
+	}
+}
+
+func TestIsChildClaude(t *testing.T) {
+	for _, tc := range []struct {
+		line string
+		want bool
+	}{
+		{"", false},
+		{"claude " + paneEnv("P"), false},
+		{"claude " + paneEnv("P", "CLAUDECODE=1"), true},
+		{"claude --print " + paneEnv("P", "CLAUDE_CODE_CHILD_SESSION=1"), true},
+		{"claude CLAUDECODE=1 CLAUDE_CODE_CHILD_SESSION=1", true},
+		{"claude CLAUDE_CODE_CHILD_SESSION=1", true}, // at the line's end
+		{"claude CLAUDECODE=10 CLAUDE_CODE_CHILD_SESSION=10", false},
+		{"claude CLAUDECODE=0 CLAUDE_CODE_CHILD_SESSION=", false},
+		{"claude X_CLAUDE_CODE_CHILD_SESSION=1 NOTE=CLAUDECODE=1", false},
+	} {
+		if got := isChildClaude(tc.line); got != tc.want {
+			t.Errorf("isChildClaude(%q) = %v, want %v", tc.line, got, tc.want)
+		}
 	}
 }
 
