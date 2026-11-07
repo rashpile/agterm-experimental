@@ -398,6 +398,16 @@ def test_gates_sit_where_the_gate_table_says() -> None:
     assert step8.index("the `review-round` gate") < step8.index("`mt checkpoint begin review.fix.<n>`")
 
 
+def test_a_gate_revision_registers_its_artifact_again() -> None:
+    """A design or plan gate sends the user to the artifact's view, so a revision registers the changed file
+    again before the gate is asked again; otherwise the view still shows the version before the change."""
+    rows = {m.group(1): m.group(0) for m in re.finditer(r"(?m)^\| `(design|plan)` \|.*$", TEXT)}
+    revision = {gate: row.rsplit("|", 2)[-2] for gate, row in rows.items()}
+    design, plan = revision["design"], revision["plan"]
+    assert design.index("`mt artifact design <state_dir>/design.md` again") < design.index("ask the gate again")
+    assert plan.index("`mt artifact plan <absolute plan path>` again") < plan.index("ask the gate again")
+
+
 def test_brainstorm_and_review_skip() -> None:
     """A profile may skip brainstorm (the questions are still asked, a minimal design.md) or review (no round, no
     question)."""

@@ -322,7 +322,7 @@ gate that has not passed again.
 | gate | when | the question names | a revision |
 |---|---|---|---|
 | `design` | Brainstorm step 5: after `design.md` is written and `mt artifact design` registered it | the Design view | change `design.md` per the text, `mt artifact design <state_dir>/design.md` again, then ask the gate again |
-| `plan` | Plan step 4: after the plan reviewer's findings are applied and `mt artifact plan` registered the plan, before Exec | the plan's path and goal, the Plan view | change the plan per the text (still before Exec, so still the orchestrator's only plan-editing window), one `mt assume "<change made>" --why "plan gate: <text>"` per change, then ask the gate again |
+| `plan` | Plan step 4: after the plan reviewer's findings are applied and `mt artifact plan` registered the plan, before Exec | the plan's path and goal, the Plan view | change the plan per the text (still before Exec, so still the orchestrator's only plan-editing window), one `mt assume "<change made>" --why "plan gate: <text>"` per change, `mt artifact plan <absolute plan path>` again, then ask the gate again |
 | `review-round` | Each round step 8: after the round's one-line report, before its fixer | how many gating findings the fixer would get, the Review view | the text narrows or changes which findings the fixer gets (`FINDINGS_LIST`); a gating finding it takes away is recorded for the round, and one it rules out is excluded from every later round (Each round step 8); then the fixer runs, with no second gate |
 
 ## Subagent prompts

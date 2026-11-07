@@ -350,8 +350,9 @@ def test_before_state_js_loads(tmp_path):
 
 def test_rerender_keeps_the_scroll_and_an_expanded_item(tmp_path):
     first, second = doc_payload("# Plan\n\nv1\n", 2000.0), doc_payload("# Plan\n\nv2\n", 2001.0)
+    # with a task list the plan document starts closed, so the clicks below are the user's own toggles
     steps = [
-        state_step(base_state(artifacts=[art("plan")])),
+        state_step(base_state(artifacts=[art("plan")], tasks=PLAN_TASKS)),
         artifact_step("plan", first),
         SNAP,
         {"click": "[data-fold]", "data": {"fold": "doc"}},
@@ -359,7 +360,7 @@ def test_rerender_keeps_the_scroll_and_an_expanded_item(tmp_path):
         artifact_step("plan", second),
         SNAP,
         artifact_step("plan", {**second, "html": "<p>same updated</p>"}),
-        state_step(base_state(artifacts=[art("plan")], title="Renamed")),
+        state_step(base_state(artifacts=[art("plan")], tasks=PLAN_TASKS, title="Renamed")),
         SNAP,
         {"click": "[data-fold]", "data": {"fold": "doc"}},
         artifact_step("plan", {**second, "updated": 2002.0}),
@@ -566,6 +567,14 @@ def test_plan_tab_rerenders_with_closed_items_kept_closed(tmp_path):
     assert task_fold(plan_rows(snap["pane"])[2][1]) == "closed", "the user closed the running task's checklist"
 
 
+def test_plan_tab_without_tasks_or_sections(tmp_path):
+    p = {**plan_payload(), "items": {}}
+    steps = [state_step(plan_state(tasks=[])), artifact_step("plan", p), SNAP]
+    snap = run_viewer(tmp_path, steps, tab="plan")["snaps"][0]
+    assert '<p class="empty">No task sections in the plan yet.</p>' in snap["pane"]
+    assert '<details class="more" open><summary data-fold="doc">Show the plan document</summary>' in snap["pane"]
+
+
 def test_plan_tab_document_toggle(tmp_path):
     p = plan_payload()
     steps = [
@@ -597,14 +606,18 @@ def test_plan_tab_edge_states(tmp_path):
         SNAP,
     ]
     done, no_tasks, stopped = run_viewer(tmp_path, steps, tab="plan")["snaps"]
+    doc_fold = '<details class="more"{}><summary data-fold="doc">Show the plan document</summary>'
+    assert doc_fold.format("") in done["pane"], "with a task list the document starts closed"
     assert '<div class="now done"><span>✓</span><span class="text">All 2 tasks done</span>' in done["pane"]
     assert '<span class="clock">2 of 2 checks</span>' in done["pane"]
     assert (
         '<li class="task done"><div class="trow"><span class="dot"></span><span class="t"><span class="k">4</span>Empty'
         in done["pane"]
     ), "a task without items has no checklist to open"
-    assert '<p class="empty">No task sections in the plan yet.</p>' in no_tasks["pane"]
-    assert 'class="now' not in no_tasks["pane"] and "Show the plan document" in no_tasks["pane"]
+    # before Exec (the plan gate) the plan has sections the state does not list yet: say so, open the document
+    assert '<p class="empty">3 task sections in the plan; the task list starts with Exec.</p>' in no_tasks["pane"]
+    assert 'class="now' not in no_tasks["pane"] and doc_fold.format(" open") in no_tasks["pane"]
+    assert doc_fold.format("") in stopped["pane"], "once the task list is there the document closes again"
     assert '<span class="dur">5m 00s</span>' in plan_rows(stopped["pane"])[1][1], "the run's end stops the clock"
     assert "data-since" not in stopped["pane"]
 
