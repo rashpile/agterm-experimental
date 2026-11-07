@@ -91,7 +91,7 @@ func selfTargets(t *testing.T, cs *mcp.ClientSession) []string {
 }
 
 func TestHTTPSelfPerSession(t *testing.T) {
-	ts := httptest.NewServer(httpHandler(fakeAgtermctl(t), "", t.TempDir()))
+	ts := httptest.NewServer(httpHandler(fakeAgtermctl(t), "", t.TempDir(), recapDeps{}))
 	t.Cleanup(ts.Close) // registered first, so it runs after the clients' Close
 	url := ts.URL + "/mcp"
 
@@ -117,7 +117,7 @@ func TestHTTPSelfPerSession(t *testing.T) {
 }
 
 func TestHTTPRejectsBrowserAndRebinding(t *testing.T) {
-	ts := httptest.NewServer(httpHandler(fakeAgtermctl(t), "", t.TempDir()))
+	ts := httptest.NewServer(httpHandler(fakeAgtermctl(t), "", t.TempDir(), recapDeps{}))
 	defer ts.Close()
 	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`
 
@@ -146,7 +146,7 @@ func TestHTTPRejectsBrowserAndRebinding(t *testing.T) {
 
 func TestHTTPBearerToken(t *testing.T) {
 	const token = "0123456789abcdef0123"
-	ts := httptest.NewServer(httpHandler(fakeAgtermctl(t), token, t.TempDir()))
+	ts := httptest.NewServer(httpHandler(fakeAgtermctl(t), token, t.TempDir(), recapDeps{}))
 	t.Cleanup(ts.Close)
 	url := ts.URL + "/mcp"
 
@@ -220,7 +220,7 @@ func TestIsLoopback(t *testing.T) {
 }
 
 func TestServeHTTPRefusesOpenAddrWithoutToken(t *testing.T) {
-	err := serveHTTP("10.0.0.2:0", "", t.TempDir(), agtermctl{})
+	err := serveHTTP("10.0.0.2:0", "", t.TempDir(), agtermctl{}, recapDeps{})
 	if err == nil || !strings.Contains(err.Error(), "-token-file") {
 		t.Errorf("serveHTTP without token on 10.0.0.2: %v", err)
 	}
@@ -386,7 +386,7 @@ func callTool(t *testing.T, cs *mcp.ClientSession, name string, args map[string]
 // request_id answers that session's request.
 func TestHTTPAnswerPerSession(t *testing.T) {
 	dir := t.TempDir()
-	ts := httptest.NewServer(httpHandler(fakeAgtermctl(t), "", dir))
+	ts := httptest.NewServer(httpHandler(fakeAgtermctl(t), "", dir, recapDeps{}))
 	t.Cleanup(ts.Close)
 	url := ts.URL + "/mcp"
 	a := connect(t, url, nil)

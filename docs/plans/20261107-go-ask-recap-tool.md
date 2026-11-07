@@ -237,29 +237,31 @@
 - Modify: `mcps/go-ask/http.go`
 - Modify: `mcps/go-ask/http_test.go` (call sites of `httpHandler`), other tests that build `server`
 
-- [ ] add `recapIn`/`recapOut`, `recapDeps{ollama ollamaClient; locator claudeLocator}`, the
+- [x] add `recapIn`/`recapOut`, `recapDeps{ollama ollamaClient; locator claudeLocator}`, the
       `deps recapDeps` field on `server`, and `(*server).recap`: turns rule, `ctl.panes` →
       `resolveTarget` (default `focused`) → refuse `p.Agent` known and not `claude` (`recap supports
       Claude only; <target> runs <agent>`) → locator (`no live claude in <target> (<name>)`, `no
       transcript on disk for Claude session <id>`) → `readTranscript` → `buildDigest` (empty → `the
       transcript of <target> has no turns yet`) → `ollama.chat` → `recapOut` with model, turns,
       transcript path, duration and token counts
-- [ ] register `recap` in `newMCPServer` with a description (what it returns, ~40–50 s with the
+      ➕ `recapDeps` also holds the default `model` (`RECAP_MODEL`, else `gemma4:e4b`), read once by
+      `newRecapDeps(getenv)` in `main`; a server built without one falls back to `gemma4:e4b`
+- [x] register `recap` in `newMCPServer` with a description (what it returns, ~40–50 s with the
       default model, Claude panes only, default target = focused pane, needs a local Ollama); build
       `recapDeps` once in `main` from the env and pass it to the stdio server and through
       `serveHTTP` → `httpHandler`; bump `version` to `0.3.0`; add `recap` to the package comment
-- [ ] add a test tree constant (`recapTreeJSON`, like `answerTree` in `answer_test.go`): one session
+- [x] add a test tree constant (`recapTreeJSON`, like `answerTree` in `answer_test.go`): one session
       with claude in both panes and distinct pane ids, the focused pane among them, one pane running
       codex; `treeJSON`'s focused pane runs codex, so it cannot serve the success tests
-- [ ] write tests over `httptest` + `connect` + `callTool` (the existing pattern): `tools/list`
+- [x] write tests over `httptest` + `connect` + `callTool` (the existing pattern): `tools/list`
       includes `recap` with `session_id`, `turns`, `model` in its input schema; a recap for an
       explicit session id and for the focused pane (temp sessions/projects dirs holding the
       fixture, fake ps, `httptest` Ollama) checking target, name, model, turns, transcript, tokens
       and the digest the fake Ollama received; a `:right` target picks the right pane's claude; a
       recap of the caller's own pane (`X-Agterm-Session-Id` header) succeeds
-- [ ] write tests for errors and limits: pane running codex, no live claude in the pane, transcript
+- [x] write tests for errors and limits: pane running codex, no live claude in the pane, transcript
       with no turns, Ollama not reachable, unknown session; turns 0 → 6, negative → 1, above 50 → 50
-- [ ] run tests - must pass before task 5
+- [x] run tests - must pass before task 5
 
 ### Task 5: Live check against a real session
 
