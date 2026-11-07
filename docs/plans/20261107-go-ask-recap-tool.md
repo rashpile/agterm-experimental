@@ -268,18 +268,24 @@
 **Files:**
 - Create: `mcps/go-ask/recap_live_test.go`
 
-- [ ] create `recap_live_test.go` behind `//go:build live`: build the binary into `t.TempDir()`,
+- [x] create `recap_live_test.go` behind `//go:build live`: build the binary into `t.TempDir()`,
       start it with `mcp.CommandTransport`, call `recap` with `session_id` from `$GO_ASK_LIVE_SESSION`
       (skip when unset) and the default model, print the recap, turns, tokens and duration
-- [ ] run it against a live Claude pane (e.g. `GO_ASK_LIVE_SESSION=$AGTERM_SESSION_ID go test
+      ➕ the binary gets a temp `GO_ASK_STATE_DIR`; the test also prints the transcript path, the
+      sections found and the word count, and fails only on what does not depend on the model's
+      wording (turns 6, a model, a `.jsonl` transcript, Cyrillic text)
+- [x] run it against a live Claude pane (e.g. `GO_ASK_LIVE_SESSION=$AGTERM_SESSION_ID go test
       -tags live -run TestRecapLive -v -timeout 10m`) with the real Ollama; check the recap has the
       four sections, is in Russian and summarizes that pane's own session (not a child claude's);
       also call it once without `session_id` when the focused pane runs claude
-- [ ] record the numbers (model, turns, prompt→output tokens, seconds, sections present) as a
+      ⚠️ the `focused` subtest skipped: agterm's focus was on this session's right split, which runs
+      no claude, and the run does not move the user's focus. The focused path is covered by
+      `TestRecapFocusedAndRight`
+- [x] record the numbers (model, turns, prompt→output tokens, seconds, sections present) as a
       `[decision]` line in the progress file named in the task prompt and in this task's commit
       message
-- [ ] confirm `go test ./...` (no tag) does not build or run the live test
-- [ ] run tests - must pass before task 6
+- [x] confirm `go test ./...` (no tag) does not build or run the live test
+- [x] run tests - must pass before task 6
 
 ### Task 6: Verify acceptance criteria
 - [ ] verify all requirements from Overview are implemented (four sections, Russian, ≤ 250 words
