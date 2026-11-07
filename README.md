@@ -152,6 +152,35 @@ It also renders any file: `webmd.sh file <path.md> [session-id] [--new]`.
 - **Read-only**, unlike `ctrl+b c t` (Last message Typora), which opens the same markdown in a real
   editor that saves in place. Stopgap until the Go `webmd` exists.
 
+### recap: what a Claude session did lately, from a local model
+
+Summarize the last turns of the claude running in a session with a local Ollama model, without
+spending Claude tokens. The summary has four parts: what was done, the user's decisions, the
+current state, what is left. Files: [`commands/recap/`](commands/recap/).
+
+**Usage**
+
+| Trigger | Action |
+|-------|--------|
+| `ctrl+b` `c` `s` | Recap this session in an 85% overlay |
+| `recap.sh <session>` | The same for another session: id, id prefix, name or `active` |
+| `recap.sh --print [<session>]` | Write the recap to this terminal instead |
+
+`--model` picks the model (default `gemma4:e4b`, or `$RECAP_MODEL`) and `--turns` how many user
+turns go in (default 6).
+
+- **The overlay shows the summary while it is written**, then closes and a rendered markdown
+  overlay takes its place. On an M4 Pro, `gemma4:e4b` takes about 40 s for 6 turns.
+- **The transcript is found from the live process**, through `agterm-claude-session`, as webmd
+  does: `/clear` and a split pane's own claude resolve to the right file. A session without a
+  live claude has no recap.
+- **The digest decides the quality more than the model.** `recap.py` sends the user's messages,
+  the user's answers to the agent's questions, one line per tool call, assistant text cut to 600
+  characters, and the last text of each turn nearly whole, since that is where the state is
+  written down. Tool output is left out. In a test, `gemma3:12b` invented a user decision
+  and took twice as long; `gemma4:e4b` got the facts right.
+- **One file per recap** in `~/.local/share/agterm/recap/recap-<stamp>.md`.
+
 ### claude-btw
 
 Fork the Claude session running in the current tab into a new tab beside it, so a side question
