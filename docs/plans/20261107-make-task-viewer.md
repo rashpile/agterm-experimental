@@ -226,11 +226,11 @@
 - Modify: `skills/make-task/scripts/mt`
 - Modify: `skills/make-task/tests/test_plan.py`
 
-- [ ] make `parse_plan` keep each task's checkbox items `{text, checked}` in file order, with the same fence and section rules it uses for counting
-- [ ] `artifact_payload` builds the `plan` payload: the document plus `items` keyed by task n, each item with `render_inline` html
-- [ ] write tests for `parse_plan` items: nested lists, boxes inside fences ignored, `####` subsections kept, a task with no boxes
-- [ ] write tests: `mt plan` and `mt refresh` write the plan payload, and after a ticked box `render_changed` writes it again with `items` (never the document-only shape)
-- [ ] run tests - must pass before task 6
+- [x] make `parse_plan` keep each task's checkbox items `{text, checked}` in file order, with the same fence and section rules it uses for counting
+- [x] `artifact_payload` builds the `plan` payload: the document plus `items` keyed by task n, each item with `render_inline` html
+- [x] write tests for `parse_plan` items: nested lists, boxes inside fences ignored, `####` subsections kept, a task with no boxes
+- [x] write tests: `mt plan` and `mt refresh` write the plan payload, and after a ticked box `render_changed` writes it again with `items` (never the document-only shape)
+- [x] run tests - must pass before task 6
 
 ### Task 6: Progress payload
 

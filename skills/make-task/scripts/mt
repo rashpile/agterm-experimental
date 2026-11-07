@@ -1185,13 +1185,15 @@ FENCE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
 
 
 def parse_plan(text: str) -> list[dict[str, Any]]:
-    """Task sections of a plan: [{"n", "title", "done", "total"}] in file order.
+    """Task sections of a plan: [{"n", "title", "done", "total", "items"}] in file order.
 
     A section starts at `### Task N: title` or `### Iteration N: title` and ends at the
     next `#`, `##` or `###` header (a `####` subsection does not end it). Lines inside
     fenced code blocks are neither headers nor checkboxes. As in CommonMark, a fence closes
     only at a line of the same character, at least as long as the opening run, with nothing
     after it: a ```` fence may show a ``` example, headers and boxes included.
+    `items` holds the section's checkboxes in file order, nested ones too, as {"text", "checked"}:
+    the text is the rest of the checkbox's line.
     """
     tasks: list[dict[str, Any]] = []
     cur: dict[str, Any] | None = None
@@ -1209,7 +1211,7 @@ def parse_plan(text: str) -> list[dict[str, Any]]:
             continue
         h = TASK_HEADER.match(line)
         if h:
-            cur = {"n": int(h.group(2)), "title": h.group(3).strip(), "done": 0, "total": 0}
+            cur = {"n": int(h.group(2)), "title": h.group(3).strip(), "done": 0, "total": 0, "items": []}
             tasks.append(cur)
             continue
         if SECTION_END.match(line):
@@ -1218,9 +1220,10 @@ def parse_plan(text: str) -> list[dict[str, Any]]:
         if cur is not None:
             c = CHECKBOX.match(line)
             if c:
+                checked = c.group(1) in "xX"
+                cur["items"].append({"text": line[c.end() :].strip(), "checked": checked})
                 cur["total"] += 1
-                if c.group(1) in "xX":
-                    cur["done"] += 1
+                cur["done"] += checked
     return tasks
 
 
@@ -1357,40 +1360,65 @@ def first_heading(html: str) -> str | None:
     return text or None
 
 
-def source_markdown(src: Path) -> str:
-    """The source as markdown: a file that is not markdown as a code block (text_as_markdown). Raises OSError."""
-    text = src.read_text(encoding="utf-8", errors="replace")
+def read_source(src: Path) -> str:
+    """An artifact source's text, undecodable bytes replaced. Raises OSError."""
+    return src.read_text(encoding="utf-8", errors="replace")
+
+
+def source_markdown(src: Path, text: str) -> str:
+    """text, src's content, as markdown: a file that is not markdown as a code block (text_as_markdown)."""
     if src.suffix.lower() not in MARKDOWN_SUFFIXES:
         text = text_as_markdown(src.name, text)
     return text
 
 
-def document_payload(art: dict[str, Any]) -> dict[str, Any]:
+def document_payload(art: dict[str, Any], text: str | None = None) -> dict[str, Any]:
     """{title, html, toc, source} of art's source; the title is its first `#` heading, else the artifact's label.
-    Raises OSError."""
+    text is the source's content when the caller read it already. Raises OSError."""
     src = Path(art["source"])
-    html, toc = render_markdown(source_markdown(src))
+    html, toc = render_markdown(source_markdown(src, read_source(src) if text is None else text))
     title = first_heading(html) or ARTIFACT_LABELS.get(art["id"], art["id"])
     return {"title": title, "html": html, "toc": toc, "source": str(src)}
+
+
+def plan_items(text: str) -> dict[str, list[dict[str, Any]]]:
+    """The plan's checkbox items by task n (a string key, as in JSON): [{text, html, checked}] in file order,
+    html being the text as inline markdown. When two sections share a number, the first one's items count."""
+    items: dict[str, list[dict[str, Any]]] = {}
+    for task in parse_plan(text):
+        items.setdefault(str(task["n"]), [{**i, "html": render_inline(i["text"])} for i in task["items"]])
+    return items
 
 
 # the ids whose payload is the document alone
 DOCUMENT_IDS = ("design", "stats")
 # the ids artifact_payload builds a payload for: render_artifact keeps their artifacts/<id>.js too
-PAYLOAD_IDS = DOCUMENT_IDS
+PAYLOAD_IDS = (*DOCUMENT_IDS, "plan")
 
 
 def artifact_payload(
-    run: Path, state: dict[str, Any], art: dict[str, Any], doc: dict[str, Any] | None = None
+    run: Path,
+    state: dict[str, Any],
+    art: dict[str, Any],
+    doc: dict[str, Any] | None = None,
+    text: str | None = None,
 ) -> dict[str, Any] | None:
     """The data artifacts/<id>.js holds for art (without `updated`), or None for an id outside PAYLOAD_IDS.
 
     The one builder per id: every writer of artifacts/<id>.js goes through it, so a later write never
-    replaces a payload with another shape. doc is art's document_payload when the caller rendered it
-    already. Raises OSError.
+    replaces a payload with another shape. doc is art's document_payload and text its source's content when
+    the caller has them already; the plan's items then come from the text its document was rendered from.
+    The plan's payload is its document plus `items` (plan_items). Raises OSError.
     """
-    if art["id"] in DOCUMENT_IDS:
-        return dict(doc) if doc is not None else document_payload(art)
+    aid = art["id"]
+    if aid in DOCUMENT_IDS:
+        return dict(doc) if doc is not None else document_payload(art, text)
+    if aid == "plan":
+        if text is None:
+            text = read_source(Path(art["source"]))
+        payload = dict(doc) if doc is not None else document_payload(art, text)
+        payload["items"] = plan_items(text)
+        return payload
     return None
 
 
@@ -1429,10 +1457,10 @@ def render_artifact(run: Path, state: dict[str, Any], art: dict[str, Any]) -> st
     """Render art's source to <run>/artifacts/<id>.html, and its payload to <id>.js, when its mtime changed;
     return a warning or None.
 
-    The source is read and rendered once (document_payload): the page and the payload share it. It renders
-    again when the page is gone, or, for an id in PAYLOAD_IDS, the data script. A source that is not markdown
-    renders as a code block (text_as_markdown). A failure leaves html and mtime as they were, so the previous
-    page stays and the next call retries.
+    The source is read and rendered once (read_source, document_payload): the page and the payload share it.
+    It renders again when the page is gone, or, for an id in PAYLOAD_IDS, the data script. A source that is
+    not markdown renders as a code block (text_as_markdown). A failure leaves html and mtime as they were, so
+    the previous page stays and the next call retries.
     """
     aid, src = art["id"], Path(art["source"])
     try:
@@ -1449,11 +1477,12 @@ def render_artifact(run: Path, state: dict[str, Any], art: dict[str, Any]) -> st
         return None
     out = run / "artifacts" / f"{aid}.html"
     try:
-        doc = document_payload(art)
+        text = read_source(src)
+        doc = document_payload(art, text)
         page = doc_page(f"{ARTIFACT_LABELS.get(aid, aid)} · {src.name}", doc["html"], doc["toc"])
         out.parent.mkdir(exist_ok=True)
         atomic_write(out, page)
-        payload = artifact_payload(run, state, art, doc)
+        payload = artifact_payload(run, state, art, doc, text)
         if payload is not None:
             write_artifact_data(run, aid, payload)
     except OSError as e:
