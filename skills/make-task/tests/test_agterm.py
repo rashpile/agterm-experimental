@@ -699,11 +699,17 @@ def test_page_error_and_wait_lines(tmp_path):
     assert 'class="now wait"' in html and 'class="phase run wait"' in html
 
 
-def test_page_close_closes_overlay_then_created_split(tmp_path):
+def test_page_close_sends_one_request(tmp_path):
+    # a split mt created: split.close alone, which drops the page on it too. agterm drops a
+    # request the page sends after its own overlay.close, so the pane would stay.
     out = run_page(tmp_path, js(base_state(created_split=True)), [["[data-close]", {}]])
-    assert out["requests"] == [["session.overlay.close", {}], ["session.split.close", {"target": SID}]]
+    assert out["requests"] == [["session.split.close", {"target": SID}]]
+    # the user's own split stays: only the overlay closes
     out = run_page(tmp_path, js(base_state(created_split=False)), [["[data-close]", {}]])
     assert out["requests"] == [["session.overlay.close", {}]]
+    # split.close refused: the page is still there and closes its overlay
+    out = run_page(tmp_path, js(base_state(created_split=True)), [["[data-close]", {}]], reject="no split")
+    assert out["requests"] == [["session.split.close", {"target": SID}], ["session.overlay.close", {}]]
 
 
 def viewer_open(tab: str, run: str = "/state/run") -> list[Any]:

@@ -380,14 +380,17 @@
         <button type="button" data-close="1">Close</button></footer>`;
   }
 
-  // Close: drop the dashboard overlay, then the split mt created for it (explicit target, because the
-  // page is gone by the time the second request is handled). Both requests are sent at once.
+  // Close: one request. The page lives in its overlay, so once session.overlay.close runs nothing
+  // more from it reaches agterm: a session.split.close sent after it is lost and the pane stays.
+  // A split mt created goes with session.split.close, which drops the page on it too (explicit
+  // target: the page's own session); when agterm refuses that, the page still runs and closes its
+  // overlay. A split mt did not create is the user's and stays.
   function closeDashboard() {
     if (!window.agterm) return;
-    const split = !!(state && state.created_split);
-    const sid = state && state.agterm_session;
-    agterm.request('session.overlay.close', {}).catch(() => {});
-    if (split) agterm.request('session.split.close', sid ? { target: sid } : {}).catch(() => {});
+    const closeOverlay = () => agterm.request('session.overlay.close', {}).catch(() => {});
+    if (!(state && state.created_split)) { closeOverlay(); return; }
+    const sid = state.agterm_session;
+    agterm.request('session.split.close', sid ? { target: sid } : {}).catch(closeOverlay);
   }
 
   app.addEventListener('click', e => {
