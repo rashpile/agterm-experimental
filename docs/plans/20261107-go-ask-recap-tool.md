@@ -172,21 +172,25 @@
 - Create: `mcps/go-ask/recap_ollama.go`
 - Create: `mcps/go-ask/recap_ollama_test.go`
 
-- [ ] create `ollamaClient{host string; http *http.Client}` with `newOllamaClient(getenv)` (host
+- [x] create `ollamaClient{host string; http *http.Client}` with `newOllamaClient(getenv)` (host
       rules above) and `chat(ctx, model, digest) (text string, promptTokens, outputTokens int, err)`
       sending the request body above (`stream:false`), 10-minute ceiling on top of ctx
-- [ ] errors: connection failure → `Ollama is not reachable at <host> (<err>); start it with:
+      ➕ the ceiling is a third field `ceiling time.Duration` (a ctx deadline with a cause, 0 = none),
+      not `http.Client.Timeout`, so a ceiling hit gets its own message (`ollama did not answer
+      within 10m0s; …`) and is not mistaken for a network timeout; a nil `http` uses the default
+      client
+- [x] errors: connection failure → `ollama is not reachable at <host> (<err>); start it with:
       ollama serve`; non-2xx → `ollama answered <code>: <body, first 300 chars>`, with `; pull it
       with: ollama pull <model>` when the status is 404 or the body says the model is not found; a
       JSON `error` field → `ollama: <error>`; empty `message.content` → `ollama returned an empty
       answer`; ctx cancellation returned as the ctx error
-- [ ] write tests with `httptest.Server`: request path, method and decoded body (model, stream
+- [x] write tests with `httptest.Server`: request path, method and decoded body (model, stream
       false, keep_alive, num_ctx, temperature, system and user messages = SYSTEM and PROMPT+digest),
       success with token counts and trimmed content
-- [ ] write tests for errors: 404 model not found (pull hint), 500 body, `error` field in a 200,
+- [x] write tests for errors: 404 model not found (pull hint), 500 body, `error` field in a 200,
       empty content, unreachable host (a closed listener's address), cancelled ctx, host
       normalization (`127.0.0.1:11434` → `http://…`, trailing slash)
-- [ ] run tests - must pass before task 3
+- [x] run tests - must pass before task 3
 
 ### Task 3: Pane → Claude transcript locator
 
