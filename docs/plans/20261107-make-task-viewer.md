@@ -328,11 +328,21 @@
 - Modify: `skills/make-task/assets/viewer.html`
 - Modify: `skills/make-task/tests/test_viewer.py`
 
-- [ ] render the Plan tab: task rows from `state.tasks` joined with the payload's `items`, progress bars and durations, the running task's checklist open, the document behind "Show the plan document"
-- [ ] render the Progress tab: the timeline grouped by entry, decisions and deviations marked, filters All · Decisions · Deviations · Review, the raw text when there are no entries
-- [ ] escape every progress string; only renderer HTML (`html` fields) is inserted as HTML
-- [ ] write node-harness tests: plan rows and statuses, the open checklist, the document toggle, timeline marks, each filter, the raw fallback, a progress line holding `<script>` shown as text
-- [ ] run tests - must pass before task 11
+- [x] render the Plan tab: task rows from `state.tasks` joined with the payload's `items`, progress bars and durations, the running task's checklist open, the document behind "Show the plan document"
+- [x] render the Progress tab: the timeline grouped by entry, decisions and deviations marked, filters All · Decisions · Deviations · Review, the raw text when there are no entries
+- [x] escape every progress string; only renderer HTML (`html` fields) is inserted as HTML
+- [x] write node-harness tests: plan rows and statuses, the open checklist, the document toggle, timeline marks, each filter, the raw fallback, a progress line holding `<script>` shown as text
+- [x] run tests - must pass before task 11
+- ➕ as built: Plan has the mockup's status band (`Task N of M · title`, `X of Y checks`; `All N tasks done`
+  when none is left) and a `Tasks` heading with the plan's path; every task with items is a `<details>` whose
+  checklist the user can open (`data-fold="task:<n>"`), the running one open until the user closes it (the
+  `open` Map keeps what the user toggled, so the next running task opens by itself); task titles come from
+  `state.tasks` and are escaped text (the payload carries no title html); the tab also re-renders when the
+  state's tasks change. Progress shows the header fields, filter chips with counts (top-level lines; the
+  filter lives in JS), entries newest first with their lines in file order, `Task N · title` (an untitled
+  entry is "Log"), times as `HH:MM:SS` with the full stamp as the title; a review line's tag is what precedes
+  its first `: ` (`round 3 (final)`), else `review`; nested items under their line; a filter with no match
+  says "No <filter> logged."; no entries shows the raw text, an empty log "The progress log is empty."
 
 ### Task 11: Viewer Review tab
 

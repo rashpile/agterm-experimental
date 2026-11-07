@@ -430,23 +430,349 @@ def test_header_after_the_run_shows_when_each_tab_was_updated(tmp_path):
     assert re.search(r'data-show="design"[^>]*>Design<span class="ago">[^<—]+</span>', head)
 
 
-# ---------------------------------------------------------------- the other tabs until they get their own view
+# ---------------------------------------------------------------- Plan
 
 
-def test_progress_raw_text_is_escaped_and_review_lists_rounds(tmp_path):
-    s = base_state(artifacts=[art("progress"), art("review")])
-    progress = {"source": "/p.txt", "header": {}, "entries": [], "raw": "task 1: <script>x</script>\n", "updated": 1.0}
-    review = {"rounds": [{"round": 1, "state": "done"}, {"round": 2, "state": "<b>running</b>"}], "updated": 1.0}
+def task(n: int, title: str, status: str, done: int, total: int, started=None, finished=None) -> dict[str, Any]:
+    return {"n": n, "title": title, "status": status, "done": done, "total": total, "started": started,
+            "finished": finished}  # fmt: skip
+
+
+def boxes(*items: tuple[str, bool]) -> list[dict[str, Any]]:
+    return [{"text": text, "html": MT.render_inline(text), "checked": checked} for text, checked in items]
+
+
+PLAN_TASKS = [
+    task(1, "Store", "done", 2, 2, 1000.0, 1090.0),
+    task(2, "Load <sessions>", "run", 1, 3, 1100.0),
+    task(3, "Docs", "pending", 0, 2),
+]
+
+
+def plan_payload(updated: float = 2000.0) -> dict[str, Any]:
+    p = doc_payload("# Plan\n\n### Task 1: Store\n\n- [x] write\n", updated)
+    p["items"] = {
+        "1": boxes(("write `store`", True), ("test it", True)),
+        "2": boxes(("read `load`", True), ("cache <it>", False), ("test", False)),
+        "3": boxes(("readme", False), ("docs", False)),
+    }
+    return p
+
+
+def plan_state(tasks: list[dict[str, Any]] = PLAN_TASKS, **kw: Any) -> dict[str, Any]:
+    return base_state(artifacts=[art("plan", hint="docs/plans/p.md")], tasks=tasks, **kw)
+
+
+def plan_rows(pane: str) -> dict[int, tuple[str, str]]:
+    """Task n -> (status, the row's html), from the Plan tab's task list."""
+    rows = re.findall(r'<li class="task (\w+)">(.*?)(?=<li class="task |</ul><details class="more")', pane, re.DOTALL)
+    out = {}
+    for status, html in rows:
+        m = re.search(r'<span class="k">(\d+)</span>', html)
+        assert m, html
+        out[int(m.group(1))] = (status, html)
+    return out
+
+
+def task_fold(row: str) -> str:
+    m = re.match(r'<details class="tfold"( open)?><summary class="trow" data-fold="task:\d+">', row)
+    assert m, row
+    return "open" if m.group(1) else "closed"
+
+
+def fold_click(key: str) -> dict[str, Any]:
+    return {"click": "[data-fold]", "data": {"fold": key}}
+
+
+def test_plan_tab_rows_join_the_tasks_with_their_items(tmp_path):
+    out = run_viewer(tmp_path, [state_step(plan_state()), artifact_step("plan", plan_payload()), SNAP], tab="plan")
+    pane = out["snaps"][0]["pane"]
+    rows = plan_rows(pane)
+    assert {n: status for n, (status, _) in rows.items()} == {1: "done", 2: "run", 3: "pending"}
+    done, run, pending = rows[1][1], rows[2][1], rows[3][1]
+    assert '<span class="bar">2/2<i><b style="width:100%"></b></i></span><span class="dur">1m 30s</span>' in done
+    assert (
+        '<span class="bar">1/3<i><b style="width:33%"></b></i></span><span class="dur live" data-since="1100">' in run
+    )
+    assert '<span class="bar">0/2<i><b style="width:0%"></b></i></span><span class="dur"></span>' in pending
+    assert '<span class="t"><span class="k">2</span>Load &lt;sessions&gt;</span>' in run, "a title is text"
+    assert '<li class="x">read <code>load</code></li><li>cache &lt;it&gt;</li><li>test</li>' in run, (
+        "item html goes in as HTML, a checked item marked"
+    )
+    assert '<li class="x">write <code>store</code></li><li class="x">test it</li>' in done
+    assert (
+        '<div class="now"><span>▸</span><span class="text">Task 2 of 3 · Load &lt;sessions&gt;</span>'
+        '<span class="clock">3 of 7 checks</span></div>' in pane
+    )
+    assert (
+        '<h2 class="sect">Tasks <span class="count">3</span><span class="aside"><code>docs/plans/p.md</code></span></h2>'
+        in pane
+    )
+    assert pane.index('<ul class="rows">') < pane.index('<details class="more"><summary data-fold="doc">')
+
+
+def test_plan_tab_opens_the_running_tasks_checklist_and_keeps_what_the_user_toggled(tmp_path):
+    moved = [
+        task(1, "Store", "done", 2, 2, 1000.0, 1090.0),
+        task(2, "Load <sessions>", "done", 3, 3, 1100.0, 1200.0),
+        task(3, "Docs", "run", 0, 2, 1200.0),
+    ]
     steps = [
-        state_step(s),
-        artifact_step("progress", progress),
+        state_step(plan_state()),
+        artifact_step("plan", plan_payload()),
         SNAP,
-        {"click": "[data-show]", "data": {"show": "review"}},
-        artifact_step("review", review),
+        fold_click("task:1"),
+        fold_click("task:2"),
+        SNAP,
+        state_step(plan_state(tasks=moved)),
+        SNAP,
+        fold_click("task:3"),
+        state_step(plan_state(tasks=moved, title="Renamed")),
         SNAP,
     ]
-    prog, rev = run_viewer(tmp_path, steps, tab="progress")["snaps"]
-    assert prog["pane"] == '<pre class="raw">task 1: &lt;script&gt;x&lt;/script&gt;\n</pre>'
+    first, toggled, next_task, closed = run_viewer(tmp_path, steps, tab="plan")["snaps"]
+
+    def folds(snap: dict[str, Any]) -> dict[int, str]:
+        return {n: task_fold(row) for n, (_, row) in plan_rows(snap["pane"]).items()}
+
+    assert folds(first) == {1: "closed", 2: "open", 3: "closed"}, "only the running task's checklist is open"
+    assert folds(toggled) == {1: "closed", 2: "open", 3: "closed"}, "a click toggles the details in place"
+    assert toggled["paneWrites"] == first["paneWrites"]
+    assert folds(next_task) == {1: "open", 2: "closed", 3: "open"}, (
+        "the new state re-renders the rows: what the user toggled stays, the next running task opens"
+    )
+    assert next_task["paneWrites"] == first["paneWrites"] + 1
+    assert plan_rows(next_task["pane"])[2][0] == "done"
+    assert "Task 3 of 3 · Docs" in next_task["pane"]
+    assert closed["paneWrites"] == next_task["paneWrites"], "a state that leaves the tasks leaves the pane"
+
+
+def test_plan_tab_rerenders_with_closed_items_kept_closed(tmp_path):
+    steps = [
+        state_step(plan_state()),
+        artifact_step("plan", plan_payload()),
+        fold_click("task:2"),
+        artifact_step("plan", plan_payload(2001.0)),
+        SNAP,
+    ]
+    snap = run_viewer(tmp_path, steps, tab="plan")["snaps"][0]
+    assert task_fold(plan_rows(snap["pane"])[2][1]) == "closed", "the user closed the running task's checklist"
+
+
+def test_plan_tab_document_toggle(tmp_path):
+    p = plan_payload()
+    steps = [
+        state_step(plan_state()),
+        artifact_step("plan", p),
+        SNAP,
+        fold_click("doc"),
+        artifact_step("plan", {**p, "updated": 2001.0}),
+        SNAP,
+    ]
+    closed, opened = run_viewer(tmp_path, steps, tab="plan")["snaps"]
+    doc = f'<div class="docwrap"><article class="doc">{p["html"]}</article>'
+    assert f'<details class="more"><summary data-fold="doc">Show the plan document</summary>{doc}' in closed["pane"]
+    assert (
+        f'<details class="more" open><summary data-fold="doc">Show the plan document</summary>{doc}' in opened["pane"]
+    )
+
+
+def test_plan_tab_edge_states(tmp_path):
+    all_done = [task(1, "Store", "done", 2, 2, 1000.0, 1090.0), task(4, "Empty", "done", 0, 0)]
+    left_running = [task(1, "Store", "run", 1, 2, 1000.0)]
+    steps = [
+        state_step(plan_state(tasks=all_done)),
+        artifact_step("plan", plan_payload()),
+        SNAP,
+        state_step(plan_state(tasks=[])),
+        SNAP,
+        state_step(plan_state(tasks=left_running, finished=1300.0)),
+        SNAP,
+    ]
+    done, no_tasks, stopped = run_viewer(tmp_path, steps, tab="plan")["snaps"]
+    assert '<div class="now done"><span>✓</span><span class="text">All 2 tasks done</span>' in done["pane"]
+    assert '<span class="clock">2 of 2 checks</span>' in done["pane"]
+    assert (
+        '<li class="task done"><div class="trow"><span class="dot"></span><span class="t"><span class="k">4</span>Empty'
+        in done["pane"]
+    ), "a task without items has no checklist to open"
+    assert '<p class="empty">No task sections in the plan yet.</p>' in no_tasks["pane"]
+    assert 'class="now' not in no_tasks["pane"] and "Show the plan document" in no_tasks["pane"]
+    assert '<span class="dur">5m 00s</span>' in plan_rows(stopped["pane"])[1][1], "the run's end stops the clock"
+    assert "data-since" not in stopped["pane"]
+
+
+# ---------------------------------------------------------------- Progress
+
+
+def pline(kind: str, text: str, at: str | None = None, children: tuple[str, ...] = ()) -> dict[str, Any]:
+    return {"at": at, "kind": kind, "text": text, "children": [pline("item", c) for c in children]}
+
+
+def pentry(n: int | None, title: str, lines: list[dict[str, Any]], at: str | None = None) -> dict[str, Any]:
+    return {"at": at, "task": n, "title": title, "lines": lines}
+
+
+PROGRESS = {
+    "source": "/state/progress.txt",
+    "header": {"plan": "docs/plans/p.md", "started": "2026-11-06 20:46:02"},
+    "entries": [
+        pentry(
+            1,
+            "Store",
+            [pline("item", "modified: a.py", children=("nested",)), pline("decision", "task 1: kept it - simpler")],
+            "2026-11-06 20:50:16",
+        ),
+        pentry(
+            2,
+            "Load",
+            [pline("deviation", "task 2: skipped x - why"), pline("text", "free line")],
+            "2026-11-06 21:10:00",
+        ),
+        pentry(
+            None,
+            "Review",
+            [
+                pline("review", "review round 1: 0 critical, 2 major, 1 gating"),
+                pline("item", "fixes: b"),
+                pline("review", "review round 2 fix (commit abc), the user's rule"),
+            ],
+        ),
+        pentry(None, "fixer: done", [pline("decision", "fixer: one helper", "2026-11-06 21:49:33")]),
+    ],
+    "raw": "not shown",
+    "updated": 3000.0,
+}
+
+
+def progress_steps(payload: dict[str, Any] = PROGRESS) -> list[dict[str, Any]]:
+    return [state_step(base_state(artifacts=[art("progress")])), artifact_step("progress", payload)]
+
+
+def sections(pane: str) -> list[str]:
+    return re.findall(r'<li class="sec"><time[^>]*>[^<]*</time><span>([^<]*)</span></li>', pane)
+
+
+def chip(pane: str, key: str) -> str:
+    m = re.search(rf'<button type="button" class="[^"]*" data-filter="{key}"[^>]*>.*?</button>', pane)
+    assert m, pane
+    return m.group(0)
+
+
+def filter_click(key: str) -> dict[str, Any]:
+    return {"click": "[data-filter]", "data": {"filter": key}}
+
+
+def test_progress_timeline_marks_decisions_deviations_and_review(tmp_path):
+    pane = run_viewer(tmp_path, [*progress_steps(), SNAP], tab="progress")["snaps"][0]["pane"]
+    assert sections(pane) == ["fixer: done", "Review", "Task 2 · Load", "Task 1 · Store"], "newest entry first"
+    assert '<li class="sec"><time title="2026-11-06 20:50:16">20:50:16</time><span>Task 1 · Store</span></li>' in pane
+    assert (
+        '<div class="loghead"><span>plan <code>docs/plans/p.md</code></span>'
+        "<span>started <code>2026-11-06 20:46:02</code></span></div>" in pane
+    )
+    task1 = pane[pane.index("Task 1 · Store") :]
+    assert task1.index("modified: a.py") < task1.index("kept it"), "an entry's lines stay in file order"
+    assert '<li><time></time><div class="line">modified: a.py<ul class="kids"><li>nested</li></ul></div></li>' in pane
+    assert '<span class="mark dec"><span class="tag">decision</span>task 1: kept it - simpler</span>' in pane
+    assert (
+        '<li><time title="2026-11-06 21:49:33">21:49:33</time><div class="line"><span class="mark dec">'
+        '<span class="tag">decision</span>fixer: one helper</span></div></li>' in pane
+    )
+    assert '<span class="mark dev"><span class="tag">deviation</span>task 2: skipped x - why</span>' in pane
+    assert '<span class="mark rev"><span class="tag">round 1</span>0 critical, 2 major, 1 gating</span>' in pane
+    assert (
+        '<span class="mark rev"><span class="tag">review</span>review round 2 fix (commit abc), the user&#39;s rule</span>'
+        in pane
+    ), "a review line without `: ` keeps its text whole"
+    assert '<div class="line">free line</div>' in pane and '<div class="line">fixes: b</div>' in pane
+    assert "not shown" not in pane, "the raw text is the fallback only"
+
+
+@pytest.mark.parametrize(
+    "key, label, count, texts, entries",
+    [
+        ("all", "All", 8, ["modified: a.py", "free line", "fixes: b"], ["fixer: done", "Review", "Task 2 · Load",
+                                                                         "Task 1 · Store"]),
+        ("decision", "Decisions", 2, ["kept it", "one helper"], ["fixer: done", "Task 1 · Store"]),
+        ("deviation", "Deviations", 1, ["skipped x"], ["Task 2 · Load"]),
+        ("review", "Review", 2, ["0 critical", "review round 2 fix"], ["Review"]),
+    ],
+)  # fmt: skip
+def test_progress_filters(tmp_path, key, label, count, texts, entries):
+    steps = [
+        *progress_steps(),
+        filter_click(key),
+        SNAP,
+        artifact_step("progress", {**PROGRESS, "updated": 3001.0}),
+        SNAP,
+    ]
+    filtered, reloaded = run_viewer(tmp_path, steps, tab="progress")["snaps"]
+    pane = filtered["pane"]
+    assert chip(pane, key) == (
+        f'<button type="button" class="rchip cur" data-filter="{key}" aria-pressed="true"><b>{label}</b>{count}</button>'
+    )
+    assert [m for m in re.findall(r'data-filter="(\w+)"', pane)] == ["all", "decision", "deviation", "review"]
+    assert all('aria-pressed="false"' in chip(pane, k) for k in ("all", "decision", "deviation", "review") if k != key)
+    assert sections(pane) == entries, "an entry with no matching line is left out"
+    for text in texts:
+        assert text in pane, text
+    if key != "all":
+        kinds = {"decision": "dec", "deviation": "dev", "review": "rev"}
+        assert re.findall(r'class="mark (\w+)"', pane) == [kinds[key]] * count
+        assert "modified: a.py" not in pane and "free line" not in pane
+    assert reloaded["paneWrites"] == filtered["paneWrites"] + 1
+    assert reloaded["pane"] == pane, "the filter stays across a new payload"
+
+
+def test_progress_filter_with_no_match_and_back_to_all(tmp_path):
+    payload = {**PROGRESS, "entries": [pentry(1, "Store", [pline("item", "modified: a.py")])]}
+    steps = [*progress_steps(payload), SNAP, filter_click("deviation"), SNAP, filter_click("all"), SNAP]
+    first, none, back = run_viewer(tmp_path, steps, tab="progress")["snaps"]
+    assert '<p class="empty">No deviations logged.</p>' in none["pane"] and '<ol class="tl">' not in none["pane"]
+    assert "<b>Deviations</b>0</button>" in none["pane"]
+    assert back["pane"] == first["pane"]
+    assert none["paneWrites"] == first["paneWrites"] + 1 and back["paneWrites"] == none["paneWrites"] + 1
+
+
+def test_progress_raw_fallback(tmp_path):
+    raw = {"source": "/p.txt", "header": {}, "entries": [], "raw": "task 1: <script>x</script>\n", "updated": 1.0}
+    empty = {**raw, "raw": "", "updated": 2.0}
+    steps = [*progress_steps(raw), SNAP, artifact_step("progress", empty), SNAP]
+    shown, nothing = run_viewer(tmp_path, steps, tab="progress")["snaps"]
+    assert shown["pane"] == '<pre class="raw">task 1: &lt;script&gt;x&lt;/script&gt;\n</pre>', (
+        "no entries: the raw text"
+    )
+    assert nothing["pane"] == '<p class="empty">The progress log is empty.</p>'
+
+
+def test_progress_strings_are_text(tmp_path):
+    evil = "<script>alert(1)</script>"
+    payload = {
+        "source": evil,
+        "header": {evil: evil},
+        "entries": [
+            pentry(1, evil, [pline("item", evil, evil, (evil,)), pline("decision", evil)], evil),
+            pentry(None, evil, [pline("review", f"review {evil}: {evil}"), pline("text", evil)]),
+        ],
+        "raw": evil,
+        "updated": 1.0,
+    }
+    pane = run_viewer(tmp_path, [*progress_steps(payload), SNAP], tab="progress")["snaps"][0]["pane"]
+    assert "<script" not in pane
+    # the header's key and value; two entry titles; two stamps, each as text and title; four line texts, the
+    # review tag and a child
+    assert pane.count("&lt;script&gt;alert(1)&lt;/script&gt;") == 14
+    assert '<span class="tag">&lt;script&gt;alert(1)&lt;/script&gt;</span>' in pane, "the review tag too"
+
+
+# ---------------------------------------------------------------- Review until it gets its own view
+
+
+def test_review_lists_rounds(tmp_path):
+    s = base_state(artifacts=[art("review")])
+    review = {"rounds": [{"round": 1, "state": "done"}, {"round": 2, "state": "<b>running</b>"}], "updated": 1.0}
+    rev = run_viewer(tmp_path, [state_step(s), artifact_step("review", review), SNAP], tab="review")["snaps"][0]
     assert '<span class="rchip"><b>Round 1</b>done</span>' in rev["pane"]
     assert "&lt;b&gt;running&lt;/b&gt;" in rev["pane"] and "<b>running" not in rev["pane"]
 
@@ -467,3 +793,43 @@ def test_viewer_renders_what_mt_writes(mt, git_repo, tmp_path):
     )
     assert '<a class="l2" href="#doc-goal">Goal</a>' in snap["pane"]
     assert 'data-ago="' in tab_button(snap["head"], "design")
+
+
+def test_viewer_renders_the_plan_and_progress_mt_writes(mt, git_repo, tmp_path):
+    run = init_run(mt, git_repo)
+    plan = git_repo / "docs" / "plans" / "p.md"
+    plan.parent.mkdir(parents=True)
+    plan.write_text(
+        "# Plan\n\n### Task 1: Store `sessions`\n- [x] write the store\n- [x] test it\n"
+        "### Task 2: Load\n- [x] read `load`\n- [ ] cache <it>\n### Task 3: Docs\n- [ ] readme\n"
+    )
+    fixture = TESTS / "fixtures" / "progress.txt"
+    assert mt("plan", str(plan), "--progress", str(fixture), cwd=git_repo).code == 0
+    steps = [
+        {"eval": (run / "state.js").read_text()},
+        {"eval": (run / "artifacts" / "plan.js").read_text()},
+        SNAP,
+        {"click": "[data-show]", "data": {"show": "progress"}},
+        {"eval": (run / "artifacts" / "progress.js").read_text()},
+        SNAP,
+    ]
+    plan_snap, progress_snap = run_viewer(tmp_path, steps, tab="plan")["snaps"]
+    rows = plan_rows(plan_snap["pane"])
+    assert {n: status for n, (status, _) in rows.items()} == {1: "done", 2: "run", 3: "pending"}
+    assert "Store `sessions`" in rows[1][1], "the state's title is text"
+    assert (
+        task_fold(rows[2][1]) == "open"
+        and '<li class="x">read <code>load</code></li><li>cache &lt;it&gt;</li>' in rows[2][1]
+    )
+    assert "Task 2 of 3 · Load" in plan_snap["pane"] and "3 of 5 checks" in plan_snap["pane"]
+
+    parsed = MT.parse_progress(fixture.read_text())
+    pane = progress_snap["pane"]
+    titles = [f"Task {e['task']} · {e['title']}" if e["task"] is not None else e["title"] for e in parsed["entries"]]
+    assert sections(pane) == [MT.html_escape(t).replace("&#x27;", "&#39;") for t in reversed(titles)]
+    lines = [line for e in parsed["entries"] for line in e["lines"]]
+    for key, kind in (("decision", "dec"), ("deviation", "dev"), ("review", "rev")):
+        n = sum(line["kind"] == key for line in lines)
+        assert n and f"</b>{n}</button>" in chip(pane, key) and pane.count(f'class="mark {kind}"') == n
+    assert f"<b>All</b>{len(lines)}</button>" in chip(pane, "all")
+    assert "&lt;pasted_content&gt;" in pane and "<pasted_content>" not in pane
