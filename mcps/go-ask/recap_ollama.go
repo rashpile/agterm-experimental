@@ -50,6 +50,27 @@ func ollamaHost(v string) string {
 	return strings.TrimRight(h, "/")
 }
 
+// recapSystemFor and recapPromptFor are recap.py's SYSTEM and PROMPT in English, with the
+// language the recap is written in as a parameter. The digest they frame is recap.py's, Russian
+// cut marker included.
+func recapSystemFor(language string) string {
+	return "You help a developer recall what happened in a Claude Code agent session. " +
+		"Write in " + language + ". Rely only on the journal and invent nothing: " +
+		"if something is not in the journal, do not write about it."
+}
+
+func recapPromptFor(language string) string {
+	return "Below is the journal of the session's last turns: the user's messages (### USER), the user's " +
+		"answers to the agent's questions (USER ANSWER), the assistant's text (ASSISTANT), tool calls " +
+		"(- tool) and subagent reports. Write a summary of the session's state in " + language +
+		", section titles included, at most 250 words, with these sections:\n" +
+		"1. What was done (as bullet points, with the names of commits, branches and files when the journal has them).\n" +
+		"2. The user's decisions.\n" +
+		"3. Current state: what is running, what is changed, what is merged, what is not pushed.\n" +
+		"4. What is left to do or check.\n\n" +
+		"JOURNAL:\n"
+}
+
 type ollamaMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
@@ -82,10 +103,10 @@ var errOllamaCeiling = errors.New("ollama ceiling passed")
 // `{"error":"model \"x\" not found, try pulling it first"}`.
 var modelNotFound = regexp.MustCompile(`(?i)model.*not found`)
 
-// chat sends the digest to model with recap.py's system prompt and prompt and returns the
+// chat sends the digest to model with the system prompt and prompt for language and returns the
 // trimmed answer with the prompt and output token counts. The call ends when ctx ends or the
 // client's ceiling passes, whichever is first; a cancelled ctx is returned as ctx's error.
-func (c ollamaClient) chat(ctx context.Context, model, digest string) (text string, promptTokens, outputTokens int, err error) {
+func (c ollamaClient) chat(ctx context.Context, model, language, digest string) (text string, promptTokens, outputTokens int, err error) {
 	callCtx := ctx
 	if c.ceiling > 0 {
 		var cancel context.CancelFunc
@@ -102,8 +123,8 @@ func (c ollamaClient) chat(ctx context.Context, model, digest string) (text stri
 		KeepAlive: ollamaKeepAlive,
 		Options:   ollamaOptions{NumCtx: numCtxFor(digest), Temperature: ollamaTemperature},
 		Messages: []ollamaMessage{
-			{Role: "system", Content: recapSystem},
-			{Role: "user", Content: recapPrompt + digest},
+			{Role: "system", Content: recapSystemFor(language)},
+			{Role: "user", Content: recapPromptFor(language) + digest},
 		},
 	})
 	if err != nil {

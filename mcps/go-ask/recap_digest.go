@@ -43,20 +43,6 @@ const (
 	recapCutPrefix   = "(начало журнала обрезано)\n"
 )
 
-// recapSystem and recapPrompt are SYSTEM and PROMPT of recap.py, byte for byte.
-const recapSystem = "Ты помогаешь разработчику вспомнить, что происходило в сессии агента Claude Code. " +
-	"Отвечай по-русски. Опирайся только на журнал, ничего не выдумывай: " +
-	"если чего-то нет в журнале, не пиши об этом."
-
-const recapPrompt = "Ниже журнал последних ходов сессии: сообщения пользователя (### USER), ответы пользователя " +
-	"на вопросы агента (USER ANSWER), текст ассистента (ASSISTANT), вызовы инструментов (- tool) и " +
-	"отчёты субагентов. Составь сводку состояния сессии, не больше 250 слов, разделы:\n" +
-	"1. Что сделано (по пунктам, с именами коммитов, веток и файлов, если они есть в журнале).\n" +
-	"2. Решения пользователя.\n" +
-	"3. Текущее состояние: что запущено, что изменено, что влито, что не запушено.\n" +
-	"4. Что осталось сделать или проверить.\n\n" +
-	"ЖУРНАЛ:\n"
-
 // transcriptRow is the part of one Claude transcript line the digest reads. It is narrow on
 // purpose: a 170 MB transcript decoded as maps is a large spike in a long-lived daemon.
 // Message.Content stays raw: a string or a list of blocks, decoded only for rows the digest uses.

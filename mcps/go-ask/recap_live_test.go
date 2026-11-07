@@ -5,6 +5,8 @@
 // by hand from a pane whose session runs Claude:
 //
 //	GO_ASK_LIVE_SESSION=$AGTERM_SESSION_ID go test -tags live -run TestRecapLive -v -timeout 10m
+//
+// GO_ASK_LIVE_LANGUAGE passes a language; without it the recap is in English.
 
 package main
 
@@ -17,13 +19,12 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// recapSections are words from the four section titles recapPrompt asks for.
-var recapSections = []string{"сделано", "решения", "состояние", "осталось"}
+// recapSections are words from the four section titles recapPromptFor asks for, in English.
+var recapSections = []string{"done", "decision", "state", "left"}
 
 func TestRecapLive(t *testing.T) {
 	target := os.Getenv("GO_ASK_LIVE_SESSION")
@@ -81,6 +82,11 @@ func liveConnect(t *testing.T) *mcp.ClientSession {
 // does not depend on the model's wording.
 func liveRecap(t *testing.T, cs *mcp.ClientSession, args map[string]any) {
 	t.Helper()
+	wantLang := recapDefaultLanguage
+	if lang := os.Getenv("GO_ASK_LIVE_LANGUAGE"); lang != "" {
+		args["language"] = lang
+		wantLang = lang
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 9*time.Minute)
 	defer cancel()
 	start := time.Now()
@@ -103,8 +109,8 @@ func liveRecap(t *testing.T, cs *mcp.ClientSession, args map[string]any) {
 			found = append(found, s)
 		}
 	}
-	t.Logf("target %s (%s)\ntranscript %s\nmodel %s, turns %d, tokens %d -> %d, %.1f s (tool %d ms)\nsections %d/%d %v, %d words\n\n%s",
-		out.Target, out.Name, out.Transcript, out.Model, out.Turns, out.PromptTokens, out.OutputTokens,
+	t.Logf("target %s (%s)\ntranscript %s\nmodel %s, language %s, turns %d, tokens %d -> %d, %.1f s (tool %d ms)\nEnglish section words %d/%d %v, %d words\n\n%s",
+		out.Target, out.Name, out.Transcript, out.Model, out.Language, out.Turns, out.PromptTokens, out.OutputTokens,
 		time.Since(start).Seconds(), out.DurationMs, len(found), len(recapSections), found,
 		len(strings.Fields(out.Recap)), out.Recap)
 
@@ -117,7 +123,7 @@ func liveRecap(t *testing.T, cs *mcp.ClientSession, args map[string]any) {
 	if !strings.HasSuffix(out.Transcript, ".jsonl") {
 		t.Errorf("transcript %q is not a .jsonl file", out.Transcript)
 	}
-	if !strings.ContainsFunc(out.Recap, func(r rune) bool { return unicode.Is(unicode.Cyrillic, r) }) {
-		t.Error("the recap has no Cyrillic text")
+	if out.Language != wantLang {
+		t.Errorf("language = %q, want %q", out.Language, wantLang)
 	}
 }

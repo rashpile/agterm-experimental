@@ -641,26 +641,3 @@ func TestDigestParityTruncated(t *testing.T) {
 	}
 	assertSameDigest(t, path, 30)
 }
-
-func TestRecapPromptsMatchRecapPy(t *testing.T) {
-	py, err := exec.LookPath("python3")
-	if err != nil {
-		t.Skip("python3 is not on PATH")
-	}
-	script := "import json, sys; sys.path.insert(0, '../../commands/recap'); import recap; " +
-		"print(json.dumps([recap.SYSTEM, recap.PROMPT]))"
-	out, err := exec.Command(py, "-c", script).Output()
-	if err != nil {
-		t.Fatalf("import recap.py: %v", err)
-	}
-	var got [2]string
-	if err := json.Unmarshal(out, &got); err != nil {
-		t.Fatal(err)
-	}
-	if got[0] != recapSystem {
-		t.Errorf("recapSystem differs from SYSTEM\n go %q\n py %q", recapSystem, got[0])
-	}
-	if got[1] != recapPrompt {
-		t.Errorf("recapPrompt differs from PROMPT\n go %q\n py %q", recapPrompt, got[1])
-	}
-}

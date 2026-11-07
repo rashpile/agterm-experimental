@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -14,16 +16,21 @@ const (
 	recapDefaultTurns = 6
 	recapMaxTurns     = 50
 	recapDefaultModel = "gemma4:e4b"
+	// recapDefaultLanguage is the language of a recap when the caller names none.
+	recapDefaultLanguage = "English"
+	recapMaxLanguage     = 40 // runes: a language name or code, not a sentence
 )
 
 type recapIn struct {
 	SessionID string `json:"session_id,omitempty" jsonschema:"focused for the pane the user has focus on in agterm; or a session id, unique id prefix or exact session name, with :right appended for the split pane. Omitted: the focused pane"`
 	Turns     int    `json:"turns,omitempty" jsonschema:"how many of the user's last prompts the recap covers, 1 to 50. Omitted or 0: 6"`
 	Model     string `json:"model,omitempty" jsonschema:"Ollama model that writes the recap. Omitted: RECAP_MODEL from go-ask's environment, else gemma4:e4b"`
+	Language  string `json:"language,omitempty" jsonschema:"the language to write the recap in: a name such as English, Russian or German, or a code such as de. Omitted: English"`
 }
 
 type recapOut struct {
-	Recap        string `json:"recap" jsonschema:"the recap, markdown in Russian: what was done, the user's decisions, the current state, what is left"`
+	Recap        string `json:"recap" jsonschema:"the recap, markdown in the requested language: what was done, the user's decisions, the current state, what is left"`
+	Language     string `json:"language" jsonschema:"the language the recap was asked for"`
 	Target       string `json:"target"`
 	Name         string `json:"name"`
 	Model        string `json:"model" jsonschema:"the Ollama model that wrote the recap"`
@@ -59,9 +66,26 @@ func recapTurns(n int) int {
 	return min(max(n, 1), recapMaxTurns)
 }
 
+// recapLanguage applies the language rule: absent or blank is English; otherwise the value,
+// trimmed, goes into the prompt as it is, so it must be one short line.
+func recapLanguage(v string) (string, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return recapDefaultLanguage, nil
+	}
+	if utf8.RuneCountInString(v) > recapMaxLanguage || strings.IndexFunc(v, unicode.IsControl) >= 0 {
+		return "", fmt.Errorf("language must be a language name or code on one line, at most %d characters", recapMaxLanguage)
+	}
+	return v, nil
+}
+
 func (s *server) recap(ctx context.Context, _ *mcp.CallToolRequest, in recapIn) (*mcp.CallToolResult, recapOut, error) {
 	start := time.Now()
 	turns := recapTurns(in.Turns)
+	language, err := recapLanguage(in.Language)
+	if err != nil {
+		return nil, recapOut{}, err
+	}
 	model := strings.TrimSpace(in.Model)
 	if model == "" {
 		model = s.deps.model
@@ -104,12 +128,13 @@ func (s *server) recap(ctx context.Context, _ *mcp.CallToolRequest, in recapIn) 
 	if digest == "" {
 		return nil, recapOut{}, fmt.Errorf("the transcript of %s has no turns yet", p.Target)
 	}
-	text, promptTokens, outputTokens, err := s.deps.ollama.chat(ctx, model, digest)
+	text, promptTokens, outputTokens, err := s.deps.ollama.chat(ctx, model, language, digest)
 	if err != nil {
 		return nil, recapOut{}, err
 	}
 	return nil, recapOut{
 		Recap:        text,
+		Language:     language,
 		Target:       p.Target,
 		Name:         p.Name,
 		Model:        model,

@@ -405,6 +405,7 @@ Input:
 | `session_id` | string | no | Which pane to recap, resolved as for [ask](#ask). Omitted means `focused`. |
 | `turns` | integer | no | How many of the user's last prompts the recap covers. Omitted or `0` means 6. A value below 1 counts as 1, a value above 50 as 50. |
 | `model` | string | no | The Ollama model that writes the recap. Omitted means `RECAP_MODEL` from go-ask's environment, else `gemma4:e4b`. |
+| `language` | string | no | The language to write the recap in: a name such as `English`, `Russian` or `German`, or a code such as `de`. Omitted or blank means `English`. Surrounding spaces are trimmed; a value over 40 characters or with a control character such as a newline is refused. A client passes the language it answers the user in. |
 
 The target errors are the ones `ask` gives. Since `recap` only reads, it accepts the caller's own
 pane and a `blocked` pane. It refuses a pane whose `agent` is known and isn't `claude`. A pane with
@@ -415,7 +416,8 @@ Output:
 
 | Field | Always | Meaning |
 |-------|--------|---------|
-| `recap` | yes | The recap, markdown in Russian. |
+| `recap` | yes | The recap, markdown in the requested language. |
+| `language` | yes | The language the recap was asked for, after the default. |
 | `target` | yes | The resolved address. |
 | `name` | yes | Session name. |
 | `model` | yes | The model that wrote the recap. |
@@ -425,8 +427,9 @@ Output:
 | `prompt_tokens` | no | Tokens the model read, when Ollama reports them. |
 | `output_tokens` | no | Tokens the model wrote, when Ollama reports them. |
 
-The prompt is the one `commands/recap/recap.py` sends, byte for byte. It asks for at most 250
-words in Russian, in four sections:
+The prompt is `commands/recap/recap.py`'s, in English, with the language as a parameter:
+recap.py's own prompt is Russian and always asks for Russian. It asks for at most 250 words in the
+requested language, section titles included, in four sections:
 
 1. what was done, with the commit, branch and file names the transcript holds;
 2. the user's decisions;
@@ -437,20 +440,20 @@ The system prompt tells the model to rely on the transcript alone and make nothi
 model still gets a name wrong now and then. In the live check `gemma4:e4b` called a merge commit's
 subject a branch name.
 
-With `gemma4:e4b` a recap takes under a minute. The live check recapped 6 turns in 36 seconds:
-3889 tokens in, 1392 out. A model Ollama hasn't loaded yet adds its load time, and more turns or a
-larger model take longer.
+With `gemma4:e4b` a recap takes under a minute. The live checks recapped 6 turns in 36 to 42
+seconds: 3889 to 9740 tokens in, 1290 to 1448 out, in English and in Russian. A model Ollama
+hasn't loaded yet adds its load time, and more turns or a larger model take longer.
 
 Example:
 
 ```json
 {"jsonrpc": "2.0", "id": 7, "method": "tools/call",
- "params": {"name": "recap", "arguments": {"session_id": "agent"}}}
+ "params": {"name": "recap", "arguments": {"session_id": "agent", "language": "Russian"}}}
 ```
 
 ```json
 {"jsonrpc": "2.0", "id": 7, "result": {
-  "structuredContent": {"recap": "1. Что сделано\n- ...", "target": "7E1C11A9-3D4B-4609-AFAB-0DFD423D961C",
+  "structuredContent": {"recap": "1. Что сделано\n- ...", "language": "Russian", "target": "7E1C11A9-3D4B-4609-AFAB-0DFD423D961C",
                         "name": "agent", "model": "gemma4:e4b", "turns": 6,
                         "transcript": "/Users/pkoptilin/.claude/projects/-Users-pkoptilin-workspace-ops/636abdbb-8439-493f-a620-cf7952b447f6.jsonl",
                         "duration_ms": 36214, "prompt_tokens": 3889, "output_tokens": 1392},
@@ -526,8 +529,8 @@ go-ask sends one request and doesn't stream:
 POST <OLLAMA_HOST>/api/chat
 {"model": "gemma4:e4b", "stream": false, "keep_alive": "5m",
  "options": {"num_ctx": 8192, "temperature": 0.2},
- "messages": [{"role": "system", "content": "<recap.py's SYSTEM>"},
-              {"role": "user", "content": "<recap.py's PROMPT><digest>"}]}
+ "messages": [{"role": "system", "content": "<system prompt for the language>"},
+              {"role": "user", "content": "<prompt for the language><digest>"}]}
 ```
 
 `num_ctx` is the smallest of 8192, 16384, 32768 and 65536 that holds the digest's length in
@@ -643,6 +646,7 @@ not a JSON-RPC error, so the model reads the reason and can retry, for example a
 | `unknown request_id "x"` | The state dir has no request with that id. |
 | `read request <id>: ...`, `parse request <id>: ...` | The request file can't be read, or isn't JSON. |
 | `read the turn journal of <target>: ...` | The target pane's journal exists but can't be read. |
+| `language must be a language name or code on one line, at most 40 characters` | `recap`'s `language` is over 40 characters or holds a control character. |
 | `recap supports Claude only; <target> runs <agent>` | `recap` on a pane whose agent is known and isn't Claude. |
 | `no live claude in <target> (<name>)` | `recap` found no running claude with the pane's id: a bare shell, a claude that has exited, or only a claude started from inside another one. |
 | `agterm's tree gives <target> (<name>) no pane id, ...` | agterm's tree lists the pane without a pane id, so `recap` can't tell which claude runs there. |

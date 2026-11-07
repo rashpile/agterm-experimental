@@ -52,7 +52,7 @@ func TestOllamaChatRequest(t *testing.T) {
 		}
 		io.WriteString(w, `{"model":"m","message":{"role":"assistant","content":"\n  ## Сводка\n1. Сделано  \n\n"},"done":true,"prompt_eval_count":1234,"eval_count":210}`)
 	})
-	text, pt, ot, err := c.chat(context.Background(), "gemma4:e4b", digest)
+	text, pt, ot, err := c.chat(context.Background(), "gemma4:e4b", "Russian", digest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func TestOllamaChatRequest(t *testing.T) {
 	if len(msgs) != 2 {
 		t.Fatalf("messages = %v, want system and user", msgs)
 	}
-	want := []map[string]any{{"role": "system", "content": recapSystem}, {"role": "user", "content": recapPrompt + digest}}
+	want := []map[string]any{{"role": "system", "content": recapSystemFor("Russian")}, {"role": "user", "content": recapPromptFor("Russian") + digest}}
 	for i, w := range want {
 		m, _ := msgs[i].(map[string]any)
 		if m["role"] != w["role"] || m["content"] != w["content"] {
@@ -84,7 +84,7 @@ func TestOllamaChatRequest(t *testing.T) {
 
 func TestOllamaChatNoTokenCounts(t *testing.T) {
 	c := fakeOllama(t, replyWith(200, `{"message":{"role":"assistant","content":"ok"},"done":true}`))
-	text, pt, ot, err := c.chat(context.Background(), "m", "d")
+	text, pt, ot, err := c.chat(context.Background(), "m", "English", "d")
 	if err != nil || text != "ok" || pt != 0 || ot != 0 {
 		t.Errorf("chat = %q, %d, %d, %v; want ok, 0, 0, nil", text, pt, ot, err)
 	}
@@ -122,7 +122,7 @@ func TestOllamaChatErrors(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			c := fakeOllama(t, replyWith(tc.status, tc.body))
-			_, _, _, err := c.chat(context.Background(), "nope:1b", "digest")
+			_, _, _, err := c.chat(context.Background(), "nope:1b", "English", "digest")
 			switch {
 			case err == nil:
 				t.Fatal("chat succeeded, want an error")
@@ -143,7 +143,7 @@ func TestOllamaChatUnreachable(t *testing.T) {
 	addr := ln.Addr().String()
 	ln.Close()
 	c := ollamaClient{host: ollamaHost(addr), http: &http.Client{}, ceiling: ollamaCeiling}
-	_, _, _, err = c.chat(context.Background(), "m", "d")
+	_, _, _, err = c.chat(context.Background(), "m", "English", "d")
 	if err == nil {
 		t.Fatal("chat succeeded on a closed port")
 	}
@@ -156,7 +156,7 @@ func TestOllamaChatUnreachable(t *testing.T) {
 
 func TestOllamaChatBadHost(t *testing.T) {
 	c := ollamaClient{host: ollamaHost("bad host:11434"), http: &http.Client{}, ceiling: ollamaCeiling}
-	_, _, _, err := c.chat(context.Background(), "m", "d")
+	_, _, _, err := c.chat(context.Background(), "m", "English", "d")
 	if want := `ollama host "http://bad host:11434": `; err == nil || !strings.HasPrefix(err.Error(), want) {
 		t.Errorf("error = %v, want prefix %q", err, want)
 	}
@@ -168,7 +168,7 @@ func TestOllamaChatCutAnswer(t *testing.T) {
 		w.Header().Set("Content-Length", "100")
 		io.WriteString(w, `{"message":`) // the server closes the connection 89 bytes short
 	})
-	_, _, _, err := c.chat(context.Background(), "m", "d")
+	_, _, _, err := c.chat(context.Background(), "m", "English", "d")
 	if want := "read the ollama answer: unexpected EOF"; err == nil || err.Error() != want {
 		t.Errorf("error = %v, want %q", err, want)
 	}
@@ -180,7 +180,7 @@ func TestOllamaChatCancelled(t *testing.T) {
 		c := fakeOllama(t, func(http.ResponseWriter, *http.Request) { called.Store(true) })
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		_, _, _, err := c.chat(ctx, "m", "d")
+		_, _, _, err := c.chat(ctx, "m", "English", "d")
 		if !errors.Is(err, context.Canceled) || err.Error() != context.Canceled.Error() {
 			t.Errorf("error = %v, want the ctx error", err)
 		}
@@ -197,7 +197,7 @@ func TestOllamaChatCancelled(t *testing.T) {
 		})
 		ctx, cancel := context.WithCancel(context.Background())
 		go func() { <-got; cancel() }()
-		_, _, _, err := c.chat(ctx, "m", "d")
+		_, _, _, err := c.chat(ctx, "m", "English", "d")
 		if !errors.Is(err, context.Canceled) || err.Error() != context.Canceled.Error() {
 			t.Errorf("error = %v, want the ctx error", err)
 		}
@@ -206,7 +206,7 @@ func TestOllamaChatCancelled(t *testing.T) {
 		c := fakeOllama(t, func(_ http.ResponseWriter, r *http.Request) { hangUp(r) })
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 		defer cancel()
-		_, _, _, err := c.chat(ctx, "m", "d")
+		_, _, _, err := c.chat(ctx, "m", "English", "d")
 		if !errors.Is(err, context.DeadlineExceeded) || err.Error() != context.DeadlineExceeded.Error() {
 			t.Errorf("error = %v, want the ctx error", err)
 		}
@@ -217,7 +217,7 @@ func TestOllamaChatCeiling(t *testing.T) {
 	t.Run("waiting for the answer", func(t *testing.T) {
 		c := fakeOllama(t, func(_ http.ResponseWriter, r *http.Request) { hangUp(r) })
 		c.ceiling = 50 * time.Millisecond
-		_, _, _, err := c.chat(context.Background(), "gemma4:e4b", "d")
+		_, _, _, err := c.chat(context.Background(), "gemma4:e4b", "English", "d")
 		want := "ollama did not answer within 50ms; try fewer turns or a smaller model than gemma4:e4b"
 		if err == nil || err.Error() != want {
 			t.Errorf("error = %v, want %q", err, want)
@@ -231,7 +231,7 @@ func TestOllamaChatCeiling(t *testing.T) {
 			<-r.Context().Done()
 		})
 		c.ceiling = 50 * time.Millisecond
-		_, _, _, err := c.chat(context.Background(), "m", "d")
+		_, _, _, err := c.chat(context.Background(), "m", "English", "d")
 		if err == nil || !strings.HasPrefix(err.Error(), "ollama did not answer within 50ms") {
 			t.Errorf("error = %v, want the ceiling error", err)
 		}
@@ -239,7 +239,7 @@ func TestOllamaChatCeiling(t *testing.T) {
 	t.Run("no ceiling and no http client", func(t *testing.T) {
 		c := fakeOllama(t, replyWith(200, `{"message":{"content":"ok"}}`))
 		c.ceiling, c.http = 0, nil
-		if text, _, _, err := c.chat(context.Background(), "m", "d"); err != nil || text != "ok" {
+		if text, _, _, err := c.chat(context.Background(), "m", "English", "d"); err != nil || text != "ok" {
 			t.Errorf("chat = %q, %v; want ok", text, err)
 		}
 	})
@@ -270,5 +270,27 @@ func TestNewOllamaClient(t *testing.T) {
 	}
 	if d := newOllamaClient(func(string) string { return "" }); d.host != defaultOllamaHost {
 		t.Errorf("default host = %q", d.host)
+	}
+}
+
+func TestRecapPrompts(t *testing.T) {
+	for _, lang := range []string{"English", "Russian", "pt-BR"} {
+		sys, prompt := recapSystemFor(lang), recapPromptFor(lang)
+		if !strings.Contains(sys, "Write in "+lang+".") || !strings.Contains(sys, "invent nothing") {
+			t.Errorf("%s: system prompt %q", lang, sys)
+		}
+		for _, want := range []string{
+			"### USER", "USER ANSWER", "ASSISTANT", "- tool", "subagent reports",
+			"in " + lang + ", section titles included, at most 250 words",
+			"\n1. What was done", "\n2. The user's decisions.", "\n3. Current state", "what is not pushed",
+			"\n4. What is left to do or check.",
+		} {
+			if !strings.Contains(prompt, want) {
+				t.Errorf("%s: prompt has no %q", lang, want)
+			}
+		}
+		if !strings.HasSuffix(prompt, "\n\nJOURNAL:\n") {
+			t.Errorf("%s: prompt does not end with the JOURNAL line: %q", lang, prompt)
+		}
 	}
 }

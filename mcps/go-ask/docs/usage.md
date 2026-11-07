@@ -252,10 +252,11 @@ Claude calls `recap` and waits for it, for example with these arguments:
 ```json
 {"session_id": "sh:kobo"}
 {"session_id": "sh:pako-channels:right", "turns": 10}
+{"session_id": "sh:kobo", "language": "Russian"}
 ```
 
-Without a target it recaps the pane that has focus in agterm. The recap is markdown in Russian, at
-most about 250 words, in four sections: what was done, your decisions, the current state with what
+Without a target it recaps the pane that has focus in agterm. The recap is markdown in the
+`language` the call names, English by default, at most about 250 words, in four sections: what was done, your decisions, the current state with what
 isn't pushed or merged, and what is left. It covers your last 6 prompts in that session unless you
 name another number, at most 50. `recap` works on Claude panes only, your own pane included, since
 it types nothing.
@@ -338,11 +339,12 @@ saving its request, and `answer` over stdio and over two HTTP sessions.
 
 For `recap` they cover the digest and its limits, with Cyrillic text at the cut points, and compare
 it with the output of `commands/recap/recap.py --digest` on a shared fixture when `python3` is on
-`PATH`. They cover the transcript reader with long and broken lines, the Ollama request and each
-Ollama error against an `httptest` server, and the pane-to-claude lookup with temp `~/.claude`
-dirs and a fake `ps`, child claudes with `CLAUDECODE=1` or `CLAUDE_CODE_CHILD_SESSION=1` included.
-One test runs the real `/bin/ps` on a helper process. Over HTTP they cover the targets, a `:right`
-split, the caller's own pane, the `turns` limits and the errors.
+`PATH`. They cover the transcript reader with long and broken lines, the prompts for a language,
+the Ollama request and each Ollama error against an `httptest` server, and the pane-to-claude
+lookup with temp `~/.claude` dirs and a fake `ps`, child claudes with `CLAUDECODE=1` or
+`CLAUDE_CODE_CHILD_SESSION=1` included. One test runs the real `/bin/ps` on a helper process. Over
+HTTP they cover the targets, a `:right` split, the caller's own pane, the `turns` limits, the
+`language` default and refusals, and the errors.
 
 All of them run against a fake agtermctl, a temp state dir and a fake Ollama, and touch neither
 agterm, `~/.local/state` nor `~/.claude`.
@@ -355,7 +357,8 @@ processes and transcripts in `~/.claude`, and the local Ollama. It has the `live
 GO_ASK_LIVE_SESSION=$AGTERM_SESSION_ID go test -tags live -run TestRecapLive -v -timeout 10m
 ```
 
-It prints the recap, the transcript path, the token counts, the time and which of the four
-sections it found. It fails only on what doesn't depend on the model's wording: 6 turns, a model, a
-`.jsonl` transcript and Cyrillic text. A second subtest recaps the focused pane when that pane runs
+`GO_ASK_LIVE_LANGUAGE=Russian` asks for another language; without it the recap is in English. It
+prints the recap, the transcript path, the token counts, the time and which of the four English
+section words it found. It fails only on what doesn't depend on the model's wording: 6 turns, a
+model, a `.jsonl` transcript and the language it asked for. A second subtest recaps the focused pane when that pane runs
 claude, and skips otherwise.

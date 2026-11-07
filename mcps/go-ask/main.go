@@ -241,12 +241,13 @@ func newMCPServer(s *server) *mcp.Server {
 	}, s.answer)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name: "recap",
-		Description: "Recap what the Claude agent in an agterm pane did in its last turns: a markdown summary in Russian " +
+		Description: "Recap what the Claude agent in an agterm pane did in its last turns: a markdown summary " +
 			"of at most about 250 words with four sections (what was done, the user's decisions, the current state " +
 			"including what is not pushed or merged, what is left), written by a local Ollama model from that " +
 			"Claude session's transcript. Takes about 40-50 s with the default model: call it once and wait. " +
 			"Without session_id it recaps the pane the user has focus on in agterm. turns is how many of the " +
-			"user's last prompts to cover (default 6, at most 50). Types nothing into the pane, so the caller's " +
+			"user's last prompts to cover (default 6, at most 50). language is the language to write it in, such as " +
+			"English or Russian (default English); pass the language you answer the user in. Types nothing into the pane, so the caller's " +
 			"own pane can be recapped too. Supports Claude panes only and needs Ollama running on this machine.",
 	}, s.recap)
 	return srv
