@@ -41,7 +41,7 @@
   }
   .page { padding: 22px 24px 18px; max-width: 760px; }
 
-  /* first line: the Close (X) and Agent (A) buttons, then the title */
+  /* first line: the Close (X), Expand and Agent (A) buttons, then the title */
   header .top { display: flex; align-items: flex-start; gap: 10px; margin: 0 0 6px; }
   header h1 {
     font: 600 21px/1.2 -apple-system, "SF Pro Display", system-ui, sans-serif;
@@ -54,6 +54,8 @@
     border: 1px solid var(--faint); cursor: pointer;
   }
   .actions button:hover { border-color: var(--run); }
+  .actions button svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 1.5;
+    stroke-linecap: round; stroke-linejoin: round; }
   .actions button.close:hover { color: var(--bad); border-color: var(--bad); }
   .actions button:focus-visible { outline: 2px solid var(--run); outline-offset: 2px; }
   .actions button.agent.stopped { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 60%, transparent);
@@ -373,7 +375,7 @@
 
     app.innerHTML = `
       <header>
-        <div class="top"><span class="actions"><button type="button" class="close" data-close="1" title="Close the dashboard" aria-label="Close">X</button>${s.dashboard_pane ? agentButton() : ''}</span>
+        <div class="top"><span class="actions"><button type="button" class="close" data-close="1" title="Close the dashboard" aria-label="Close">X</button>${s.dashboard_pane ? expandButton() + agentButton() : ''}</span>
           <h1>${esc(s.title)}</h1></div>
         <div class="where"><span><code>${esc(s.repo)}</code></span><span>branch <code>${esc(s.branch || '—')}</code></span>
           ${s.worktree ? '<span class="tree">worktree</span>' : '<span>in place</span>'}${profileSpans}</div>
@@ -390,17 +392,46 @@
       <footer><code>${esc(s.state_dir || '')}</code><span class="mode">${esc(mode)}</span></footer>`;
   }
 
-  // Close: one request. The page lives in its overlay, so once session.overlay.close runs nothing
-  // more from it reaches agterm: a session.split.close sent after it is lost and the pane stays.
-  // A split mt created goes with session.split.close, which drops the page on it too (explicit
-  // target: the page's own session); when agterm refuses that, the page still runs and closes its
-  // overlay. A split mt did not create is the user's and stays.
+  // a request to the page's own session (explicit target: it outlives the page's overlay)
+  function sessionRequest(cmd, args) {
+    const sid = state && state.agterm_session, opts = sid ? { target: sid } : {};
+    if (args) opts.args = args;
+    return agterm.request(cmd, opts);
+  }
+
+  // Close: the page lives in its overlay, so once session.overlay.close runs nothing more from it
+  // reaches agterm: a request sent after it is lost. A split mt created goes with session.split.close,
+  // which drops the page on it too; when agterm refuses that, the page still runs and closes its
+  // overlay. A split mt did not create is the user's and stays, shown again first when Expand hid it.
   function closeDashboard() {
     if (!window.agterm) return;
     const closeOverlay = () => agterm.request('session.overlay.close', {}).catch(() => {});
-    if (!(state && state.created_split)) { closeOverlay(); return; }
-    const sid = state.agterm_session;
-    agterm.request('session.split.close', sid ? { target: sid } : {}).catch(closeOverlay);
+    if (state && state.created_split) { sessionRequest('session.split.close').catch(closeOverlay); return; }
+    if (expanded) { sessionRequest('session.split', { mode: 'on' }).then(closeOverlay, closeOverlay); return; }
+    closeOverlay();
+  }
+
+  // Expand: the dashboard over the whole session. agterm cannot zoom a page overlay, but a hidden split
+  // shows only its focused pane, overlay included: focus the dashboard's pane, then hide the split.
+  // Collapse shows the split again. `expanded` is read from `tree` with every state.js load (a split
+  // that exists and is hidden), and set at once on a click so the button flips without waiting.
+  let expanded = false;
+  // arrows out to the corners, or in from them
+  const EXPAND_ICON = { Expand: 'M7 1h4v4M5 11H1V7M11 1L7 5M1 11l4-4', Collapse: 'M11 5H7V1M1 7h4v4M7 5l4-4M5 7l-4 4' };
+  function expandButton() {
+    const [label, title] = expanded ? ['Collapse', 'Show the agent pane again']
+      : ['Expand', 'Expand the dashboard to the whole session'];
+    return `<button type="button" class="size" data-expand="1" title="${title}" aria-label="${label}">` +
+      `<svg viewBox="0 0 12 12" aria-hidden="true"><path d="${EXPAND_ICON[label]}"/></svg></button>`;
+  }
+  function toggleExpand() {
+    if (!window.agterm || !state || !state.dashboard_pane) return;
+    const was = expanded, undo = () => { expanded = was; render(); };
+    expanded = !was;
+    render();
+    if (was) { sessionRequest('session.split', { mode: 'on' }).catch(undo); return; }
+    sessionRequest('session.focus', { pane: state.dashboard_pane })
+      .then(() => sessionRequest('session.split', { mode: 'off' })).catch(undo);
   }
 
   // Agent: the pane the agent runs in, the one the dashboard does not cover.
@@ -434,27 +465,32 @@
     }
     return null;
   }
-  function pollAgent() {
+  // the session's agent status and split visibility, for the Agent and Expand buttons
+  function pollSession() {
     if (!window.agterm || !state || !state.dashboard_pane || !state.agterm_session) return;
     const sid = state.agterm_session;
     agterm.request('tree').then(r => {
       const node = findSession(r, sid);
       const st = node && (!node.statusPane || node.statusPane === agentPane()) ? node.status || null : null;
-      if (st !== agentStatus) { agentStatus = st; render(); }
+      const exp = !!(node && node.hasSplit && node.split === false);
+      if (st !== agentStatus || exp !== expanded) { agentStatus = st; expanded = exp; render(); }
     }).catch(() => {});
   }
 
-  // hand the keyboard to the agent's pane
+  // hand the keyboard to the agent's pane, showing the split again when Expand hid it
   function focusAgent() {
     if (!window.agterm || !state || !state.dashboard_pane) return;
-    const pane = agentPane();
-    const sid = state.agterm_session;
-    agterm.request('session.focus', sid ? { target: sid, args: { pane } } : { args: { pane } }).catch(() => {});
+    const focus = () => sessionRequest('session.focus', { pane: agentPane() }).catch(() => {});
+    if (!expanded) { focus(); return; }
+    expanded = false;
+    render();
+    sessionRequest('session.split', { mode: 'on' }).then(focus, focus);
   }
 
   app.addEventListener('click', e => {
     if (e.target.closest('[data-close]')) { closeDashboard(); return; }
     if (e.target.closest('[data-agent]')) { focusAgent(); return; }
+    if (e.target.closest('[data-expand]')) { toggleExpand(); return; }
     const el = e.target.closest('[data-open]');
     if (!el || !window.agterm || !state) return;
     const id = el.dataset.open, a = artifact(id);
@@ -482,7 +518,7 @@
     mode = 'live';
     if (txt !== lastText || !wasLive) { lastText = txt; state = next; render(); }
     document.title = 'make-task · ' + String((next && next.title) || '');
-    pollAgent();
+    pollSession();
   };
   function poll() {
     const el = document.createElement('script');

@@ -512,7 +512,8 @@ const requests = [], appended = [], targets = [];
 let trees = 0;
 globalThis.window = globalThis;
 // with a reject message every request fails as agterm refuses one (e.g. `overlay already open`).
-// `tree` (the Agent button's status poll, sent with every state) is counted apart and answered with `tree`.
+// `tree` (the session poll for the Agent and Expand buttons, sent with every state) is counted apart and
+// answered with `tree`. The clicks run once that reply is handled.
 globalThis.agterm = { request(cmd, opts) {
   if (cmd === 'tree') trees++; else requests.push([cmd, opts]);
   return reject ? Promise.reject(new Error(reject)) : Promise.resolve(cmd === 'tree' ? tree : {}); } };
@@ -523,14 +524,16 @@ globalThis.document = {
 globalThis.setInterval = () => 0;
 (0, eval)(script);
 (0, eval)(input);
-for (const [sel, data] of clicks) {
-  const el = { dataset: data || {}, title: '' };
-  targets.push(el);
-  app.listeners.click({ target: { closest: s => (s === sel ? el : null) } });
-}
-// after the requests' promises settle: a refused open sets its tooltip and re-renders
-setImmediate(() => process.stdout.write(JSON.stringify({
-  html: app.innerHTML, title: document.title, requests, appended, trees, titles: targets.map(t => t.title) })));
+setImmediate(() => {
+  for (const [sel, data] of clicks) {
+    const el = { dataset: data || {}, title: '' };
+    targets.push(el);
+    app.listeners.click({ target: { closest: s => (s === sel ? el : null) } });
+  }
+  // after the requests' promises settle: a refused open sets its tooltip and re-renders
+  setImmediate(() => process.stdout.write(JSON.stringify({
+    html: app.innerHTML, title: document.title, requests, appended, trees, titles: targets.map(t => t.title) })));
+});
 """
 
 
@@ -705,14 +708,20 @@ def test_page_error_and_wait_lines(tmp_path):
 
 
 def test_page_buttons_lead_the_title_line(tmp_path):
-    # Close (X), then Agent (A), then the title, on the header's first line; none in the footer
+    # Close (X), Expand, then Agent (A), then the title, on the header's first line; none in the footer
     html = run_page(tmp_path, js(base_state(dashboard_pane="right")))["html"]
     top = html.index('<div class="top">')
-    assert top < html.index('aria-label="Close">X</button>') < html.index('aria-label="Agent">A</button>') < html.index("<h1>")
+    assert (
+        top
+        < html.index('aria-label="Close">X</button>')
+        < html.index('aria-label="Expand"><svg')
+        < html.index('aria-label="Agent">A</button>')
+        < html.index("<h1>")
+    )
     assert "<button" not in html[html.index("<footer>") :]
     # a run without the dashboard pane: Close alone
     html = run_page(tmp_path, js(base_state(dashboard_pane=None)))["html"]
-    assert 'aria-label="Close">X</button>' in html and "data-agent=" not in html
+    assert 'aria-label="Close">X</button>' in html and "data-agent=" not in html and "data-expand=" not in html
 
 
 def test_page_close_sends_one_request(tmp_path):
@@ -726,6 +735,61 @@ def test_page_close_sends_one_request(tmp_path):
     # split.close refused: the page is still there and closes its overlay
     out = run_page(tmp_path, js(base_state(created_split=True)), [["[data-close]", {}]], reject="no split")
     assert out["requests"] == [["session.split.close", {"target": SID}], ["session.overlay.close", {}]]
+
+
+def split_tree(shown: bool) -> dict[str, Any]:
+    """A `tree` reply where this run's session has a split, shown or hidden."""
+    return agent_tree(hasSplit=True, split=shown)
+
+
+def expand_button(html: str) -> str:
+    """The Expand button's label: Expand, or Collapse while the dashboard covers the session."""
+    m = re.search(r'<button type="button" class="size" data-expand="1" title="[^"]*" aria-label="([^"]*)"><svg', html)
+    assert m, html
+    return m.group(1)
+
+
+SPLIT_ON = ["session.split", {"target": SID, "args": {"mode": "on"}}]
+
+
+def test_page_expand_hides_the_split_with_the_dashboard_focused(tmp_path):
+    # the hidden split shows only its focused pane: the dashboard's, page included
+    out = run_page(tmp_path, js(base_state(dashboard_pane="right")), [["[data-expand]", {}]], tree=split_tree(True))
+    assert out["requests"] == [
+        ["session.focus", {"target": SID, "args": {"pane": "right"}}],
+        ["session.split", {"target": SID, "args": {"mode": "off"}}],
+    ]
+    assert expand_button(out["html"]) == "Collapse"
+    out = run_page(tmp_path, js(base_state(dashboard_pane="left")), [["[data-expand]", {}]], tree=split_tree(True))
+    assert out["requests"][0] == ["session.focus", {"target": SID, "args": {"pane": "left"}}]
+
+
+def test_page_collapse_shows_the_split(tmp_path):
+    # a hidden split in `tree` reads as expanded
+    out = run_page(tmp_path, js(base_state(dashboard_pane="right")), tree=split_tree(False))
+    assert expand_button(out["html"]) == "Collapse"
+    out = run_page(tmp_path, js(base_state(dashboard_pane="right")), [["[data-expand]", {}]], tree=split_tree(False))
+    assert out["requests"] == [SPLIT_ON]
+    assert expand_button(out["html"]) == "Expand"
+
+
+def test_page_expand_refused_keeps_the_button(tmp_path):
+    out = run_page(tmp_path, js(base_state(dashboard_pane="right")), [["[data-expand]", {}]], reject="no split")
+    assert out["requests"] == [["session.focus", {"target": SID, "args": {"pane": "right"}}]]
+    assert expand_button(out["html"]) == "Expand"
+
+
+def test_page_agent_and_close_show_a_hidden_split_first(tmp_path):
+    hidden = split_tree(False)
+    out = run_page(tmp_path, js(base_state(dashboard_pane="right")), [["[data-agent]", {}]], tree=hidden)
+    assert out["requests"] == [SPLIT_ON, ["session.focus", {"target": SID, "args": {"pane": "left"}}]]
+    assert expand_button(out["html"]) == "Expand"
+    # the user's own split comes back before the overlay closes
+    out = run_page(tmp_path, js(base_state(dashboard_pane="right", created_split=False)), [["[data-close]", {}]], tree=hidden)
+    assert out["requests"] == [SPLIT_ON, ["session.overlay.close", {}]]
+    # a split mt created goes whole
+    out = run_page(tmp_path, js(base_state(dashboard_pane="right", created_split=True)), [["[data-close]", {}]], tree=hidden)
+    assert out["requests"] == [["session.split.close", {"target": SID}]]
 
 
 def test_page_agent_button_focuses_the_agent_pane(tmp_path):
