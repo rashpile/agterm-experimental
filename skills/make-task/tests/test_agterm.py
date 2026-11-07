@@ -505,14 +505,17 @@ def test_dashboard_declares_no_agterm_variables_and_loads_state_js():
 
 NODE_HARNESS = r"""
 const fs = require('fs');
-const [script, input, clicks, reject] = [fs.readFileSync(process.argv[2], 'utf8'), fs.readFileSync(process.argv[3], 'utf8'),
-                                         JSON.parse(process.argv[4] || '[]'), process.argv[5] || ''];
+const [script, input, clicks, reject, tree] = [fs.readFileSync(process.argv[2], 'utf8'), fs.readFileSync(process.argv[3], 'utf8'),
+                                               JSON.parse(process.argv[4] || '[]'), process.argv[5] || '', JSON.parse(process.argv[6] || '{}')];
 const app = { innerHTML: '', listeners: {}, addEventListener(t, f) { this.listeners[t] = f; } };
 const requests = [], appended = [], targets = [];
+let trees = 0;
 globalThis.window = globalThis;
-// with a reject message every request fails as agterm refuses one (e.g. `overlay already open`)
-globalThis.agterm = { request(cmd, opts) { requests.push([cmd, opts]);
-  return reject ? Promise.reject(new Error(reject)) : Promise.resolve({}); } };
+// with a reject message every request fails as agterm refuses one (e.g. `overlay already open`).
+// `tree` (the Agent button's status poll, sent with every state) is counted apart and answered with `tree`.
+globalThis.agterm = { request(cmd, opts) {
+  if (cmd === 'tree') trees++; else requests.push([cmd, opts]);
+  return reject ? Promise.reject(new Error(reject)) : Promise.resolve(cmd === 'tree' ? tree : {}); } };
 globalThis.document = {
   title: '', head: { appendChild(el) { appended.push(el.src); } },
   getElementById: id => (id === 'app' ? app : null), createElement: () => ({ remove() {} }), querySelectorAll: () => [],
@@ -527,11 +530,13 @@ for (const [sel, data] of clicks) {
 }
 // after the requests' promises settle: a refused open sets its tooltip and re-renders
 setImmediate(() => process.stdout.write(JSON.stringify({
-  html: app.innerHTML, title: document.title, requests, appended, titles: targets.map(t => t.title) })));
+  html: app.innerHTML, title: document.title, requests, appended, trees, titles: targets.map(t => t.title) })));
 """
 
 
-def run_page(tmp_path: Path, state_js: str, clicks: list[Any] | None = None, reject: str = "") -> dict[str, Any]:
+def run_page(
+    tmp_path: Path, state_js: str, clicks: list[Any] | None = None, reject: str = "", tree: Any = None
+) -> dict[str, Any]:
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is not installed")
@@ -540,7 +545,7 @@ def run_page(tmp_path: Path, state_js: str, clicks: list[Any] | None = None, rej
     script.write_text(page_script())
     inp.write_text(state_js)
     r = subprocess.run(
-        [node, str(harness), str(script), str(inp), json.dumps(clicks or []), reject],
+        [node, str(harness), str(script), str(inp), json.dumps(clicks or []), reject, json.dumps(tree or {})],
         capture_output=True,
         text=True,
         check=False,
@@ -710,6 +715,67 @@ def test_page_close_sends_one_request(tmp_path):
     # split.close refused: the page is still there and closes its overlay
     out = run_page(tmp_path, js(base_state(created_split=True)), [["[data-close]", {}]], reject="no split")
     assert out["requests"] == [["session.split.close", {"target": SID}], ["session.overlay.close", {}]]
+
+
+def test_page_agent_button_focuses_the_agent_pane(tmp_path):
+    # the dashboard covers the right pane: Agent focuses the left one, where the agent runs
+    out = run_page(tmp_path, js(base_state(dashboard_pane="right")), [["[data-agent]", {}]])
+    assert 'data-agent="1"' in out["html"]
+    assert out["requests"] == [["session.focus", {"target": SID, "args": {"pane": "left"}}]]
+    out = run_page(tmp_path, js(base_state(dashboard_pane="left")), [["[data-agent]", {}]])
+    assert out["requests"] == [["session.focus", {"target": SID, "args": {"pane": "right"}}]]
+    # a refused focus is dropped quietly
+    out = run_page(tmp_path, js(base_state(dashboard_pane="right")), [["[data-agent]", {}]], reject="no split")
+    assert out["requests"] == [["session.focus", {"target": SID, "args": {"pane": "left"}}]]
+    # no dashboard pane recorded (a run without agterm): no button, and nothing is sent
+    out = run_page(tmp_path, js(base_state(dashboard_pane=None)), [["[data-agent]", {}]])
+    assert 'data-agent=' not in out["html"] and out["requests"] == []
+
+
+def agent_tree(**session: Any) -> dict[str, Any]:
+    """A `tree` reply holding this run's session with the given fields (status, statusPane)."""
+    return {"tree": {"workspaces": [{"sessions": [{"id": "OTHER", "status": "blocked"}, {"id": SID, **session}]}]}}
+
+
+def agent_button(html: str) -> str:
+    m = re.search(r'<button type="button" class="([^"]*)" data-agent="1" title="([^"]*)">', html)
+    assert m, html
+    return f"{m.group(1)} | {m.group(2)}"
+
+
+@pytest.mark.parametrize(
+    ("state_kw", "session", "want"),
+    [
+        ({}, {}, "agent  | Focus the pane the agent runs in"),
+        ({}, {"status": "active", "statusPane": "left"}, "agent  | Focus the pane the agent runs in"),
+        ({}, {"status": "completed", "statusPane": "left"}, "agent stopped | The agent has stopped: focus its pane"),
+        ({}, {"status": "completed"}, "agent stopped | The agent has stopped: focus its pane"),
+        ({}, {"status": "blocked", "statusPane": "left"}, "agent ask | The agent is asking you: focus its pane"),
+        # mt waits for the user's answer: asking, whatever agterm shows
+        ({"now_kind": "wait"}, {"status": "active"}, "agent ask | The agent is asking you: focus its pane"),
+        ({"now_kind": "wait"}, {"status": "completed"}, "agent ask | The agent is asking you: focus its pane"),
+        # a status the dashboard's own pane set is not the agent's
+        ({}, {"status": "blocked", "statusPane": "right"}, "agent  | Focus the pane the agent runs in"),
+        # the dashboard on the left: the agent's pane is the right one
+        ({"dashboard_pane": "left"}, {"status": "completed", "statusPane": "right"},
+         "agent stopped | The agent has stopped: focus its pane"),
+        ({"dashboard_pane": "left"}, {"status": "completed", "statusPane": "left"}, "agent  | Focus the pane the agent runs in"),
+    ],
+)
+def test_page_agent_button_colour(tmp_path, state_kw, session, want):
+    kw = {"dashboard_pane": "right", **state_kw}
+    out = run_page(tmp_path, js(base_state(**kw)), tree=agent_tree(**session))
+    assert out["trees"] == 1
+    assert agent_button(out["html"]) == want
+
+
+def test_page_agent_status_poll_needs_the_dashboard(tmp_path):
+    # no tree reply (agterm refuses it): the plain button
+    out = run_page(tmp_path, js(base_state(dashboard_pane="right")), reject="no tree")
+    assert agent_button(out["html"]).startswith("agent  |")
+    # a run without the dashboard asks agterm nothing
+    out = run_page(tmp_path, js(base_state(dashboard_pane=None)), tree=agent_tree(status="blocked"))
+    assert out["trees"] == 0 and "data-agent=" not in out["html"]
 
 
 def viewer_open(tab: str, run: str = "/state/run") -> list[Any]:

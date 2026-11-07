@@ -184,11 +184,16 @@
   footer { margin-top: 16px; display: flex; align-items: center; gap: 12px; color: var(--dim); font-size: 11.5px; }
   footer code { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   footer .mode { white-space: nowrap; }
+  footer .actions { margin-left: auto; display: flex; gap: 8px; }
   footer button {
-    margin-left: auto; font: inherit; font-size: 12px; color: var(--fg); background: var(--wash);
+    font: inherit; font-size: 12px; color: var(--fg); background: var(--wash);
     border: 1px solid var(--faint); border-radius: 6px; padding: 3px 10px; cursor: pointer;
   }
   footer button:focus-visible { outline: 2px solid var(--run); outline-offset: 2px; }
+  footer button.agent.stopped { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 60%, transparent);
+    background: color-mix(in srgb, var(--warn) 14%, transparent); }
+  footer button.agent.ask { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 60%, transparent);
+    background: color-mix(in srgb, var(--bad) 14%, transparent); }
 </style>
 </head>
 <body>
@@ -377,7 +382,8 @@
       </div>
       <section class="log"><h2>Timeline</h2><ol>${list(s.events).slice(-7).reverse().map(e => `<li><time>${esc(e.t)}</time>${esc(e.text)}</li>`).join('')}</ol></section>
       <footer><code>${esc(s.state_dir || '')}</code><span class="mode">${esc(mode)}</span>
-        <button type="button" data-close="1">Close</button></footer>`;
+        <span class="actions">${s.dashboard_pane ? agentButton() : ''}
+        <button type="button" data-close="1">Close</button></span></footer>`;
   }
 
   // Close: one request. The page lives in its overlay, so once session.overlay.close runs nothing
@@ -393,8 +399,58 @@
     agterm.request('session.split.close', sid ? { target: sid } : {}).catch(closeOverlay);
   }
 
+  // Agent: the pane the agent runs in, the one the dashboard does not cover.
+  const agentPane = () => (state && state.dashboard_pane === 'left' ? 'right' : 'left');
+
+  // The button's colour says what the agent is doing: red while it asks the user (mt waits for an
+  // answer, or agterm shows the session blocked: a permission prompt, mt fail), yellow once it has
+  // stopped (agterm's completed, from the Stop hook). agentStatus is agterm's sidebar status of this
+  // session, read from `tree` with every state.js load; only a status the agent's pane set counts.
+  let agentStatus = null;
+  function agentLook() {
+    if (!state) return '';
+    if (state.now_kind === 'wait' || agentStatus === 'blocked') return 'ask';
+    return agentStatus === 'completed' ? 'stopped' : '';
+  }
+  const AGENT_TITLE = {
+    ask: 'The agent is asking you: focus its pane',
+    stopped: 'The agent has stopped: focus its pane',
+    '': 'Focus the pane the agent runs in',
+  };
+  function agentButton() {
+    const look = agentLook();
+    return `<button type="button" class="agent ${look}" data-agent="1" title="${AGENT_TITLE[look]}">Agent</button>`;
+  }
+  function findSession(node, id) {
+    if (Array.isArray(node)) {
+      for (const v of node) { const f = findSession(v, id); if (f) return f; }
+    } else if (node && typeof node === 'object') {
+      if (node.id === id) return node;
+      for (const v of Object.values(node)) { const f = findSession(v, id); if (f) return f; }
+    }
+    return null;
+  }
+  function pollAgent() {
+    if (!window.agterm || !state || !state.dashboard_pane || !state.agterm_session) return;
+    const sid = state.agterm_session;
+    agterm.request('tree').then(r => {
+      const node = findSession(r, sid);
+      const st = node && (!node.statusPane || node.statusPane === agentPane()) ? node.status || null : null;
+      if (st !== agentStatus) { agentStatus = st; render(); }
+    }).catch(() => {});
+  }
+
+  // hand the keyboard to the agent's pane
+  function focusAgent() {
+    if (!window.agterm || !state || !state.dashboard_pane) return;
+    const pane = agentPane();
+    const sid = state.agterm_session;
+    agterm.request('session.focus', sid ? { target: sid, args: { pane } } : { args: { pane } }).catch(() => {});
+  }
+
   app.addEventListener('click', e => {
     if (e.target.closest('[data-close]')) { closeDashboard(); return; }
+    if (e.target.closest('[data-agent]')) { focusAgent(); return; }
     const el = e.target.closest('[data-open]');
     if (!el || !window.agterm || !state) return;
     const id = el.dataset.open, a = artifact(id);
@@ -422,6 +478,7 @@
     mode = 'live';
     if (txt !== lastText || !wasLive) { lastText = txt; state = next; render(); }
     document.title = 'make-task · ' + String((next && next.title) || '');
+    pollAgent();
   };
   function poll() {
     const el = document.createElement('script');
