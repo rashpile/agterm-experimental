@@ -74,6 +74,11 @@ of five tasks.
   answer you gave. Here it is 23 assumptions and 0 questions: under the `default` autonomy, brainstorm
   found nothing in this task that needed the user.
 - **Timeline.** The last seven events, below what the screenshot shows.
+- **Footer.** The run's state directory and two buttons, also below the screenshot. **Agent** moves
+  the keyboard focus to the pane the agent runs in. It turns yellow when the agent has stopped and red
+  while it asks you something: a permission prompt, or a make-task question waiting for your answer.
+  The colour follows the session's agterm sidebar status. **Close** closes the dashboard, and the split
+  pane with it when make-task opened that split for the dashboard. A split you had before stays.
 
 The dashboard is an HTML page that reloads a `state.js` file every 1.5 s. `scripts/mt` writes that file,
 and it is the only part of make-task that talks to agterm.
@@ -95,6 +100,15 @@ The artifact buttons open one page, the viewer, with five tabs:
 The viewer reloads every 1.5 s and redraws a tab only when its data changed, so your scroll position and
 what you expanded stay. A tab whose artifact does not exist yet says "not yet". The viewer only reads
 files `scripts/mt` writes: closing it never affects the run, also in the middle of a review round.
+
+<img src="images/make-task-viewer-review.png" width="640" alt="The viewer's Review tab with round 1 picked">
+
+The Review tab of the run that built go-ask's `recap` tool, opened during finalize, so Stats is still
+empty. Each round has a button with its verdict: round 1 found one major and two minors, rounds 2 and 3
+came back clean. With round 1 picked, the strip shows its verdict and how long it took, and the list
+shows its findings as that round recorded them. The major is still `unresolved` there, because its fix
+landed between rounds 1 and 2. The minors are grouped under their count. Each finding opens to its body
+and the suggested fix.
 
 ---
 
