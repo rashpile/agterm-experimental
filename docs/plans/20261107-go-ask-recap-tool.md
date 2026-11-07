@@ -129,35 +129,42 @@
 - Create: `mcps/go-ask/recap_digest_test.go`
 - Create: `mcps/go-ask/testdata/recap-transcript.jsonl`
 
-- [ ] create `recap_digest.go` with `transcriptRow` (Technical Details) and
+- [x] create `recap_digest.go` with `transcriptRow` (Technical Details) and
       `buildDigest(rows []transcriptRow, turns int) string`, a line-for-line port of `build_digest`
       in `commands/recap/recap.py` incl. `is_real_user`, `clean_user`, `text_of`, the `asks` set
       (AskUserQuestion and Bash `\bmt\b.*\bask\b`), queued `attachment` rows (human vs subagent),
       the final-text rule and the newest-60k truncation; rune-based caps and slices
-- [ ] add `readTranscript(path string, turns int) ([]transcriptRow, error)`: `os.ReadFile` +
+      ⚠️ `attachment.prompt` is a list (text + image blocks) when a queued message carries an
+      image (10 such rows in the user's recent transcripts); recap.py slices the list and prints
+      its Python repr, base64 included. Go keeps `Prompt` raw and takes its text blocks
+- [x] add `readTranscript(path string, turns int) ([]transcriptRow, error)`: `os.ReadFile` +
       `bytes.Split`, decode backwards to the `turns`-th real user prompt, return that tail; bad
       lines skipped; a missing or unreadable file is an error
-- [ ] add `numCtxFor(digest)` and the `recapSystem`/`recapPrompt` constants copied from recap.py;
+- [x] add `numCtxFor(digest)` and the `recapSystem`/`recapPrompt` constants copied from recap.py;
       a code comment at each place where Go cannot match Python exactly and the choice made: `\b`
       in the `mt … ask` regex (RE2 ASCII vs Python Unicode), `strings.TrimSpace` vs `str.strip()`
       whitespace set, `str()` of a non-string tool input (Go takes strings only), `None` names
-- [ ] create the synthetic fixture `testdata/recap-transcript.jsonl` (valid JSON lines only, no
+      (the whitespace set is matched exactly: `unicode.IsSpace` plus U+001C–U+001F equals
+      Python's `str.isspace` over every code point)
+- [x] create the synthetic fixture `testdata/recap-transcript.jsonl` (valid JSON lines only, no
       real user data): ≥ 8 real user turns, a meta row, a `<local-command…>` echo, a
       tool-result-only user row, a `<command-message>`/"Base directory for this skill" prompt, an
       AskUserQuestion with its tool_result, a Bash `mt … ask` call with its result, a queued human
       message and a queued subagent report, tool calls with description/command/file_path/query,
       assistant texts that exceed 600 and 4000 runes, Cyrillic text, timestamps
-- [ ] write digest tests: turn cut (turns=1, 2, more than available), USER ANSWER lines, caps hit
+- [x] write digest tests: turn cut (turns=1, 2, more than available), USER ANSWER lines, caps hit
       at rune boundaries with Cyrillic text, final-text rule (4000 vs 600), cleaned user text,
       skipped meta/echo/tool-result-only rows, truncation prefix with a synthetic >60k digest,
       `numCtxFor` table, no rows → ""
-- [ ] write `readTranscript` tests: a line over 64 KB is read, a malformed line is skipped, the tail
+- [x] write `readTranscript` tests: a line over 64 KB is read, a malformed line is skipped, the tail
       starts at the right row (and at 0 when there are fewer turns), missing file → error
-- [ ] write a parity test: for turns 2, 6 and 20 (above the fixture's turn count), the Go digest of
+- [x] write a parity test: for turns 2, 6 and 20 (above the fixture's turn count), the Go digest of
       the fixture equals the stdout of `python3 ../../commands/recap/recap.py
       testdata/recap-transcript.jsonl --digest --turns N` minus its trailing newline, run with
       `PYTHONUTF8=1`; `t.Skip` when `python3` is not on PATH
-- [ ] run tests - must pass before task 2
+      ➕ also parity on a generated transcript past the 60k cut, and `recapSystem`/`recapPrompt`
+      compared with recap.py's `SYSTEM`/`PROMPT` (imported by `python3 -c`)
+- [x] run tests - must pass before task 2
 
 ### Task 2: Ollama chat client
 
