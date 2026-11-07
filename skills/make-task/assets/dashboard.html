@@ -10,6 +10,10 @@
   over the pane the agent does not run in.
   A --js page cannot fetch() file:// URLs, but a <script src> beside the page loads, so mt writes
   state.js as `window.mtState(<json>);` and the page re-injects it every 1.5 s.
+  The file buttons open the viewer on their tab over the whole session: viewer-<tab>.html, which mt init
+  writes beside this page, with {html, cwd: <run>, javascript: true, sizePercent: 85, follow: true};
+  Changes opens revdiff. A button is enabled once its artifact has a page, Review also while a round is
+  live (it then shows `● live`, and a compact block from the round's state summary sits under its row).
   Colors come only from the --agterm-* variables agterm injects (never declared here).
 -->
 <style>
@@ -53,6 +57,8 @@
   .file:hover { border-color: var(--run); }
   .file:focus-visible { outline: 2px solid var(--run); outline-offset: 2px; }
   .file .ago { color: var(--dim); font-size: 11.5px; margin-left: 6px; }
+  .file .live { color: var(--run); font-size: 11.5px; margin-left: 6px; }
+  .file .live::before { content: "●"; margin-right: 3px; }
   .file[disabled] { color: var(--dim); cursor: default; border-style: dashed; background: none; }
   .file[disabled]:hover { border-color: var(--faint); }
   a.open { color: inherit; text-decoration: underline; text-decoration-color: var(--faint); text-underline-offset: 3px; cursor: pointer; }
@@ -148,6 +154,15 @@
   .sev.live { background: color-mix(in srgb, var(--run) 18%, transparent); }
   .round .verdict { color: var(--dim); margin-left: auto; font-size: 12px; }
   .round .dur { width: 52px; flex: none; }
+  /* the live round's compact status, under its row (aligned with the chips) */
+  .live-box {
+    margin: 2px 0 4px 68px; padding: 8px 10px; border-radius: 8px; display: grid; gap: 5px; font-size: 12.5px;
+    background: color-mix(in srgb, var(--run) 8%, transparent);
+  }
+  .live-box .steps, .live-box .agents, .live-box .none { color: var(--dim); }
+  .live-box .steps b { color: var(--ok); font-weight: 600; }
+  .live-box .steps i { color: var(--run); font-style: normal; font-weight: 600; }
+  .live-box .last { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
   .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 14px; }
   @media (max-width: 560px) { .cols { grid-template-columns: 1fr; } }
@@ -214,7 +229,41 @@
     }).join('');
   }
 
+  // the round the viewer's Review tab follows live, as mt's live_round: the highest-numbered one, when it
+  // has started, has no result, its milestone is not `failed`, and the run is not finished
+  function liveRound(s) {
+    const rounds = list(s && s.review);
+    if (!rounds.length || s.finished) return null;
+    const last = rounds.reduce((a, b) => (num(b.round) > num(a.round) ? b : a));
+    return last.started && !last.finished && last.milestone !== 'failed' ? last.round : null;
+  }
+
+  const obj = x => (x && typeof x === 'object' && !Array.isArray(x) ? x : null);
+
+  // the live round's state summary (`live`, kept by mt review wait): stage steps, counts, agents done,
+  // the latest activity, and the way into the viewer's Review tab
+  function liveBox(r) {
+    const s = obj(r.live), stages = s ? list(s.stages).map(String) : [], agents = s ? num(s.agents) : 0;
+    const open = `<div><a class="open" data-open="review"${tipAttr('review')}>Open live review</a></div>`;
+    if (s && (s.truncated || s.format_ok === false)) {
+      return `<div class="live-box"><div class="steps">Live detail unavailable · ${esc(r.milestone || 'reviewing')}</div>${open}</div>`;
+    }
+    if (!s || (!stages.length && !agents)) return `<div class="live-box"><div class="steps">Starting revmux…</div>${open}</div>`;
+    // stages before the current one are over; the current one too once all its agents are done
+    const cur = stages.indexOf(String(s.stage || '')), doneN = num(s.agents_done), over = agents > 0 && doneN >= agents;
+    const steps = stages.map((name, i) => (i < cur || (i === cur && over) ? `<b>${esc(name)} ✓</b>`
+      : i === cur ? `<i>${esc(name)} ●</i>` : esc(name)));
+    const counts = obj(s.counts) || {}, sev = ['critical', 'major', 'minor'].filter(k => num(counts[k]));
+    const chips = sev.length ? sev.map(k => `<span class="sev ${k}">${num(counts[k])} ${k}</span>`).join(' ')
+                             : '<span class="none">no findings yet</span>';
+    const act = obj(s.activity), last = act ? [act.agent, act.text].filter(Boolean).map(String).join(' · ') : '';
+    return `<div class="live-box"><div class="steps">${[...steps, 'result'].join(' · ')}</div>` +
+      `<div>${chips} <span class="agents">· ${doneN} of ${agents} agents done</span></div>` +
+      (last ? `<div class="last" title="${esc(last)}">${esc(last)}</div>` : '') + `${open}</div>`;
+  }
+
   function roundRows(rounds) {
+    const live = liveRound(state);
     return rounds.map(r => {
       let chips;
       if (!r.finished) {
@@ -228,26 +277,37 @@
       const took = r.finished && r.duration != null
         ? `<span class="dur">${fmtDur(num(r.duration))}</span>` : dur(r);
       return `<div class="round" title="${esc(r.run)}"><span class="rn">Round ${esc(r.round)}</span>${chips}` +
-        `<span class="verdict">${esc(r.verdict || '')}</span>${took}</div>`;
+        `<span class="verdict">${esc(r.verdict || '')}</span>${took}</div>` + (live != null && r.round === live ? liveBox(r) : '');
     }).join('');
   }
 
-  // artifacts open over the whole session as a wide floating panel; the dashboard keeps its pane
+  // artifacts open over the whole session as a wide floating panel; the dashboard keeps its pane.
+  // The viewer's tabs open the viewer on that tab; Changes opens revdiff.
   const FILES = [['design', 'Design'], ['plan', 'Plan'], ['progress', 'Progress log'], ['review', 'Review'],
                  ['stats', 'Stats'], ['changes', 'Changes']];
+  const VIEWER = ['design', 'plan', 'progress', 'review', 'stats'];
   const artifact = id => list(state && state.artifacts).find(x => x.id === id);
-  const openable = a => !!(a && (a.html || a.command));
+  const isLive = id => id === 'review' && liveRound(state) != null;
+  const openable = (id, a) => (VIEWER.includes(id) ? !!((a && a.html) || isLive(id)) : !!(a && a.command));
+  function openArgs(id, a) {
+    if (!VIEWER.includes(id)) return { command: a.command, cwd: a.cwd, sizePercent: 90, follow: true };
+    const run = String((state && state.state_dir) || '').replace(/\/+$/, '');
+    return { html: `${run}/viewer-${id}.html`, cwd: run, javascript: true, sizePercent: 85, follow: true };
+  }
+  // agterm's error for an open it refused (e.g. `overlay already open`), shown as that button's tooltip
+  // until its next click; nothing is guessed about what holds the slot
+  const refused = {};
+  const tipAttr = id => (refused[id] ? ` title="${esc(refused[id])}"` : '');
 
   function fileButton([id, label]) {
-    const a = artifact(id);
-    if (!openable(a)) {
-      const tip = a ? (a.hint || a.source || '') : 'not yet';
-      return `<button type="button" class="file" disabled title="${esc(tip)}">${esc(label)}</button>`;
+    const a = artifact(id), hint = a ? (a.hint || a.source || '') : '';
+    if (!openable(id, a)) {
+      return `<button type="button" class="file" disabled title="${esc(a ? hint : 'not yet')}">${esc(label)}</button>`;
     }
-    const when = state && state.finished
-      ? `<span class="ago">${esc(stamp(a.updated))}</span>`
+    const when = isLive(id) ? '<span class="live">live</span>'
+      : state && state.finished ? `<span class="ago">${esc(stamp(a.updated))}</span>`
       : `<span class="ago" data-ago="${num(a.updated)}">${ago(a.updated)}</span>`;
-    return `<button type="button" class="file" data-open="${esc(id)}" title="${esc(a.hint || a.source || '')}">` +
+    return `<button type="button" class="file" data-open="${esc(id)}" title="${esc(refused[id] || hint)}">` +
       `${esc(label)}${when}</button>`;
   }
 
@@ -265,7 +325,7 @@
       note = `${tasks.filter(t => t.status === 'done').length} of ${tasks.length} tasks`;
     } else if (p.id === 'plan' && artifact('plan')) {
       const plan = artifact('plan'), hint = esc(plan.hint || plan.source || 'plan');
-      note = openable(plan) ? `<a class="open" data-open="plan">${hint}</a>` : hint;
+      note = openable('plan', plan) ? `<a class="open" data-open="plan"${tipAttr('plan')}>${hint}</a>` : hint;
     } else if (p.id === 'review' && !note) {
       const bits = [];
       if (s.stop_reason) bits.push(`stopped: ${esc(s.stop_reason)}`);
@@ -330,11 +390,13 @@
     if (e.target.closest('[data-close]')) { closeDashboard(); return; }
     const el = e.target.closest('[data-open]');
     if (!el || !window.agterm || !state) return;
-    const a = artifact(el.dataset.open);
-    if (!openable(a)) return;
-    const args = a.html ? { html: a.html, sizePercent: 85, follow: true }
-                        : { command: a.command, cwd: a.cwd, sizePercent: 90, follow: true };
-    agterm.request('session.overlay.open', { args }).catch(err => { el.title = String((err && err.message) || err); });
+    const id = el.dataset.open, a = artifact(id);
+    if (!openable(id, a)) return;
+    delete refused[id];
+    agterm.request('session.overlay.open', { args: openArgs(id, a) }).catch(err => {
+      refused[id] = el.title = String((err && err.message) || err);
+      render();  // the button keeps the tooltip through later re-renders
+    });
   });
 
   function tick() {

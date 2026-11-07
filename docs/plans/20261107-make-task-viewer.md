@@ -376,12 +376,21 @@
 - Modify: `skills/make-task/assets/dashboard.html`
 - Modify: `skills/make-task/tests/test_agterm.py`
 
-- [ ] file buttons open `viewer-<tab>.html` with `javascript: true`, `cwd: <run>`, `sizePercent: 85`, `follow: true`; Changes keeps `revdiff`
-- [ ] a button is enabled when its artifact entry has `html`, and Review also while a round is live (Technical Details); Review shows `● live` then
-- [ ] add the compact block under the live round from its state summary: stage steps, counts, agents done, latest activity, "Open live review"
-- [ ] a refused open (agterm's `overlay already open`) shows agterm's error as the button's tooltip, as the click handler does today; the tooltip does not guess what holds the slot
-- [ ] write node-harness tests: open arguments per tab, Review enabled and live during round 1 before any result, live off for a failed or older round, the compact block, a refused open
-- [ ] run tests - must pass before task 13
+- [x] file buttons open `viewer-<tab>.html` with `javascript: true`, `cwd: <run>`, `sizePercent: 85`, `follow: true`; Changes keeps `revdiff`
+- [x] a button is enabled when its artifact entry has `html`, and Review also while a round is live (Technical Details); Review shows `● live` then
+- [x] add the compact block under the live round from its state summary: stage steps, counts, agents done, latest activity, "Open live review"
+- [x] a refused open (agterm's `overlay already open`) shows agterm's error as the button's tooltip, as the click handler does today; the tooltip does not guess what holds the slot
+- [x] write node-harness tests: open arguments per tab, Review enabled and live during round 1 before any result, live off for a failed or older round, the compact block, a refused open
+- [x] run tests - must pass before task 13
+- ➕ as built: the run dir is the state's `state_dir` (a trailing `/` dropped); the plan phase's link opens the
+  Plan tab the same way. The live badge replaces the button's age. The compact block (`.live-box`) sits under
+  the live round's row: the summary's stage names, those before `stage` marked `✓`, `stage` `●` (also `✓` once
+  `agents_done` reaches `agents`), then `result`; the non-zero severity chips (else "no findings yet"),
+  `· X of N agents done`, the latest activity as `agent · text`, and "Open live review" (`data-open="review"`).
+  No summary yet, or one with no stage and no agent: "Starting revmux…"; `format_ok` false or truncated:
+  "Live detail unavailable · <milestone>". A refused open keeps agterm's message in a JS map keyed by id, shown
+  as that button's (and that id's links') tooltip through re-renders until its next click. The node harness
+  can make every request fail with a message and reports each clicked element's `title`
 
 ### Task 13: Verify acceptance criteria
 - [ ] verify all requirements from Overview are implemented
