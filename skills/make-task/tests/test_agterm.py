@@ -704,6 +704,17 @@ def test_page_error_and_wait_lines(tmp_path):
     assert 'class="now wait"' in html and 'class="phase run wait"' in html
 
 
+def test_page_buttons_lead_the_title_line(tmp_path):
+    # Close (X), then Agent (A), then the title, on the header's first line; none in the footer
+    html = run_page(tmp_path, js(base_state(dashboard_pane="right")))["html"]
+    top = html.index('<div class="top">')
+    assert top < html.index('aria-label="Close">X</button>') < html.index('aria-label="Agent">A</button>') < html.index("<h1>")
+    assert "<button" not in html[html.index("<footer>") :]
+    # a run without the dashboard pane: Close alone
+    html = run_page(tmp_path, js(base_state(dashboard_pane=None)))["html"]
+    assert 'aria-label="Close">X</button>' in html and "data-agent=" not in html
+
+
 def test_page_close_sends_one_request(tmp_path):
     # a split mt created: split.close alone, which drops the page on it too. agterm drops a
     # request the page sends after its own overlay.close, so the pane would stay.
@@ -738,7 +749,7 @@ def agent_tree(**session: Any) -> dict[str, Any]:
 
 
 def agent_button(html: str) -> str:
-    m = re.search(r'<button type="button" class="([^"]*)" data-agent="1" title="([^"]*)">', html)
+    m = re.search(r'<button type="button" class="([^"]*)" data-agent="1" title="([^"]*)" aria-label="Agent">A</button>', html)
     assert m, html
     return f"{m.group(1)} | {m.group(2)}"
 

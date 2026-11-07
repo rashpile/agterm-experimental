@@ -59,7 +59,12 @@ of five tasks.
 
 ## Reading the dashboard
 
-- **Header.** Task title, repo, branch, worktree or in place, the profile and its autonomy level.
+- **Header.** Two round buttons, then the task title; under it the repo, branch, worktree or in place,
+  the profile and its autonomy level. **X** closes the dashboard, and the split pane with it when
+  make-task opened that split for the dashboard. A split you had before stays. **A** moves the keyboard
+  focus to the pane the agent runs in. It turns yellow when the agent has stopped and red while it asks
+  you something: a permission prompt, or a make-task question waiting for your answer. The colour
+  follows the session's agterm sidebar status.
 - **Artifact buttons.** Design, Plan, Progress log, Review, Stats, Changes. Each shows how long ago it
   changed. Design to Stats open the viewer (below) on that tab over the session. Changes runs `revdiff`
   from the commit where the task's work starts, so you can read the task's commits while it runs. A
@@ -74,11 +79,7 @@ of five tasks.
   answer you gave. Here it is 23 assumptions and 0 questions: under the `default` autonomy, brainstorm
   found nothing in this task that needed the user.
 - **Timeline.** The last seven events, below what the screenshot shows.
-- **Footer.** The run's state directory and two buttons, also below the screenshot. **Agent** moves
-  the keyboard focus to the pane the agent runs in. It turns yellow when the agent has stopped and red
-  while it asks you something: a permission prompt, or a make-task question waiting for your answer.
-  The colour follows the session's agterm sidebar status. **Close** closes the dashboard, and the split
-  pane with it when make-task opened that split for the dashboard. A split you had before stays.
+- **Footer.** The run's state directory, also below the screenshot.
 
 The dashboard is an HTML page that reloads a `state.js` file every 1.5 s. `scripts/mt` writes that file,
 and it is the only part of make-task that talks to agterm.
