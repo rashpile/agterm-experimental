@@ -393,11 +393,16 @@
   can make every request fail with a message and reports each clicked element's `title`
 
 ### Task 13: Verify acceptance criteria
-- [ ] verify all requirements from Overview are implemented
-- [ ] verify edge cases are handled
-- [ ] run full test suite: `uv run --with pytest --with markdown-it-py --with mdit-py-plugins --with pyyaml pytest skills/make-task/tests -q`
-- [ ] verify nothing outside tests and `upstream/` copies still names `MT_VIEW`, `view.py`, `mt ask`, `card.html`, `MT_NO_CARDS` or a card: `grep -rnwi -E 'MT_VIEW|view\.py|mt ask|card\.html|MT_NO_CARDS|cards?' skills/make-task docs/make-task.md README.md --exclude-dir=tests --exclude-dir=upstream` prints nothing
-- [ ] verify test coverage meets project standard
+- [x] verify all requirements from Overview are implemented
+- [x] verify edge cases are handled
+- [x] run full test suite: `uv run --with pytest --with markdown-it-py --with mdit-py-plugins --with pyyaml pytest skills/make-task/tests -q`
+- [x] verify nothing outside tests and `upstream/` copies still names `MT_VIEW`, `view.py`, `mt ask`, `card.html`, `MT_NO_CARDS` or a card: `grep -rnwi -E 'MT_VIEW|view\.py|mt ask|card\.html|MT_NO_CARDS|cards?' skills/make-task docs/make-task.md README.md --exclude-dir=tests --exclude-dir=upstream` prints nothing
+- [x] verify test coverage meets project standard
+- ➕ as built: 1382 tests pass; line coverage of `mt` from the in-process tests is 97%, every new function covered
+  but OS-error branches; added `test_review_data_write_failure_only_warns` (a `review.js` that cannot be
+  written only warns in `review start` and `review wait`). A run started before this change (state with
+  `renderer` and `cards`, the old copied dashboard, no `viewer-<tab>.html`) was checked by hand: `status`,
+  `refresh`, `plan` and `artifact` work and the old dashboard's `html` pages are written
 
 ### Task 14: [Final] Update documentation
 - [ ] update `skills/make-task/README.md` and `docs/make-task.md`: the viewer and its tabs, the live Review

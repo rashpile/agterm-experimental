@@ -1022,6 +1022,29 @@ def test_start_registers_review_and_writes_the_round_running(mt, review_run, run
     assert review_data(run) == data
 
 
+def test_review_data_write_failure_only_warns(mt, git_repo, tmp_path, alive, monkeypatch, run_state):
+    """A review.js that cannot be written never stops the round: start and wait warn and go on."""
+    run = init_run(mt, git_repo)
+    assert mt("set", f"revmux_task={TASK}").code == 0
+    round_dir = tmp_path / "tasks" / TASK / "01-initial"
+    round_dir.mkdir(parents=True)
+
+    def fail(run: Path, aid: str, payload: dict) -> bool:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(MT, "write_artifact_data", fail)
+    r = mt("review", "start", "--round", "1", "--run", "01-initial", "--round-dir", str(round_dir))
+    warning = f"mt: warning: artifact review: cannot write {run / 'artifacts' / 'review.js'}: disk full"
+    assert r.code == 0 and warning in r.err
+    assert rnd(run_state(run), 1)["started"], "the round is open"
+    assert not (run / "artifacts" / "review.js").exists()
+
+    write_events(round_dir, upto(round_lines(), "agent_done", "arch+quality"))
+    r = mt("review", "wait", "--round", "1", "--deadline", "0")
+    assert (r.code, r.out.strip()) == (0, "running") and warning in r.err
+    assert rnd(run_state(run), 1)["live"]["agents_done"] >= 1, "the summary is saved all the same"
+
+
 def test_wait_follows_a_growing_events_file(mt, review_run, alive, run_state):
     run, round_dir = review_run
     lines = round_lines()
