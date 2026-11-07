@@ -300,20 +300,22 @@
       `json.Marshal` of the fixed request struct. Total 90.6%; `recap.go`, `recap_digest.go` 100%
 
 ### Task 7: [Final] Update documentation
-- [ ] `mcps/go-ask/docs/api.md`: a `recap` section (input schema, output fields, how the pane's
+- [x] `mcps/go-ask/docs/api.md`: a `recap` section (input schema, output fields, how the pane's
       claude and transcript are found incl. the `CLAUDECODE=1` exclusion, the digest rules in
       brief, typical duration from the live check); its rows in the central Errors table;
       `RECAP_MODEL` and `OLLAMA_HOST` under Environment, with the note that the launchd plist passes
       no env, so the daemon's model is chosen with the `model` argument; the `initialize` example's
       version `0.3.0`; the message-flow `tools/list` line and the `mcp__go-ask__…` tool-name list
       gain `recap`
-- [ ] `mcps/go-ask/docs/usage.md`: recap from Claude (example call), the Ollama requirement, the
+- [x] `mcps/go-ask/docs/usage.md`: recap from Claude (example call), the Ollama requirement, the
       Codex note (`tool_timeout_sec`, default 60 s, raise it for `recap`), the Tests section
       (what the new tests cover, the `live` tag)
-- [ ] `mcps/go-ask/README.md`: `recap` row in the tools table, one sentence on what it needs, and
+- [x] `mcps/go-ask/README.md`: `recap` row in the tools table, one sentence on what it needs, and
       the Docs bullets mention recap
-- [ ] update CLAUDE.md if new patterns discovered (none expected; there is no CLAUDE.md here)
-- [ ] move this plan to `docs/plans/completed/`
+- [x] update CLAUDE.md if new patterns discovered (none expected; there is no CLAUDE.md here)
+      (skipped - no CLAUDE.md or AGENTS.md covers mcps/go-ask, no new pattern)
+- [x] move this plan to `docs/plans/completed/` (skipped - the make-task harness moves the plan
+      after all phases finish)
 
 ## Post-Completion
 *Items requiring manual intervention or external systems - no checkboxes, informational only*
