@@ -17,6 +17,7 @@ from conftest import FIXTURES, MT, commit, git, init_run
 FINDINGS = FIXTURES / "revmux-findings.json"
 DEGRADED = FIXTURES / "revmux-degraded.json"
 EVENTS = FIXTURES / "events.jsonl"
+EVENTS_ROUND = FIXTURES / "events-round.jsonl"
 TASK = "session-store"
 
 
@@ -617,6 +618,341 @@ def test_milestone_unit():
     assert MT.milestone(events[:9]) == "find 2/2"
     assert MT.milestone(events[:12]) == "synthesis 1/1"
     assert MT.milestone(events) == "verify 2/3 · 1 degraded"
+
+
+# ---------------------------------------------------------------- fold_events
+
+
+def round_lines() -> list[str]:
+    """The real round's events.jsonl (trimmed), as the lines fold_events takes."""
+    return EVENTS_ROUND.read_text(encoding="utf-8").splitlines(keepends=True)
+
+
+def upto(lines: list[str], kind: str, agent: str) -> list[str]:
+    """lines up to and including the first event of kind from agent."""
+    for i, line in enumerate(lines):
+        ev = json.loads(line)
+        if ev["kind"] == kind and ev.get("agent") == agent:
+            return lines[: i + 1]
+    raise AssertionError(f"no {kind} from {agent}")
+
+
+def fold(*events: object) -> dict:
+    """Fold events (objects become JSON lines; a str is taken as a raw line, its "\\n" added)."""
+    return MT.fold_events([(e if isinstance(e, str) else json.dumps(e)) + "\n" for e in events])
+
+
+def by_stage(snap: dict) -> dict[str, list[str]]:
+    out: dict[str, list[str]] = {}
+    for a in snap["agents"]:
+        out.setdefault(a["stage"], []).append(a["name"])
+    return out
+
+
+def agent(snap: dict, name: str) -> dict:
+    return next(a for a in snap["agents"] if a["name"] == name)
+
+
+def finding(fid: str, severity: str = "minor", **extra: object) -> dict:
+    return {"id": fid, "severity": severity, "title": f"title {fid}", **extra}
+
+
+def at(sec: int) -> str:
+    return f"2026-11-06T21:51:{sec:02d}+02:00"
+
+
+def test_fold_round_stages():
+    snap = MT.fold_events(round_lines())
+    assert snap["format_ok"] is True
+    assert (snap["events"], snap["skipped"], snap["unknown"]) == (48, 0, 0)
+    assert snap["stage"] == "verify"
+    names = [s["name"] for s in snap["stages"]]
+    assert names == ["find", "synthesis", "verify"]
+    find, synthesis, verify = snap["stages"]
+    assert find["finished"] == synthesis["started"] and synthesis["finished"] == verify["started"]
+    assert verify["finished"] == agent(snap, "verify go-ask")["finished"] == snap["updated"]
+    assert snap["started"] == find["started"] < snap["updated"]
+
+
+def test_fold_round_agents_per_stage_and_states():
+    snap = MT.fold_events(round_lines())
+    assert by_stage(snap) == {
+        "find": ["bugs+impl", "arch+quality", "docs+tests", "adversarial"],
+        "synthesis": ["synthesis"],
+        "verify": ["verify docs", "verify go-ask"],
+    }
+    assert {a["state"] for a in snap["agents"]} == {"done"}
+    adv = agent(snap, "adversarial")
+    assert adv["lenses"] == "adversarial" and adv["model"] == "gpt-6.1-sol"
+    assert (adv["findings"], adv["result"]) == (4, "4 findings")
+    assert adv["finished"] > adv["started"]
+    assert agent(snap, "synthesis")["findings"] == 10
+    vd = agent(snap, "verify docs")
+    assert (vd["findings"], vd["result"], vd["lenses"]) == (None, "1 of 1 kept", "mcps/go-ask/docs")
+    assert [r["text"] for r in agent(snap, "verify go-ask")["recent"]] == [
+        "Reading the scope file and the answer code first.",
+        "Done checking; recording verdicts.",
+    ]
+    assert agent(snap, "verify go-ask")["progress"].startswith("Bash sed -n 322,352p")
+    assert snap["activity"]["agent"] == "verify go-ask"
+    assert snap["activity"]["text"] == "Done checking; recording verdicts."
+
+
+def test_fold_round_running_agents_mid_find():
+    lines = round_lines()
+    snap = MT.fold_events(upto(lines, "agent_done", "arch+quality"))
+    assert snap["stage"] == "find" and snap["stages"][0]["finished"] is None
+    states = {a["name"]: a["state"] for a in snap["agents"]}
+    assert states == {"bugs+impl": "running", "arch+quality": "done", "docs+tests": "running", "adversarial": "running"}
+    assert (snap["found"], snap["total"], snap["merged"]) == (1, 1, False)
+
+
+def test_fold_round_finder_findings_replaced_by_synthesis():
+    lines = round_lines()
+    before = MT.fold_events(upto(lines, "agent_done", "bugs+impl"))
+    assert before["merged"] is False
+    assert before["found"] == before["total"] == 13
+    assert {f["agent"] for f in before["findings"]} == {"bugs+impl", "arch+quality", "docs+tests", "adversarial"}
+    snap = MT.fold_events(lines)
+    assert snap["merged"] is True
+    assert (snap["found"], snap["total"], len(snap["findings"])) == (13, 10, 10)
+    assert {f["agent"] for f in snap["findings"]} == {"synthesis"}
+    assert snap["counts"] == {"critical": 0, "major": 1, "minor": 9}
+    assert snap["findings"][0]["severity"] == "major"  # most severe first
+    first = snap["findings"][0]
+    assert first["id"] == "adversarial-1" and first["sources"] == ["adversarial", "bugs+impl"]
+    assert set(first) == {*MT.FINDING_TEXT, *MT.FINDING_NUMBER, *MT.FINDING_LIST, "agent"}
+    assert snap["dropped"] == [] and snap["dropped_total"] == 0
+
+
+def test_fold_round_verify_kept_total():
+    lines = round_lines()
+    mid = MT.fold_events(upto(lines, "agent_done", "verify docs"))
+    assert mid["verify"] == {"kept": 1, "total": 1, "agents": 1}
+    assert mid["stages"][-1]["finished"] is None
+    assert agent(mid, "verify go-ask")["state"] == "running"
+    assert MT.fold_events(lines)["verify"] == {"kept": 9, "total": 10, "agents": 2}
+
+
+def test_fold_empty_input():
+    snap = MT.fold_events([])
+    assert snap["format_ok"] is True
+    assert (snap["stage"], snap["stages"], snap["agents"], snap["findings"]) == ("", [], [], [])
+    assert (snap["started"], snap["updated"], snap["activity"]) == (None, None, None)
+    assert (snap["found"], snap["total"], snap["merged"]) == (0, 0, False)
+    assert snap["counts"] == {"critical": 0, "major": 0, "minor": 0}
+    assert snap["verify"] == {"kept": 0, "total": 0, "agents": 0}
+
+
+def test_fold_skips_a_partial_last_line():
+    lines = round_lines()
+    whole = json.dumps({"kind": "agent_done", "agent": "verify go-ask", "text": "8 of 9 kept", "at": at(59)})
+    partial = MT.fold_events([*upto(lines, "agent_done", "verify docs"), whole])  # complete JSON, no "\n" yet
+    assert agent(partial, "verify go-ask")["state"] == "running"
+    cut = MT.fold_events([*upto(lines, "agent_done", "verify docs"), whole[:20]])
+    assert cut["skipped"] == 0 and cut["format_ok"] is True
+
+
+def test_fold_skips_and_counts_bad_lines():
+    snap = fold(
+        "not json",
+        "[1, 2]",
+        '"text"',
+        "3",
+        "null",
+        "",
+        {"kind": "stage", "stage": "find", "at": at(1)},
+    )
+    assert snap["skipped"] == 5 and snap["events"] == 1  # the blank line is not counted
+    assert snap["format_ok"] is True and snap["stage"] == "find"
+
+
+def test_fold_ignores_and_counts_unknown_kinds():
+    snap = fold(
+        {"kind": "stage", "stage": "find"},
+        {"kind": "agent_teleported", "agent": "a"},
+        {"kind": ["agent_started"], "agent": "b"},
+        {"agent": "c"},
+    )
+    assert (snap["events"], snap["unknown"]) == (1, 3)
+    assert snap["agents"] == []
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [
+        ["not json", "[]"],
+        [json.dumps({"kind": "teleported"}), json.dumps({"no": "kind"})],
+    ],
+)
+def test_fold_format_not_ok_without_a_known_kind(lines):
+    assert MT.fold_events([f"{line}\n" for line in lines])["format_ok"] is False
+    assert MT.fold_events([f"{line}\n" for line in [*lines, json.dumps({"kind": "stage"})]])["format_ok"] is True
+
+
+def test_fold_missing_and_mistyped_fields_read_blank():
+    snap = fold(
+        {"kind": "stage"},
+        {"kind": "agent_started"},  # no agent: no row
+        {"kind": "agent_started", "agent": "a", "text": 5, "at": "yesterday"},
+        {"kind": "findings", "agent": "a", "findings": [{}, "not a finding", {"id": 7, "line": "12", "sources": "x"}]},
+        {"kind": "findings", "agent": "b", "findings": "none"},
+        {"kind": "agent_done", "agent": "a"},
+    )
+    assert snap["stages"] == [{"name": "", "started": None, "finished": None}]
+    a = agent(snap, "a")
+    assert (a["lenses"], a["started"], a["finished"], a["result"], a["state"]) == ("", None, None, "", "done")
+    assert snap["found"] == 2 and agent(snap, "b")["findings"] == 0
+    blank = {**{k: "" for k in MT.FINDING_TEXT}, **{k: 0 for k in MT.FINDING_NUMBER}}
+    assert snap["findings"] == [
+        {**blank, "sources": [], "lenses": [], "agent": "a"},
+        {**blank, "sources": [], "lenses": [], "agent": "a"},
+    ]
+    assert snap["started"] is None and snap["updated"] is None
+
+
+def test_fold_agent_stays_under_the_stage_of_its_start():
+    snap = fold(
+        {"kind": "stage", "stage": "find", "at": at(1)},
+        {"kind": "agent_activity", "agent": "early", "text": "before its start"},
+        {"kind": "agent_started", "agent": "slow", "text": "bugs", "at": at(2)},
+        {"kind": "stage", "stage": "synthesis", "at": at(3)},
+        {"kind": "agent_activity", "agent": "slow", "text": "late line", "at": at(4)},
+        {"kind": "agent_started", "agent": "early", "at": at(5)},
+    )
+    assert by_stage(snap) == {"find": ["slow"], "synthesis": ["early"]}
+    assert agent(snap, "slow")["activity"] == "late line"
+
+
+def test_fold_retry_then_done():
+    snap = fold(
+        {"kind": "stage", "stage": "find"},
+        {"kind": "agent_started", "agent": "docs+tests", "text": "docs, tests"},
+        {"kind": "agent_retried", "agent": "docs+tests", "text": "agent docs+tests stalled for 2m"},
+    )
+    a = agent(snap, "docs+tests")
+    assert (a["state"], a["retries"]) == ("retrying", 1)
+    assert a["recent"][-1]["text"] == "retrying: agent docs+tests stalled for 2m"
+    assert snap["activity"]["text"] == "retrying: agent docs+tests stalled for 2m"
+    snap = fold(
+        {"kind": "agent_started", "agent": "docs+tests"},
+        {"kind": "agent_retried", "agent": "docs+tests", "text": "stalled"},
+        {"kind": "agent_activity", "agent": "docs+tests", "text": "Reading again."},
+        {"kind": "agent_retried", "agent": "docs+tests", "text": "stalled"},
+        {"kind": "agent_progress", "agent": "docs+tests", "text": "Read a.go"},
+        {"kind": "agent_done", "agent": "docs+tests", "text": "3 findings"},
+    )
+    a = agent(snap, "docs+tests")
+    assert (a["state"], a["retries"], a["result"]) == ("done", 2, "3 findings")
+
+
+def test_fold_degraded_agent_stays_degraded():
+    snap = fold(
+        {"kind": "stage", "stage": "verify", "at": at(1)},
+        {"kind": "agent_started", "agent": "verify docs", "at": at(2)},
+        {"kind": "agent_started", "agent": "verify src", "at": at(2)},
+        {"kind": "agent_done", "agent": "verify src", "text": "4 of 4 kept", "at": at(5)},
+        {"kind": "agent_degraded", "agent": "verify docs", "text": "exit 1", "at": at(6)},
+        {"kind": "agent_activity", "agent": "verify docs", "text": "a late line", "at": at(7)},
+    )
+    a = agent(snap, "verify docs")
+    assert (a["state"], a["result"], a["finished"]) == ("degraded", "exit 1", MT.event_time(at(6)))
+    assert [r["text"] for r in a["recent"]] == ["degraded: exit 1", "a late line"]
+    assert snap["verify"] == {"kept": 4, "total": 4, "agents": 1}  # a degraded group kept nothing
+    assert snap["stages"][0]["finished"] == MT.event_time(at(6))
+
+
+def test_fold_rate_limit():
+    snap = fold(
+        {"kind": "agent_started", "agent": "adversarial"},
+        {"kind": "rate_limit", "agent": "adversarial", "text": "rejected"},
+        {"kind": "agent_started", "agent": "bugs"},
+        {"kind": "agent_done", "agent": "bugs", "text": "0 findings"},
+        {"kind": "rate_limit", "agent": "bugs", "text": "allowed_warning"},
+    )
+    adv = agent(snap, "adversarial")
+    assert adv["state"] == "rate-limited"
+    assert adv["recent"] == [{"at": None, "kind": "rate_limit", "text": "rate limited: rejected"}]
+    assert agent(snap, "bugs")["state"] == "done"
+    snap = fold(
+        {"kind": "agent_started", "agent": "adversarial"},
+        {"kind": "rate_limit", "agent": "adversarial", "text": "limited"},
+        {"kind": "agent_activity", "agent": "adversarial", "text": "carrying on"},
+    )
+    assert agent(snap, "adversarial")["state"] == "running"
+
+
+def test_fold_finder_latest_findings_replace_its_list():
+    snap = fold(
+        {"kind": "stage", "stage": "find"},
+        {"kind": "findings", "agent": "a", "findings": [finding("a-1"), finding("a-2")]},
+        {"kind": "findings", "agent": "b", "findings": [finding("b-1", "major")]},
+        {"kind": "findings", "agent": "a", "findings": [finding("a-3", "critical")]},
+    )
+    assert [f["id"] for f in snap["findings"]] == ["a-3", "b-1"]
+    assert snap["found"] == snap["total"] == 2
+    assert snap["counts"] == {"critical": 1, "major": 1, "minor": 0}
+
+
+def test_fold_dropped_is_kept_apart():
+    snap = fold(
+        {"kind": "stage", "stage": "find"},
+        {"kind": "findings", "agent": "a", "findings": [finding("a-1"), finding("a-2"), finding("a-3")]},
+        {"kind": "stage", "stage": "synthesis"},
+        {"kind": "agent_started", "agent": "synthesis", "text": "merging 3 findings"},
+        {"kind": "dropped", "agent": "synthesis", "text": "1 findings dropped", "findings": [finding("a-3")]},
+        {"kind": "findings", "agent": "synthesis", "findings": [finding("a-1")]},
+        {"kind": "agent_done", "agent": "synthesis", "text": "1 findings"},
+    )
+    assert [f["id"] for f in snap["dropped"]] == ["a-3"] and snap["dropped_total"] == 1
+    assert [f["id"] for f in snap["findings"]] == ["a-1"]
+    assert (snap["found"], snap["total"]) == (3, 1)
+    assert agent(snap, "synthesis")["recent"] == []  # a dropped event is no agent line
+
+
+def test_fold_without_a_synthesis_stage():
+    snap = fold(
+        {"kind": "stage", "stage": "find"},
+        {"kind": "agent_started", "agent": "solo", "text": "bugs"},
+        {"kind": "findings", "agent": "solo", "findings": [finding("solo-1"), finding("solo-2", "major")]},
+        {"kind": "agent_done", "agent": "solo", "text": "2 findings"},
+        {"kind": "stage", "stage": "verify"},
+        {"kind": "agent_started", "agent": "verify src"},
+        {"kind": "agent_done", "agent": "verify src", "text": "1 of 2 kept, 1 lowered"},
+    )
+    assert snap["merged"] is False
+    assert [f["id"] for f in snap["findings"]] == ["solo-2", "solo-1"]
+    assert snap["found"] == snap["total"] == 2
+    assert snap["verify"] == {"kept": 1, "total": 2, "agents": 1}
+
+
+def test_fold_caps():
+    many = [finding(f"m-{i}") for i in range(MT.FOLD_FINDINGS + 40)]
+    many.append(finding("worst", "critical", body="b" * 5000, fix="f" * 3000))
+    talk = [{"kind": "agent_activity", "agent": "a", "text": f"line {i}"} for i in range(8)]
+    snap = fold(
+        {"kind": "agent_started", "agent": "a", "text": "l" * 400},
+        *talk,
+        {"kind": "agent_progress", "agent": "a", "text": "p" * 400},
+        {"kind": "findings", "agent": "a", "findings": many},
+        {"kind": "dropped", "agent": "synthesis", "findings": many},
+    )
+    assert len(snap["findings"]) == MT.FOLD_FINDINGS and snap["total"] == MT.FOLD_FINDINGS + 41
+    worst = snap["findings"][0]
+    assert worst["id"] == "worst"  # the cap keeps the most severe
+    assert len(worst["body"]) == MT.FOLD_BODY and worst["body"].endswith("…")
+    assert len(worst["fix"]) == MT.FOLD_FIX and worst["fix"].endswith("…")
+    assert snap["counts"]["minor"] == MT.FOLD_FINDINGS + 40
+    assert len(snap["dropped"]) == MT.FOLD_FINDINGS and snap["dropped_total"] == MT.FOLD_FINDINGS + 41
+    a = agent(snap, "a")
+    assert len(a["lenses"]) == len(a["progress"]) == MT.FOLD_TEXT
+    assert [r["text"] for r in a["recent"]] == [f"line {i}" for i in range(3, 8)]
+    assert len(snap["activity"]["text"]) == MT.FOLD_TEXT  # the progress line came last
+
+
+def test_fold_is_pure():
+    lines = round_lines()
+    assert MT.fold_events(iter(lines)) == MT.fold_events(lines)
 
 
 # ---------------------------------------------------------------- verify-final

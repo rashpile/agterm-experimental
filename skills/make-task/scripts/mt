@@ -233,7 +233,8 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
+from datetime import datetime
 from html import escape as html_escape
 from html import unescape as html_unescape
 from pathlib import Path
@@ -1865,6 +1866,248 @@ def milestone(events: list[dict[str, Any]]) -> str:
         return "starting"
     text = f"{stage} {len(finished & started)}/{len(started)}"
     return text + (f" · {len(degraded)} degraded" if degraded else "")
+
+
+# revmux's events.jsonl kinds (its app/pipeline/event.go); any other kind is counted and ignored
+EVENT_KINDS = frozenset(
+    {
+        "stage",
+        "agent_started",
+        "agent_state",
+        "agent_progress",
+        "agent_activity",
+        "agent_done",
+        "agent_retried",
+        "agent_degraded",
+        "rate_limit",
+        "findings",
+        "dropped",
+    }
+)
+SYNTHESIS = "synthesis"
+FOLD_FINDINGS = 200
+FOLD_BODY = 4000
+FOLD_FIX = 2000
+FOLD_TEXT = 300
+FOLD_RECENT = 5
+VERIFY_KEPT = re.compile(r"(\d+) of (\d+) kept\b")
+FINDING_TEXT = ("id", "file", "severity", "title", "body", "fix", "verdict")
+FINDING_NUMBER = ("line", "end_line", "confidence")
+FINDING_LIST = ("sources", "lenses")
+FINDING_CAP = {"body": FOLD_BODY, "fix": FOLD_FIX}
+# an agent's status line: (state, prefix as revmux's own renderers print it)
+AGENT_NOTES = {
+    "agent_retried": ("retrying", "retrying: "),
+    "agent_degraded": ("degraded", "degraded: "),
+    "rate_limit": ("rate-limited", "rate limited: "),
+}
+AGENT_FINISHED = ("done", "degraded")
+
+
+def clip(text: str, limit: int) -> str:
+    """text cut to at most limit characters, the last one an ellipsis when it was cut."""
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def event_time(value: Any) -> float | None:
+    """An event's ISO 8601 `at` as epoch seconds, or None when it is missing or not a time."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def event_text(ev: dict[str, Any], key: str) -> str:
+    value = ev.get(key)
+    return value if isinstance(value, str) else ""
+
+
+def fold_finding(raw: dict[str, Any], agent: str) -> dict[str, Any]:
+    """A revmux finding with every key present (blank when missing), body and fix capped, and the agent
+    whose event carried it."""
+    f: dict[str, Any] = {}
+    for key in FINDING_TEXT:
+        value = event_text(raw, key)
+        f[key] = clip(value, FINDING_CAP[key]) if key in FINDING_CAP else value
+    for key in FINDING_NUMBER:
+        value = raw.get(key)
+        f[key] = value if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+    for key in FINDING_LIST:
+        value = raw.get(key)
+        f[key] = [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
+    f["agent"] = agent
+    return f
+
+
+def fold_findings(ev: dict[str, Any], agent: str) -> list[dict[str, Any]]:
+    raw = ev.get("findings")
+    return [fold_finding(f, agent) for f in raw if isinstance(f, dict)] if isinstance(raw, list) else []
+
+
+def severity_rank(f: dict[str, Any]) -> int:
+    return SEVERITIES.index(f["severity"]) if f["severity"] in SEVERITIES else len(SEVERITIES)
+
+
+def fold_events(lines: Iterable[str]) -> dict[str, Any]:
+    """A revmux round's events.jsonl folded into the Review tab's snapshot. Pure: the caller reads the file.
+
+    lines are the file's lines, each with its "\\n"; one without (the line revmux is still writing) is
+    skipped, and so is a blank one. A line that is not JSON, or not an object, is skipped and counted in
+    `skipped`; one of a kind outside EVENT_KINDS in `unknown`. A missing or mistyped field reads blank
+    (`at` None). `format_ok` is false when there are complete lines but none of a known kind.
+
+    The snapshot: `stages` [{name, started, finished}] (finished when the next stage starts, the last one
+    when all its agents finished) and `stage`, the latest's name; `agents` [{name, stage, lenses, model,
+    state, started, finished, findings, result, retries, activity, progress, recent}] keyed by name, placed
+    under the stage active at their `agent_started` (an event before it opens the row under the current
+    one). state is running, done, retrying, rate-limited or degraded; a done or degraded agent stays so.
+    findings is the count of its latest `findings` event (None before one), result its done or degraded
+    text, recent its last FOLD_RECENT lines (activity, state other than `model: …`, and the retry,
+    degrade and rate-limit notes); every text is capped at FOLD_TEXT characters. `activity` is the latest
+    line of any agent, progress included: {agent, text, at}.
+
+    Findings: each finder's latest `findings` event replaces its own list; synthesis's (the agent named
+    synthesis, or one under that stage) replaces them all (`merged` true). `found` is the finders' total
+    (the "13 → 10" line), `total` and `counts` (by severity) cover the current list, which is sorted by
+    severity and capped at FOLD_FINDINGS, body at FOLD_BODY and fix at FOLD_FIX characters. `dropped` is
+    the latest `dropped` event's list, apart, capped the same (`dropped_total`). `verify` sums the
+    `N of M kept` texts of the agents done: {kept, total, agents}. `started` and `updated` are the
+    earliest and latest event times.
+    """
+    stages: list[dict[str, Any]] = []
+    agents: dict[str, dict[str, Any]] = {}
+    finders: dict[str, list[dict[str, Any]]] = {}
+    merged: list[dict[str, Any]] | None = None
+    dropped: list[dict[str, Any]] = []
+    activity: dict[str, Any] | None = None
+    complete = known = skipped = unknown = 0
+    times: list[float] = []
+
+    for line in lines:
+        if not line.endswith("\n") or not line.strip():
+            continue
+        complete += 1
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            skipped += 1
+            continue
+        if not isinstance(ev, dict):
+            skipped += 1
+            continue
+        kind = event_text(ev, "kind")
+        if kind not in EVENT_KINDS:
+            unknown += 1
+            continue
+        known += 1
+        at = event_time(ev.get("at"))
+        if at is not None:
+            times.append(at)
+        text = clip(event_text(ev, "text"), FOLD_TEXT)
+        if kind == "stage":
+            if stages and stages[-1]["finished"] is None:
+                stages[-1]["finished"] = at
+            stages.append({"name": event_text(ev, "stage"), "started": at, "finished": None})
+            continue
+        stage = stages[-1]["name"] if stages else ""
+        name = event_text(ev, "agent")
+        a = agents.get(name)
+        if a is None and name:
+            a = agents[name] = {
+                "name": name,
+                "stage": stage,
+                "lenses": "",
+                "model": "",
+                "state": "running",
+                "started": at,
+                "finished": None,
+                "findings": None,
+                "result": "",
+                "retries": 0,
+                "activity": "",
+                "progress": "",
+                "recent": [],
+            }
+        if kind == "findings":
+            found = fold_findings(ev, name)
+            if name == SYNTHESIS or (a is not None and a["stage"] == SYNTHESIS):
+                merged = found
+            else:
+                finders[name] = found
+            if a is not None:
+                a["findings"] = len(found)
+            continue
+        if kind == "dropped":
+            dropped = fold_findings(ev, name)
+            continue
+        if a is None:
+            continue
+        line_text = ""
+        if kind == "agent_started":
+            a.update(stage=stage, lenses=text, state="running", finished=None)
+            if a["started"] is None:
+                a["started"] = at
+        elif kind == "agent_done":
+            a.update(state="done", finished=at, result=text)
+        elif kind in AGENT_NOTES:
+            state, prefix = AGENT_NOTES[kind]
+            line_text = prefix + text
+            if kind == "agent_retried":
+                a["retries"] += 1
+            if kind == "agent_degraded":
+                a.update(state=state, finished=at, result=text)
+            elif a["state"] not in AGENT_FINISHED:
+                a["state"] = state
+        else:  # agent_state, agent_activity, agent_progress: the agent is at work
+            if a["state"] not in AGENT_FINISHED:
+                a["state"] = "running"
+            if kind == "agent_state" and text.startswith("model: "):
+                a["model"] = text.removeprefix("model: ")
+            elif kind == "agent_progress":
+                a["progress"] = text
+                activity = {"agent": name, "text": text, "at": at}
+            else:
+                line_text = text
+                if kind == "agent_activity":
+                    a["activity"] = text
+        if line_text:
+            a["recent"] = [*a["recent"], {"at": at, "kind": kind, "text": line_text}][-FOLD_RECENT:]
+            activity = {"agent": name, "text": line_text, "at": at}
+
+    if stages and stages[-1]["finished"] is None:
+        last = [a for a in agents.values() if a["stage"] == stages[-1]["name"]]
+        if last and all(a["state"] in AGENT_FINISHED for a in last):
+            ends = [a["finished"] for a in last if a["finished"] is not None]
+            stages[-1]["finished"] = max(ends) if ends else None
+    current = merged if merged is not None else [f for found in finders.values() for f in found]
+    current = sorted(current, key=severity_rank)
+    kept = [m for a in agents.values() if a["state"] == "done" and (m := VERIFY_KEPT.match(a["result"]))]
+    return {
+        "format_ok": complete == 0 or known > 0,
+        "events": known,
+        "skipped": skipped,
+        "unknown": unknown,
+        "started": min(times) if times else None,
+        "updated": max(times) if times else None,
+        "stage": stages[-1]["name"] if stages else "",
+        "stages": stages,
+        "agents": list(agents.values()),
+        "findings": current[:FOLD_FINDINGS],
+        "total": len(current),
+        "found": sum(len(found) for found in finders.values()),
+        "merged": merged is not None,
+        "counts": {sev: sum(1 for f in current if f["severity"] == sev) for sev in SEVERITIES},
+        "dropped": sorted(dropped, key=severity_rank)[:FOLD_FINDINGS],
+        "dropped_total": len(dropped),
+        "verify": {
+            "kept": sum(int(m.group(1)) for m in kept),
+            "total": sum(int(m.group(2)) for m in kept),
+            "agents": len(kept),
+        },
+        "activity": activity,
+    }
 
 
 def process_alive(task: str, name: str) -> bool:

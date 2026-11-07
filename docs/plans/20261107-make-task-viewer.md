@@ -129,6 +129,14 @@
   "13 → 10" line; `dropped` apart; verify `N of M kept` summed; caps: 200 findings, body 4000, fix 2000,
   activity 300 characters, five recent lines per agent; `format_ok` false when complete lines exist but none
   of a known kind.
+  ➕ as built in Task 7: `lines` are the file's lines with their `\n` (one without is the line still being
+  written); times are epoch seconds (`at` parsed, None when missing). Snapshot keys: `format_ok`, `events`,
+  `skipped`, `unknown`, `started`, `updated`, `stage`, `stages` `[{name, started, finished}]`, `agents`
+  `[{name, stage, lenses, model, state, started, finished, findings, result, retries, activity, progress,
+  recent}]` (`recent` `[{at, kind, text}]`, retry/degrade/rate-limit notes prefixed as revmux prints them),
+  `findings` (sorted by severity, then capped; each with the emitting `agent`), `total`, `found`, `merged`,
+  `counts`, `dropped`, `dropped_total`, `verify` `{kept, total, agents}`, `activity` `{agent, text, at}`
+  (the latest line of any agent, progress included); a done or degraded agent stays so on a later line.
 - The caller reads `events.jsonl` whole when it is at most 8 MB; larger, the snapshot is `{"truncated": true}`
   and the Review tab shows the milestone only.
 - Live round: only the highest-numbered round, when it has started, has no result, its `milestone` is not
@@ -258,11 +266,11 @@
 - Create: `skills/make-task/tests/fixtures/events-round.jsonl`
 - Modify: `skills/make-task/tests/test_review.py`
 
-- [ ] add `fold_events(lines) -> snapshot` as in Technical Details (pure, no I/O)
-- [ ] add the fixture: a real round's `events.jsonl` (`.revmux/tasks/go-ask-answer-tool/02-after-fix/events.jsonl`), trimmed, home paths scrubbed
-- [ ] write tests on the fixture: stages, agents per stage, states, finder findings replaced by synthesis's with the finder total, verify kept total
-- [ ] write tests for edge cases, synthetic: partial last line, non-JSON line, non-object line, unknown kind, missing fields, retry, degrade, rate limit, dropped, no synthesis stage, caps, empty input, `format_ok` false
-- [ ] run tests - must pass before task 8
+- [x] add `fold_events(lines) -> snapshot` as in Technical Details (pure, no I/O)
+- [x] add the fixture: a real round's `events.jsonl` (`.revmux/tasks/go-ask-answer-tool/02-after-fix/events.jsonl`), trimmed, home paths scrubbed
+- [x] write tests on the fixture: stages, agents per stage, states, finder findings replaced by synthesis's with the finder total, verify kept total
+- [x] write tests for edge cases, synthetic: partial last line, non-JSON line, non-object line, unknown kind, missing fields, retry, degrade, rate limit, dropped, no synthesis stage, caps, empty input, `format_ok` false
+- [x] run tests - must pass before task 8
 
 ### Task 8: Review payload and live updates
 
