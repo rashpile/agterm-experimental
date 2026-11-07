@@ -6,6 +6,8 @@
 //	sessions(agents?)      list panes that can be addressed
 //	ask(text, session_id?) paste text into a pane's input and press Enter; returns a request_id at once
 //	answer(request_id?)    the reply to an ask, or the state saying why there is none yet; never waits
+//	recap(session_id?, turns?, model?)
+//	                       a recap of a Claude pane's last turns, written by a local Ollama model
 //
 // `go-ask hook` is Claude's UserPromptSubmit and Stop hook: it records each turn of the pane the
 // agent runs in to the journal answer reads.
@@ -30,12 +32,13 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-const version = "0.2.0"
+const version = "0.3.0"
 
 type server struct {
 	ctl  agtermctl
 	self selfAddr
-	dir  string // state dir: turn journals and requests
+	dir  string    // state dir: turn journals and requests
+	deps recapDeps // what recap needs: Ollama, the transcript locator, the default model
 
 	mu            sync.Mutex
 	lastRequestID string // the request_id this MCP session's last ask returned
@@ -236,6 +239,17 @@ func newMCPServer(s *server) *mcp.Server {
 			"no result from that Claude session is final, and the reply is the best guess. " +
 			"Supports Claude agents only for now.",
 	}, s.answer)
+	mcp.AddTool(srv, &mcp.Tool{
+		Name: "recap",
+		Description: "Recap what the Claude agent in an agterm pane did in its last turns: a markdown summary " +
+			"of at most about 250 words with four sections (what was done, the user's decisions, the current state " +
+			"including what is not pushed or merged, what is left), written by a local Ollama model from that " +
+			"Claude session's transcript. Takes about 40-50 s with the default model: call it once and wait. " +
+			"Without session_id it recaps the pane the user has focus on in agterm. turns is how many of the " +
+			"user's last prompts to cover (default 6, at most 50). language is the language to write it in, such as " +
+			"English or Russian (default English); pass the language you answer the user in. Types nothing into the pane, so the caller's " +
+			"own pane can be recapped too. Supports Claude panes only and needs Ollama running on this machine.",
+	}, s.recap)
 	return srv
 }
 
@@ -259,14 +273,15 @@ func main() {
 	log.SetPrefix("go-ask: ")
 	ctl := agtermctl{bin: findAgtermctl()}
 	dir := stateDir()
+	deps := newRecapDeps(os.Getenv)
 
 	if *httpMode {
-		if err := serveHTTP(*addr, *tokenFile, dir, ctl); err != nil {
+		if err := serveHTTP(*addr, *tokenFile, dir, ctl, deps); err != nil {
 			log.Fatal(err)
 		}
 		return
 	}
-	s := &server{ctl: ctl, self: selfFromEnv(), dir: dir}
+	s := &server{ctl: ctl, self: selfFromEnv(), dir: dir, deps: deps}
 	if err := newMCPServer(s).Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		log.Fatal(err)
 	}

@@ -157,6 +157,33 @@ front of the hook command:
 {"type": "command", "command": "GO_ASK_STATE_DIR=/path/to/state /Users/pkoptilin/.local/bin/go-ask hook"}
 ```
 
+### Ollama for recap
+
+`recap` has a local model write the summary, so it needs [Ollama](https://ollama.com) running on
+the Mac where go-ask runs, with the model pulled:
+
+```sh
+ollama pull gemma4:e4b
+```
+
+go-ask looks for Ollama at `http://127.0.0.1:11434`, or at `OLLAMA_HOST` when set. Another model
+goes in the call's `model` argument, or in `RECAP_MODEL` for every call. The launchd plist above
+passes go-ask no environment, so for the daemon use the `model` argument.
+
+`recap` needs no hooks. It finds the pane's claude through `ps` and reads the transcript Claude Code
+keeps in `~/.claude/projects`.
+
+A recap takes up to about a minute. If Claude Code cuts the call off, raise `MCP_TOOL_TIMEOUT`, in
+milliseconds, in the environment Claude starts with. Codex stops waiting for an MCP tool after
+`tool_timeout_sec`, 60 seconds by default, and a recap can take longer. If you register go-ask in
+Codex, raise it in go-ask's table in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.go-ask]
+# command or url as you registered it
+tool_timeout_sec = 180
+```
+
 ### Check and remove
 
 `claude mcp get go-ask` should say `✔ Connected`. Remove it with `claude mcp remove go-ask -s user`.
@@ -214,11 +241,31 @@ Send the same text twice, and `answer` for the first message follows the newer o
 `answer` supports Claude only for now. For Pi, codex and the other agents it returns
 `unsupported`, and you read the reply in their session.
 
+To catch up on another session without opening it, ask for a recap:
+
+> what has sh:kobo been doing?
+
+> recap the last 10 turns of the agent in the right pane of sh:pako-channels
+
+Claude calls `recap` and waits for it, for example with these arguments:
+
+```json
+{"session_id": "sh:kobo"}
+{"session_id": "sh:pako-channels:right", "turns": 10}
+{"session_id": "sh:kobo", "language": "Russian"}
+```
+
+Without a target it recaps the pane that has focus in agterm. The recap is markdown in the
+`language` the call names, English by default, at most about 250 words, in four sections: what was done, your decisions, the current state with what
+isn't pushed or merged, and what is left. It covers your last 6 prompts in that session unless you
+name another number, at most 50. `recap` works on Claude panes only, your own pane included, since
+it types nothing.
+
 Claude asks permission for each tool the first time. To stop the prompts, add the tools to
 `permissions.allow` in `~/.claude/settings.json`:
 
 ```json
-{"permissions": {"allow": ["mcp__go-ask__sessions", "mcp__go-ask__ask", "mcp__go-ask__answer"]}}
+{"permissions": {"allow": ["mcp__go-ask__sessions", "mcp__go-ask__ask", "mcp__go-ask__answer", "mcp__go-ask__recap"]}}
 ```
 
 ## Things to know
@@ -238,6 +285,10 @@ Claude asks permission for each tool the first time. To stop the prompts, add th
 - go-ask won't send to your own pane, to a pane at a bare shell, or to an agent whose status is
   `blocked`, waiting for someone to answer a permission prompt or a question. Answer it in agterm,
   then ask again.
+- `recap` sends a digest of the transcript to Ollama at `OLLAMA_HOST`. With the default host it
+  stays on this Mac.
+- A small local model writes the recap, and it can get a name wrong. Check commit and branch names
+  in the session before you act on them.
 
 ## By hand
 
@@ -284,5 +335,30 @@ token file checks and the refusal to listen off loopback without a token. For `a
 the text normalization with the shapes Claude was seen to send, the journal with its trim and file
 modes, `go-ask hook` with good and bad input, the request store, every row of the state rules,
 messages queued while a turn runs, Stop hook continuations, when a result becomes final, `ask`
-saving its request, and `answer` over stdio and over two HTTP sessions. They run against a
-fake agtermctl and a temp state dir, and touch neither agterm nor `~/.local/state`.
+saving its request, and `answer` over stdio and over two HTTP sessions.
+
+For `recap` they cover the digest and its limits, with Cyrillic text at the cut points, and compare
+it with the output of `commands/recap/recap.py --digest` on a shared fixture when `python3` is on
+`PATH`. They cover the transcript reader with long and broken lines, the prompts for a language,
+the Ollama request and each Ollama error against an `httptest` server, and the pane-to-claude
+lookup with temp `~/.claude` dirs and a fake `ps`, child claudes with `CLAUDECODE=1` or
+`CLAUDE_CODE_CHILD_SESSION=1` included. One test runs the real `/bin/ps` on a helper process. Over
+HTTP they cover the targets, a `:right` split, the caller's own pane, the `turns` limits, the
+`language` default and refusals, and the errors.
+
+All of them run against a fake agtermctl, a temp state dir and a fake Ollama, and touch neither
+agterm, `~/.local/state` nor `~/.claude`.
+
+One more test runs against the real thing: the built binary over stdio, agterm, the Claude
+processes and transcripts in `~/.claude`, and the local Ollama. It has the `live` build tag, so
+`go test ./...` doesn't build it. Run it from a pane whose session runs Claude:
+
+```sh
+GO_ASK_LIVE_SESSION=$AGTERM_SESSION_ID go test -tags live -run TestRecapLive -v -timeout 10m
+```
+
+`GO_ASK_LIVE_LANGUAGE=Russian` asks for another language; without it the recap is in English. It
+prints the recap, the transcript path, the token counts, the time and which of the four English
+section words it found. It fails only on what doesn't depend on the model's wording: 6 turns, a
+model, a `.jsonl` transcript and the language it asked for. A second subtest recaps the focused pane when that pane runs
+claude, and skips otherwise.

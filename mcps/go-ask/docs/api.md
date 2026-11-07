@@ -67,7 +67,7 @@ client                                   go-ask
   │◀──────────────── serverInfo, capabilities
   │── notifications/initialized ─────────▶│  notification, no reply
   │── tools/list ────────────────────────▶│
-  │◀──────────────── sessions, ask, answer + schemas
+  │◀──────────────── sessions, ask, answer, recap + schemas
   │── tools/call ask {text} ─────────────▶│  saves a request, types the text
   │◀──────────────── sent, request_id     │  returns once Enter is sent
   │                                       │
@@ -81,12 +81,12 @@ Reply to `initialize`:
 
 ```json
 {"protocolVersion": "2025-06-18",
- "serverInfo": {"name": "go-ask", "version": "0.2.0"},
+ "serverInfo": {"name": "go-ask", "version": "0.3.0"},
  "capabilities": {"logging": {}, "tools": {"listChanged": true}}}
 ```
 
-Claude Code shows the tools to the model as `mcp__go-ask__sessions`, `mcp__go-ask__ask` and
-`mcp__go-ask__answer`.
+Claude Code shows the tools to the model as `mcp__go-ask__sessions`, `mcp__go-ask__ask`,
+`mcp__go-ask__answer` and `mcp__go-ask__recap`.
 
 ## sessions
 
@@ -392,6 +392,152 @@ A call before the turn started:
  "detail": "No turn has started for this message yet; if this persists, the go-ask hooks may not be installed for this agent, or Claude changed the text."}
 ```
 
+## recap
+
+Returns a recap of what the Claude in a pane did over the user's last prompts. A local Ollama
+model writes it from that Claude session's transcript. `recap` types nothing into the pane and
+needs none of the go-ask hooks. The call returns when the model is done.
+
+Input:
+
+| Field | Type | Required | Meaning |
+|-------|------|----------|---------|
+| `session_id` | string | no | Which pane to recap, resolved as for [ask](#ask). Omitted means `focused`. |
+| `turns` | integer | no | How many of the user's last prompts the recap covers. Omitted or `0` means 6. A value below 1 counts as 1, a value above 50 as 50. |
+| `model` | string | no | The Ollama model that writes the recap. Omitted means `RECAP_MODEL` from go-ask's environment, else `gemma4:e4b`. |
+| `language` | string | no | The language to write the recap in: a name such as `English`, `Russian` or `German`, or a code such as `de`. Omitted or blank means `English`. Surrounding spaces are trimmed; a value over 40 characters or with a control character such as a newline is refused. A client passes the language it answers the user in. |
+
+The target errors are the ones `ask` gives. Since `recap` only reads, it accepts the caller's own
+pane and a `blocked` pane. It refuses a pane whose `agent` is known and isn't `claude`. A pane with
+no `agent`, such as one running a wrapper script, goes on to the lookup below, which finds a claude
+in it or not. A pane at a bare shell has none.
+
+Output:
+
+| Field | Always | Meaning |
+|-------|--------|---------|
+| `recap` | yes | The recap, markdown in the requested language. |
+| `language` | yes | The language the recap was asked for, after the default. |
+| `target` | yes | The resolved address. |
+| `name` | yes | Session name. |
+| `model` | yes | The model that wrote the recap. |
+| `turns` | yes | The number of prompts asked for, after the default and the 1 to 50 limit. A transcript with fewer prompts is recapped whole. |
+| `transcript` | yes | Path of the Claude transcript the recap was written from. |
+| `duration_ms` | yes | How long the whole call took, in milliseconds. |
+| `prompt_tokens` | no | Tokens the model read, when Ollama reports them. |
+| `output_tokens` | no | Tokens the model wrote, when Ollama reports them. |
+
+The prompt is `commands/recap/recap.py`'s, in English, with the language as a parameter:
+recap.py's own prompt is Russian and always asks for Russian. It asks for at most 250 words in the
+requested language, section titles included, in four sections:
+
+1. what was done, with the commit, branch and file names the transcript holds;
+2. the user's decisions;
+3. the current state: what runs, what changed, what is merged, what is not pushed;
+4. what is left to do or check.
+
+The system prompt tells the model to rely on the transcript alone and make nothing up. A small
+model still gets a name wrong now and then. In the live check `gemma4:e4b` called a merge commit's
+subject a branch name.
+
+With `gemma4:e4b` a recap takes under a minute. The live checks recapped 6 turns in 36 to 42
+seconds: 3889 to 9740 tokens in, 1290 to 1448 out, in English and in Russian. A model Ollama
+hasn't loaded yet adds its load time, and more turns or a larger model take longer.
+
+Example:
+
+```json
+{"jsonrpc": "2.0", "id": 7, "method": "tools/call",
+ "params": {"name": "recap", "arguments": {"session_id": "agent", "language": "Russian"}}}
+```
+
+```json
+{"jsonrpc": "2.0", "id": 7, "result": {
+  "structuredContent": {"recap": "1. Что сделано\n- ...", "language": "Russian", "target": "7E1C11A9-3D4B-4609-AFAB-0DFD423D961C",
+                        "name": "agent", "model": "gemma4:e4b", "turns": 6,
+                        "transcript": "/Users/pkoptilin/.claude/projects/-Users-pkoptilin-workspace-ops/636abdbb-8439-493f-a620-cf7952b447f6.jsonl",
+                        "duration_ms": 36214, "prompt_tokens": 3889, "output_tokens": 1392},
+  "content": [{"type": "text", "text": "{\"recap\":\"...\",...}"}]}}
+```
+
+### How go-ask finds the pane's Claude
+
+Claude Code writes `~/.claude/sessions/<pid>.json` for every running claude, with its
+`sessionId` and `updatedAt`. agterm puts `AGTERM_PANE_ID=<pane id>` into the environment of each
+pane's shell, and the claude started there inherits it. go-ask:
+
+1. reads every `<pid>.json` in `~/.claude/sessions`, and skips files that don't parse or have no
+   `sessionId`;
+2. runs `/bin/ps -E -o pid=,command= -p <pids>` once over those pids. `-E` appends each process's
+   environment to its command line. A pid that no longer runs drops out;
+3. keeps the processes whose environment holds `AGTERM_PANE_ID=<pane id>` as a whole word and
+   holds neither `CLAUDECODE=1` nor `CLAUDE_CODE_CHILD_SESSION=1`. The pane id is the one
+   agterm's tree lists as `surfaces[].paneID`. A whole word has a space or the line's start before
+   it and a space or the line's end after it, so `AGTERM_PANE_ID=ABC` matches neither
+   `AGTERM_PANE_ID=ABCD` nor `X_AGTERM_PANE_ID=ABC`;
+4. takes the one with the newest `updatedAt`;
+5. reads its transcript, `~/.claude/projects/*/<sessionId>.jsonl`, the first match in sorted order.
+
+Claude Code puts `CLAUDECODE=1` and `CLAUDE_CODE_CHILD_SESSION=1` into the environment of the
+processes it starts, so a claude started from inside another claude, such as a revmux reviewer, a
+`claude -p` or an Agent SDK tool, carries at least one of them and the pane id too. revmux strips
+`CLAUDECODE` before it starts a reviewer, because claude refuses to start nested, but keeps
+`CLAUDE_CODE_CHILD_SESSION`. The pane's own claude carries neither. Without the exclusion, a child
+updates its record more recently than the idle claude that started it, so a recap of the pane would
+fail on the child's unsaved transcript or describe the child's session and not the one the user
+sees. The match is by pane id, so a `:right` split resolves to its own claude.
+
+ps shows no environment for Apple's platform binaries, such as `/bin/zsh`. claude isn't one.
+go-ask reads `~/.claude` of the user it runs as, on the Mac it runs on, so an HTTP server recaps
+its own Mac's panes for callers on other machines too.
+
+### The digest
+
+The model never gets the raw transcript. go-ask sends it a digest, built by the rules of
+`build_digest` in `recap.py`. A test compares the two digests on a shared fixture.
+
+- go-ask reads the transcript file and decodes its lines from the end backwards until it reaches
+  the `turns`-th real user prompt, so it never decodes a long transcript whole. A line that isn't
+  JSON, or has a field of an unexpected JSON type, is skipped. A real prompt is one the user typed: not a meta row, not a row holding only tool
+  results, not a `<local-command…>` echo.
+- Each user prompt becomes a `### USER <hh:mm> UTC` heading and the prompt, with a skill's
+  invocation echo and body removed, cut to 1500 characters. A message the user sent while a turn
+  ran gets `### USER (sent mid-turn)`.
+- Each tool call becomes one line, `- tool <name>: <detail>`. The detail is the call's
+  `description`, the first 80 characters of its `command`, its `file_path` or its `query`, cut to
+  120 characters.
+- The user's answer to an `AskUserQuestion`, or to a Bash call that runs `mt … ask`, becomes a
+  `USER ANSWER` line with the answer's last 400 characters.
+- A subagent report becomes one line of at most 300 characters.
+- Each assistant text is cut to 600 characters, except the last one before each user prompt and
+  the last one of all, which keep 4000. That is where Claude reports the state of its turn.
+- A digest over 60000 characters keeps its newest 60000, after the line
+  `(начало журнала обрезано)`.
+
+Every limit counts Unicode code points, as Python does. One difference from `recap.py` is on
+purpose: a queued message with an image gives its typed text, where `recap.py` prints the Python
+list, base64 image data included. The digests match for rows of the shapes Claude writes. On a
+row of another shape, such as a `null` content, a tool input that isn't an object or a `null`
+queued prompt, `recap.py` stops with an error, and go-ask reads the value as empty or skips the
+row or block and goes on.
+
+### The Ollama request
+
+go-ask sends one request and doesn't stream:
+
+```
+POST <OLLAMA_HOST>/api/chat
+{"model": "gemma4:e4b", "stream": false, "keep_alive": "5m",
+ "options": {"num_ctx": 8192, "temperature": 0.2},
+ "messages": [{"role": "system", "content": "<system prompt for the language>"},
+              {"role": "user", "content": "<prompt for the language><digest>"}]}
+```
+
+`num_ctx` is the smallest of 8192, 16384, 32768 and 65536 that holds the digest's length in
+characters divided by 3, plus 2500. A longer digest gets 65536. The request ends with the MCP
+request, for example when the client cancels it, and after 10 minutes at the most. `keep_alive`
+holds the model in memory for 5 minutes, so a second recap soon after skips the load.
+
 ## Hook
 
 `go-ask hook` is the Claude Code hook that feeds `answer`. Install it for `UserPromptSubmit` and
@@ -500,9 +646,27 @@ not a JSON-RPC error, so the model reads the reason and can retry, for example a
 | `unknown request_id "x"` | The state dir has no request with that id. |
 | `read request <id>: ...`, `parse request <id>: ...` | The request file can't be read, or isn't JSON. |
 | `read the turn journal of <target>: ...` | The target pane's journal exists but can't be read. |
+| `language must be a language name or code on one line, at most 40 characters` | `recap`'s `language` is over 40 characters or holds a control character. |
+| `recap supports Claude only; <target> runs <agent>` | `recap` on a pane whose agent is known and isn't Claude. |
+| `no live claude in <target> (<name>)` | `recap` found no running claude with the pane's id: a bare shell, a claude that has exited, or only a claude started from inside another one. |
+| `agterm's tree gives <target> (<name>) no pane id, ...` | agterm's tree lists the pane without a pane id, so `recap` can't tell which claude runs there. |
+| `no transcript on disk for Claude session <id>` | `recap` found the claude but no `~/.claude/projects/*/<id>.jsonl`. |
+| `find the claude in <target>: ...` | `/bin/ps` failed, or go-ask can't list `~/.claude/sessions`. |
+| `cannot read the transcript: ...` | The transcript was found but can't be read. |
+| `the transcript of <target> has no turns yet` | The transcript holds no prompt the user typed. |
+| `ollama is not reachable at <host> (...); start it with: ollama serve` | Nothing answers at `OLLAMA_HOST`. |
+| `ollama answered <code>: <body>` | Ollama returned an error status. The message quotes the first 300 characters of its body. A 404, or a body that says the model is not found, adds `; pull it with: ollama pull <model>`. |
+| `ollama: <error>` | Ollama answered with an `error` field. |
+| `ollama returned an empty answer` | The model wrote nothing. |
+| `read the ollama answer: ...`, `ollama answered something other than a chat response ...` | The answer broke off midway, or isn't the JSON of a chat response. |
+| `ollama did not answer within 10m0s; try fewer turns or a smaller model than <model>` | The model took longer than 10 minutes. |
+| `ollama host "<host>": ...` | `OLLAMA_HOST` is not a URL go-ask can use. |
 
 `answer` gives no error when agterm's tree fails. It answers from the journal and says in `detail`
 that it could not check the target's status.
+
+`recap` gives the same target errors as `ask`, from `no listed pane has focus` to `has no right
+pane`, and the `agtermctl` ones.
 
 ## Environment
 
@@ -512,5 +676,11 @@ that it could not check the target's status.
 | `AGTERMCTL` | Path to `agtermctl`. Without it go-ask tries `PATH`, then `/opt/homebrew/bin/agtermctl`, then `/Applications/agterm.app/Contents/MacOS/agtermctl`. |
 | `GO_ASK_STATE_DIR` | The state dir for the requests and the turn journals, see [State files](#state-files). Default `~/.local/state/go-ask`. The server and `go-ask hook` must see the same value. |
 | `AGTERM_PANE_ID` | `go-ask hook` only. The pane id that names the journal. agterm sets it in every pane, and Claude passes it on to its hooks. Without it the hook writes nothing. |
+| `RECAP_MODEL` | The model `recap` uses when the call names none. Default `gemma4:e4b`. go-ask reads it once, at start. |
+| `OLLAMA_HOST` | Where `recap` finds Ollama. Default `http://127.0.0.1:11434`. A value without a scheme gets `http://`, and a trailing `/` is dropped. Ollama and `recap.py` read the same variable. |
 
-Each `agtermctl` call times out after 15 seconds.
+The launchd plist in [usage.md](usage.md#launchd) passes the server no environment. The daemon then
+uses `gemma4:e4b` and the default Ollama host, and a caller picks another model with the `model`
+argument.
+
+Each `agtermctl` call times out after 15 seconds, and so does the `ps` call of `recap`.
