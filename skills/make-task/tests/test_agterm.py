@@ -505,12 +505,14 @@ def test_dashboard_declares_no_agterm_variables_and_loads_state_js():
 
 NODE_HARNESS = r"""
 const fs = require('fs');
-const [script, input, clicks] = [fs.readFileSync(process.argv[2], 'utf8'), fs.readFileSync(process.argv[3], 'utf8'),
-                                 JSON.parse(process.argv[4] || '[]')];
+const [script, input, clicks, reject] = [fs.readFileSync(process.argv[2], 'utf8'), fs.readFileSync(process.argv[3], 'utf8'),
+                                         JSON.parse(process.argv[4] || '[]'), process.argv[5] || ''];
 const app = { innerHTML: '', listeners: {}, addEventListener(t, f) { this.listeners[t] = f; } };
-const requests = [], appended = [];
+const requests = [], appended = [], targets = [];
 globalThis.window = globalThis;
-globalThis.agterm = { request(cmd, opts) { requests.push([cmd, opts]); return Promise.resolve({}); } };
+// with a reject message every request fails as agterm refuses one (e.g. `overlay already open`)
+globalThis.agterm = { request(cmd, opts) { requests.push([cmd, opts]);
+  return reject ? Promise.reject(new Error(reject)) : Promise.resolve({}); } };
 globalThis.document = {
   title: '', head: { appendChild(el) { appended.push(el.src); } },
   getElementById: id => (id === 'app' ? app : null), createElement: () => ({ remove() {} }), querySelectorAll: () => [],
@@ -519,14 +521,17 @@ globalThis.setInterval = () => 0;
 (0, eval)(script);
 (0, eval)(input);
 for (const [sel, data] of clicks) {
-  const target = { closest: s => (s === sel ? { dataset: data || {}, title: '' } : null) };
-  app.listeners.click({ target });
+  const el = { dataset: data || {}, title: '' };
+  targets.push(el);
+  app.listeners.click({ target: { closest: s => (s === sel ? el : null) } });
 }
-process.stdout.write(JSON.stringify({ html: app.innerHTML, title: document.title, requests, appended }));
+// after the requests' promises settle: a refused open sets its tooltip and re-renders
+setImmediate(() => process.stdout.write(JSON.stringify({
+  html: app.innerHTML, title: document.title, requests, appended, titles: targets.map(t => t.title) })));
 """
 
 
-def run_page(tmp_path: Path, state_js: str, clicks: list[Any] | None = None) -> dict[str, Any]:
+def run_page(tmp_path: Path, state_js: str, clicks: list[Any] | None = None, reject: str = "") -> dict[str, Any]:
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is not installed")
@@ -535,7 +540,7 @@ def run_page(tmp_path: Path, state_js: str, clicks: list[Any] | None = None) -> 
     script.write_text(page_script())
     inp.write_text(state_js)
     r = subprocess.run(
-        [node, str(harness), str(script), str(inp), json.dumps(clicks or [])],
+        [node, str(harness), str(script), str(inp), json.dumps(clicks or []), reject],
         capture_output=True,
         text=True,
         check=False,
@@ -701,20 +706,240 @@ def test_page_close_closes_overlay_then_created_split(tmp_path):
     assert out["requests"] == [["session.overlay.close", {}]]
 
 
+def viewer_open(tab: str, run: str = "/state/run") -> list[Any]:
+    """The request a file button sends to open the viewer on its tab."""
+    args = {"html": f"{run}/viewer-{tab}.html", "cwd": run, "javascript": True, "sizePercent": 85, "follow": True}
+    return ["session.overlay.open", {"args": args}]
+
+
+REVDIFF_OPEN = [
+    "session.overlay.open",
+    {"args": {"command": "revdiff abc", "cwd": "/wt", "sizePercent": 90, "follow": True}},
+]
+
+
 def test_page_artifact_clicks(tmp_path):
     clicks = [
         ["[data-open]", {"open": "plan"}],
         ["[data-open]", {"open": "changes"}],
         ["[data-open]", {"open": "design"}],
+        ["[data-open]", {"open": "review"}],
     ]
     out = run_page(tmp_path, js(base_state()), clicks)
-    assert out["requests"] == [
-        [
-            "session.overlay.open",
-            {"args": {"html": "/state/run/artifacts/plan.html", "sizePercent": 85, "follow": True}},
-        ],
-        ["session.overlay.open", {"args": {"command": "revdiff abc", "cwd": "/wt", "sizePercent": 90, "follow": True}}],
-    ], "design has no html yet, so its click does nothing"
+    assert out["requests"] == [viewer_open("plan"), REVDIFF_OPEN], (
+        "design has no html yet and no review round exists, so their clicks do nothing"
+    )
+
+
+def with_pages(s: dict[str, Any], *ids: str) -> dict[str, Any]:
+    """s with a rendered artifact entry for each id (replacing an entry of the same id)."""
+    s["artifacts"] = [a for a in s["artifacts"] if a["id"] not in ids] + [
+        {
+            "id": i,
+            "hint": f"{i}.md",
+            "html": f"/state/run/artifacts/{i}.html",
+            "source": f"/state/run/{i}.md",
+            "updated": 1300,
+        }
+        for i in ids
+    ]
+    return s
+
+
+def test_page_file_buttons_open_the_viewer_on_their_tab(tmp_path):
+    tabs = ["design", "plan", "progress", "review", "stats"]
+    s = with_pages(base_state(state_dir="/state/run/"), *tabs)  # a trailing slash is not doubled
+    clicks = [["[data-open]", {"open": t}] for t in [*tabs, "changes"]]
+    out = run_page(tmp_path, js(s), clicks)
+    assert out["requests"] == [*(viewer_open(t) for t in tabs), REVDIFF_OPEN], "Changes stays revdiff"
+    html = out["html"]
+    for t in tabs:
+        assert f'data-open="{t}"' in html
+    assert '<a class="open" data-open="plan">docs/plans/x.md</a>' not in html, "the plan entry was replaced"
+    assert '<a class="open" data-open="plan">plan.md</a>' in html, "the plan phase's link opens the Plan tab too"
+
+
+def live_summary(**kw: Any) -> dict[str, Any]:
+    s: dict[str, Any] = {
+        "format_ok": True,
+        "stage": "verify",
+        "stages": ["find", "synthesis", "verify"],
+        "agents_done": 5,
+        "agents": 7,
+        "counts": {"critical": 1, "major": 3, "minor": 6},
+        "activity": {"agent": "verify go-ask", "text": "Read mcps/go-ask/answer.go", "at": 2900.0},
+        "updated": 2900.0,
+    }
+    s.update(kw)
+    return s
+
+
+def review_state(*rounds: dict[str, Any], review_html: str | None = None, **kw: Any) -> dict[str, Any]:
+    """base_state in the review phase with these rounds; the review artifact as `mt review start` registers
+    it (no page until `mt review result` writes review.md), or with review_html."""
+    s = base_state(**kw)
+    s["phases"][2].update(status="done", finished=2000)
+    s["phases"][3].update(status="run", started=2000)
+    s["review"] = list(rounds)
+    s["artifacts"].append(
+        {"id": "review", "hint": "revmux review rounds", "html": review_html, "source": "/state/run/review.md",
+         "updated": 2600 if review_html else 0}
+    )  # fmt: skip
+    return s
+
+
+def running_round(n: int = 1, **kw: Any) -> dict[str, Any]:
+    r: dict[str, Any] = {"round": n, "run": f"0{n}-initial", "critical": 0, "major": 0, "minor": 0,
+                         "milestone": "verify 1/2", "live": live_summary(), "started": 2700, "finished": None}  # fmt: skip
+    r.update(kw)
+    return r
+
+
+def finished_round(n: int = 1, **kw: Any) -> dict[str, Any]:
+    r: dict[str, Any] = {"round": n, "run": f"0{n}-initial", "critical": 0, "major": 2, "minor": 1, "verdict": "2 gating",
+                         "milestone": "report ready", "live": live_summary(), "started": 2000, "finished": 2600,
+                         "duration": 600}  # fmt: skip
+    r.update(kw)
+    return r
+
+
+def review_button(html: str) -> str:
+    m = re.search(r'<button type="button" class="file"[^>]*>Review.*?</button>', html)
+    assert m, html
+    return m.group(0)
+
+
+def test_page_review_is_live_during_round_one_before_any_result(tmp_path):
+    s = review_state(running_round(1))
+    out = run_page(tmp_path, js(s), [["[data-open]", {"open": "review"}]])
+    button = review_button(out["html"])
+    assert button == (
+        '<button type="button" class="file" data-open="review" title="revmux review rounds">'
+        'Review<span class="live">live</span></button>'
+    ), "enabled without a page while the round is live, marked live instead of its age"
+    assert out["requests"] == [viewer_open("review")]
+    assert out["html"].count('class="live-box"') == 1
+
+
+def test_page_review_live_off_for_a_failed_or_older_round(tmp_path):
+    enabled = '<button type="button" class="file" data-open="review" title="revmux review rounds">Review</button>'
+
+    # round 1's wait failed: no result and no review.md page, not live, but the tab shows the failed round
+    s = review_state(running_round(1, milestone="failed"))
+    out = run_page(tmp_path, js(s), [["[data-open]", {"open": "review"}]])
+    assert review_button(out["html"]) == enabled, "openable, no live badge and no age without a page"
+    assert out["requests"] == [viewer_open("review")]
+    assert "live-box" not in out["html"] and 'class="live"' not in out["html"]
+
+    # an older round left without a result while the latest has one: the page opens, nothing is live
+    s = review_state(running_round(1), finished_round(2), review_html="/state/run/artifacts/review.html")
+    html = run_page(tmp_path, js(s))["html"]
+    button = review_button(html)
+    assert 'data-open="review"' in button and 'data-ago="2600"' in button, "its page's age, not live"
+    assert "live-box" not in html and 'class="live"' not in html
+
+    # the run ended with the round running: not live either, still openable
+    s = review_state(running_round(1), finished=5000.0, now_kind="done", final_status="stopped")
+    html = run_page(tmp_path, js(s))["html"]
+    assert review_button(html) == enabled
+    assert "live-box" not in html
+
+    # with a page after the run: its time, not live
+    s = review_state(finished_round(1), running_round(2), review_html="/state/run/artifacts/review.html",
+                     finished=5000.0, now_kind="done", final_status="stopped")  # fmt: skip
+    button = review_button(run_page(tmp_path, js(s))["html"])
+    assert 'data-open="review"' in button and '<span class="ago">' in button and 'class="live"' not in button
+
+
+def test_page_review_disabled_before_its_first_round(tmp_path):
+    s = review_state()  # the artifact without a round: nothing for the tab to show
+    out = run_page(tmp_path, js(s), [["[data-open]", {"open": "review"}]])
+    assert (
+        review_button(out["html"])
+        == '<button type="button" class="file" disabled title="revmux review rounds">Review</button>'
+    )
+    assert out["requests"] == []
+    s["artifacts"] = [a for a in s["artifacts"] if a["id"] != "review"]
+    s["review"] = [running_round(1, milestone="failed")]  # a round, but no artifact entry: openable, no crash
+    button = review_button(run_page(tmp_path, js(s))["html"])
+    assert button == '<button type="button" class="file" data-open="review" title="">Review</button>'
+
+
+def live_box(html: str) -> str:
+    m = re.search(r'<div class="live-box">(.*?)</a></div></div>', html, re.DOTALL)
+    assert m, html
+    return m.group(1)
+
+
+def test_page_compact_block_under_the_live_round(tmp_path):
+    s = review_state(finished_round(1), running_round(2), review_html="/state/run/artifacts/review.html")
+    s["review"][1]["live"]["activity"]["text"] = "<script>x</script> & more"
+    out = run_page(tmp_path, js(s), [["[data-open]", {"open": "review"}]])
+    html = out["html"]
+    assert html.count('class="live-box"') == 1, "only the live round has the block"
+    assert html.index("Round 1") < html.index("Round 2") < html.index('class="live-box"'), "under the live round's row"
+    box = live_box(html)
+    assert '<div class="steps"><b>find ✓</b> · <b>synthesis ✓</b> · <i>verify ●</i> · result</div>' in box
+    assert '<span class="sev critical">1 critical</span> <span class="sev major">3 major</span> ' in box
+    assert '<span class="sev minor">6 minor</span> <span class="agents">· 5 of 7 agents done</span>' in box
+    assert "verify go-ask · &lt;script&gt;x&lt;/script&gt; &amp; more" in box and "<script>x" not in html
+    assert box.endswith('<a class="open" data-open="review">Open live review')
+    assert out["requests"] == [viewer_open("review")]
+    assert 'Review<span class="live">live</span>' in html, "live wins over the page's age"
+
+
+def test_page_compact_block_states(tmp_path):
+    def box(**live: Any) -> str:
+        r = running_round(1, live=live_summary(**live) if live else None)
+        return live_box(run_page(tmp_path, js(review_state(r)))["html"])
+
+    assert ">Starting revmux…<" in box(), "no summary before the first wait folds the events"
+    assert ">Starting revmux…<" in box(stages=[], stage="", agents=0, agents_done=0, activity=None)
+    every = box(agents_done=7, counts={"critical": 0, "major": 0, "minor": 0}, activity=None)
+    assert "<b>find ✓</b> · <b>synthesis ✓</b> · <b>verify ✓</b> · result" in every, "all agents done: stage over"
+    assert '<span class="none">no findings yet</span>' in every and 'class="last"' not in every
+    mid = box(stage="find", stages=["find"], agents_done=1, agents=4)
+    assert '<div class="steps"><i>find ●</i> · result</div>' in mid
+    unread = box(format_ok=False)
+    assert ">Live detail unavailable · verify 1/2<" in unread and "agents done" not in unread
+    big = live_box(run_page(tmp_path, js(review_state(running_round(1, live={"truncated": True}))))["html"])
+    assert ">Live detail unavailable · verify 1/2<" in big
+    assert "Open live review" in big
+
+
+def test_page_refused_open_shows_agterm_error_as_tooltip(tmp_path):
+    s = with_pages(review_state(running_round(1)), "design")
+    clicks = [["[data-open]", {"open": "design"}], ["[data-open]", {"open": "review"}]]
+    out = run_page(tmp_path, js(s), clicks, reject="overlay already open")
+    assert out["requests"] == [viewer_open("design"), viewer_open("review")]
+    assert out["titles"] == ["overlay already open"] * 2, "the clicked element shows agterm's error"
+    html = out["html"]
+    assert re.search(r'data-open="design" title="overlay already open">Design', html), "kept through the re-render"
+    assert 'data-open="review" title="overlay already open">Review' in html
+    assert '<a class="open" data-open="review" title="overlay already open">Open live review</a>' in html
+    assert 'data-open="plan" title="docs/plans/x.md"' in html, "a button that was not refused keeps its hint"
+    assert html.count("overlay already open") == 3, "agterm's words only, nothing guessed about the slot"
+
+
+def test_page_live_review_from_real_mt_state(mt, git_repo, tmp_path, monkeypatch):
+    run = Path(json.loads(mt(*init_args(), cwd=git_repo).out)["state_dir"])
+    assert mt("set", "revmux_task=session-store").code == 0
+    round_dir = tmp_path / "round"
+    round_dir.mkdir()
+    r = mt("review", "start", "--round", "1", "--run", "01-initial", "--round-dir", str(round_dir))
+    assert r.code == 0, r.err
+    out = run_page(tmp_path, (run / "state.js").read_text(), [["[data-open]", {"open": "review"}]])
+    assert 'Review<span class="live">live</span>' in out["html"], "live from mt review start, before any event"
+    assert ">Starting revmux…<" in live_box(out["html"])
+    assert out["requests"] == [viewer_open("review", str(run))]
+    assert (run / "viewer-review.html").is_file(), "the page the button opens"
+
+    shutil.copy(TESTS / "fixtures" / "events-round.jsonl", round_dir / "events.jsonl")
+    monkeypatch.setattr(MT, "process_alive", lambda task, name: True)
+    assert mt("review", "wait", "--round", "1", "--deadline", "0").out == "running\n"
+    box = live_box(run_page(tmp_path, (run / "state.js").read_text())["html"])
+    assert "<b>find ✓</b> · <b>synthesis ✓</b> · <b>verify ✓</b> · result" in box
+    assert "7 of 7 agents done" in box and "Open live review" in box
 
 
 def test_page_renders_real_mt_state(mt, git_repo, isolate, tmp_path):

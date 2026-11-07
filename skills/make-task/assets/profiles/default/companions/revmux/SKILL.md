@@ -60,8 +60,8 @@ shape ran.
 goes inside the question and never immediately above it. An option names what it acts on, never counts
 it: "covering the two majors" is unanswerable and "covering the `uv` gate in `make test` and the
 `request_user_input` gap" is not.
-**Under make-task that answer is make-task's own card**, not this skill's question: no round ends on a
-`present.md` turn (Step 6), and make-task's leftovers card replaces the loop's closing question
+**Under make-task that answer is make-task's own question**, not this skill's: no round ends on a
+`present.md` turn (Step 6), and make-task's leftovers question replaces the loop's closing question
 (`references/loop.md`).
 
 **1. Exit `1` means findings were reported — a success.** `0` none, `1` findings, `2` tool error.

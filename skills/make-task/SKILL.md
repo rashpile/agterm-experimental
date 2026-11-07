@@ -1,6 +1,6 @@
 ---
 name: make-task
-description: Run one development task end to end in this session — brainstorm, plan, automatic plan review, task-by-task execution in subagents, a revmux review-fix loop, leftovers card, finalize and stats — through a profile that holds a copy of each phase's companion skill and sets how autonomous the run is (by default it asks the user only during brainstorm), with a live agterm dashboard and floating question cards (plain AskUserQuestion outside agterm). `--profile=<name>` picks the profile, `--update` checks its copies against their sources. Triggers on "make-task", "/make-task", "make a task", "run the full dev workflow", "brainstorm, plan, execute and review", "take this from idea to reviewed branch".
+description: Run one development task end to end in this session — brainstorm, plan, automatic plan review, task-by-task execution in subagents, a revmux review-fix loop, leftovers question, finalize and stats — through a profile that holds a copy of each phase's companion skill and sets how autonomous the run is (by default it asks the user only during brainstorm), with a live agterm dashboard; every question is an AskUserQuestion in the terminal. `--profile=<name>` picks the profile, `--update` checks its copies against their sources. Triggers on "make-task", "/make-task", "make a task", "run the full dev workflow", "brainstorm, plan, execute and review", "take this from idea to reviewed branch".
 allowed-tools: Agent, AskUserQuestion, EnterWorktree, TaskCreate, TaskUpdate, Bash, Read, Write, Edit, Glob, Grep
 ---
 
@@ -23,7 +23,8 @@ Paths below are relative to this skill's directory (the one containing this SKIL
 
 ## How to run `mt`
 
-`scripts/mt` holds the run state, the checkpoint journal, the dashboard, the cards and the review waits.
+`scripts/mt` holds the run state, the checkpoint journal, the dashboard, the viewer's data and the review
+waits.
 It is the only thing that calls `agtermctl`. In this file **`mt` stands for**
 
 ```bash
@@ -40,13 +41,13 @@ still say where the skill lives.
 - Without `--run`, `mt` finds the run through the pointer `current-<AGTERM_SESSION_ID or default>`
   that `mt init` wrote. Inside agterm that is enough. Outside agterm see "Outside agterm".
 - `mt --help` and `mt <command> --help` (also `mt review wait --help`) show the exact flags.
-- Exit codes: `0` ok, `1` failure with the message on stderr. `mt ask` also uses `2` and `3`.
+- Exit codes: `0` ok, `1` failure with the message on stderr.
 - **Workflow-state commands** (`init`, `set`, `phase`, `activity`, `checkpoint`, `dirty`, `plan`, `refresh`,
   `review …`, `fail`, `done`) exiting non-zero → stop the run and report it. `set` refuses an empty
   value (a failed `$(…)`) for every key but `stash_ref` and `worktree_path`, so a failed substitution stops
   the run instead of clearing the key. `reviewed_sha` is written once: `set` refuses a second, different
-  value. Never continue without the journal. UI problems (dashboard, renderer, sidebar status) only print `mt: warning:` and exit 0.
-- Run `mt ask` and `mt review wait` with the Bash tool's `timeout: 600000`. Both return before 600 s.
+  value. Never continue without the journal. UI problems (dashboard, artifact pages, sidebar status) only print `mt: warning:` and exit 0.
+- Run `mt review wait` with the Bash tool's `timeout: 600000`. It returns before 600 s.
 - `mt revmux aside` and `mt revmux put-back` (Finalize step 2, Completion step 3) take `--state-dir` and
   `--toplevel`, read no run state and print one `revmux_tree=<outcome>` line; their outcomes and exit codes
   are described where they run. They are not workflow-state commands.
@@ -89,7 +90,7 @@ worktree; never reuse the value kept from the init line.
 Highest first:
 
 1. **This file**: safety (every step that touches git state, the stash, `review_base`, the branch and
-   `.revmux/`), the Question rule, autonomy, gates and cards.
+   `.revmux/`), the Question rule, autonomy, gates and questions.
 2. **The profile's `## <phase>` section** in `<profile_dir>/profile.md` (`## brainstorm`, `## plan`,
    `## exec`, `## review`): the user's own instructions for that phase.
 3. **The companion copy's text**: the phase's entry file and the files it points to, and the exec
@@ -134,7 +135,7 @@ this file's section for the printed `phase` **before doing anything with side ef
 prints `run`, `phase`, `phase_status`, `activity`, `error`, `warnings`, the stored `values` (`mode` is the
 worktree answer), the checkpoints still `begun` and the `ended` ones with their result, every review round
 (`rounds`: run, round_dir, report, head, verdict, started, finished, confirming), the unresolved and deferred
-counts, and every assumption and decision so far (a gate's or card's answer among the decisions). The
+counts, and every assumption and decision so far (a gate's or question's answer among the decisions). The
 profile keys (`<profile_dir>`, the entries, `<exec_scripts>`, `<autonomy>`, `<gates>`, `<defaults>`, …) are
 in `values` too: take them from there and never resolve the profile again mid-run. A `warnings` line
 saying the run was started before make-task profiles (its state has no profile keys) → stop: tell the user
@@ -155,16 +156,17 @@ checkpoints say how far the review got:
 | ended, and nothing after it | go to |
 |---|---|
 | `review.fix.<n>`, no round `<n+1>` in `rounds` | round `<n+1>` (Each round, step 1) |
-| `review.fix.leftovers`, no `confirming` round after it | the confirming round (Leftovers card); never Finalize first: `mt done` refuses `clean` when `reviewed_sha` is not the `head` of the last finished round |
+| `review.fix.leftovers`, no `confirming` round after it | the confirming round (Leftovers question); never Finalize first: `mt done` refuses `clean` when `reviewed_sha` is not the `head` of the last finished round |
 | `finalize`, `verified_sha` unset or not `reviewed_sha` | Finalize step 3 |
 | `finalize`, `verified_sha` equal to `reviewed_sha` | Finalize step 4, then Stats |
 
 Other phases: brainstorm running with no `<state_dir>/design.md` → resume at Brainstorm step 2, building
-on the assumptions and decisions recorded so far; a card whose answer is recorded (`mode` set, the
-preflight card's answer in `decisions`) is not asked again. Brainstorm `skipped` with no
-`<state_dir>/design.md` → the cards whose answer is not recorded yet, then Brainstorm step 5. Brainstorm
-with `<state_dir>/design.md` present → finish Brainstorm step 5 (the `design` gate when `<gates>` has it
-and it has not passed, then `mt artifact design`), then go to Plan. Plan with a plan file in `docs/plans/`
+on the assumptions and decisions recorded so far (under `interactive` also on `<state_dir>/design-draft.md`,
+the design sections written so far); a question whose answer is recorded (`mode` set, the preflight
+question's answer in `decisions`) is not asked again. Brainstorm `skipped` with no
+`<state_dir>/design.md` → the questions whose answer is not recorded yet, then Brainstorm step 5. Brainstorm
+with `<state_dir>/design.md` present → finish Brainstorm step 5 (`mt artifact design`, then the `design` gate
+when `<gates>` has it and it has not passed), then go to Plan. Plan with a plan file in `docs/plans/`
 and `plan_rel` unset → finish the plan review and the `plan` gate (unless it passed), then Exec step 1.
 Exec step 1 half done → read
 `git branch --show-current`, `git stash list`, `worktree_path` and `stash_ref` and do only the missing
@@ -199,15 +201,16 @@ starts a new attempt; `end` on an `ended` key is a harmless no-op. Keys match `[
 
 ## Start
 
-0. **Profile.** No run exists yet, so every question in this step is an `AskUserQuestion` (no dashboard,
-   no card). Parse the invocation `/make-task [--profile=<name>] [--update] [task text]`: `<name>` is
-   `default` when `--profile` is absent; what follows the flags is the task text.
+0. **Profile.** No run exists yet, so this step's questions are plain `AskUserQuestion`s with no `mt`
+   call before or after them (no dashboard, nothing recorded). Parse the invocation
+   `/make-task [--profile=<name>] [--update] [task text]`: `<name>` is `default` when `--profile` is
+   absent; what follows the flags is the task text.
    1. `mt profile resolve --profile <name>` prints `{"name", "dir", "status"}`; `dir` is `<profile_dir>`.
    2. `status` is `missing` and `<name>` is `default` → first use. Tell the user make-task is configuring
       itself for first use, run `mt profile install-default`, and ask one `AskUserQuestion`, the autonomy:
       `default` (recommended: during brainstorm it asks only what needs the user's knowledge or taste),
       `autonomous` (asks nothing, records every choice as an assumption, answers the worktree and
-      leftovers cards from the profile's `defaults`) or `interactive` (asks more during brainstorm,
+      leftovers questions from the profile's `defaults`) or `interactive` (asks more during brainstorm,
       validates the design section by section, and adds the `design`, `plan` and `review-round` gates).
       Write the answer into the `autonomy:` line of the frontmatter of `<profile_dir>/profile.md` with
       Edit, and tell the user that `/make-task --update` changes the profile later (the interview in
@@ -221,31 +224,29 @@ starts a new attempt; `end` on an `ended` key is a harmless no-op. Keys match `[
    4. `mt profile check --profile <name>`. `ok` false (exit 1) → stop with its `errors` and how to fix
       them: `/make-task --update` (it takes the copies' updates and raises an older `schema`; its interview
       fixes the rest), or edit `<profile_dir>/profile.md` and the copies by hand, never the `schema:` line.
-      No `mt init`, no run, no card. `warnings` → tell the user, one line each.
+      No `mt init`, no run. `warnings` → tell the user, one line each.
       `updates` non-empty (it lists only the sources it can check without the network) → one line:
       "updates are available for <ids>; run `/make-task --update` to review them". Then go on.
 1. `git rev-parse --is-inside-work-tree` — not a git repo → stop and tell the user make-task needs git.
 2. `mt init --title "<short task title>" --profile-dir <profile_dir>`. Read its one JSON line and keep:
    `state_dir`, `main_checkout`, `toplevel` (the worktree replaces it in worktree mode, see the names
-   above), `branch`, `default_branch`, `has_origin`, `linked_worktree`, `dirty_paths`, `agterm`, `cards`,
-   the profile keys (the table above), `renderer`, `revdiff`, `warnings`. Init runs step 0's check again
+   above), `branch`, `default_branch`, `has_origin`, `linked_worktree`, `dirty_paths`, `agterm`,
+   the profile keys (the table above), `revdiff`, `warnings`. Init runs step 0's check again
    (without the update lookups) and fails (exit 1) on a profile with errors or a template profile,
    creating no run: stop as the Errors row "profile check fails" says. Its `warnings` carry the check's
    warnings, each prefixed `profile <name>: ` (a review `requires` command missing on PATH among them),
    and one for a review phase the profile skips (step 3 handles both). Inside agterm it opens the
    dashboard over the other pane; when that fails it reports `agterm: false` and the run goes on without
-   it. `cards` is false outside agterm and when `MT_NO_CARDS=1` is set (for example by a driver that runs
-   make-task in a worker session): the dashboard still shows, and every question goes to
-   `AskUserQuestion` (Cards).
+   it. Questions do not depend on agterm: every one is an `AskUserQuestion` in the terminal (Questions).
 3. **Review check.**
    - `review_entry` is null (the profile's `phases.review` is `skip`): the profile chose to run without
      review, so there is nothing to check and nothing to ask.
      `mt assume "no revmux review" --why "profile <profile_name> skips review"`, then go on: no preflight
-     and no preflight card, at every autonomy level. The review phase is skipped (Review).
+     and no preflight question, at every autonomy level. The review phase is skipped (Review).
    - Otherwise the revmux preflight: `(cd <main_checkout> && bash <review_scripts>/preflight.sh)`.
      It fails, or init's `warnings` name a review `requires` command missing on PATH (that counts as a
      failed preflight: preflight.sh does not read `requires`) →
-     `mt assume "no revmux review" --why "<what preflight or the warning said>"` and the preflight card
+     `mt assume "no revmux review" --why "<what preflight or the warning said>"` and the preflight question
      during brainstorm (Errors row "revmux preflight fails at Start").
 4. `TaskCreate` one entry per phase (Brainstorm, Plan, Execute, Review, Finalize) and move them with
    `TaskUpdate` as the phases change.
@@ -260,75 +261,69 @@ status `active`. Smaller steps: `mt activity "<what is happening now>"`. Timelin
 
 1. **Trivial** → decide it and `mt assume "<what>" --why "<reason>"`.
 2. **A recommendation a reasonable engineer would accept** → take it and `mt assume`.
-3. **Needs the user's knowledge or taste** → ask with a card (`mt ask`). One question at a time.
+3. **Needs the user's knowledge or taste** → ask it (Questions). One question at a time.
 
-Each autonomy level is a preset. The classes it asks are cards; every other class is `mt assume`:
+Each autonomy level is a preset. The classes it asks go to the user (Questions); every other class is
+`mt assume`:
 
-| `<autonomy>` | brainstorm questions asked | the design | gates (preset) | worktree card, leftovers card |
+| `<autonomy>` | brainstorm questions asked | the design | gates (preset) | worktree question, leftovers question |
 |---|---|---|---|---|
-| `autonomous` | none: class 3 too becomes `mt assume` with the reason | written once | none | not shown: answered from `defaults` |
-| `default` | class 3 | written once | none | shown |
-| `interactive` | classes 2 and 3 (class 2 with the recommendation marked) | validated section by section (Brainstorm step 2) | `design`, `plan`, `review-round` | shown |
+| `autonomous` | none: class 3 too becomes `mt assume` with the reason | written once | none | not asked: answered from `defaults` |
+| `default` | class 3 | written once | none | asked |
+| `interactive` | classes 2 and 3 (class 2 with the recommendation marked) | validated section by section (Brainstorm step 2) | `design`, `plan`, `review-round` | asked |
 
 `<gates>` is the list this run shows: the profile's `gates` when its `profile.md` sets them, else the
-preset's. Under `autonomous` the two cards are answered from `<defaults>` and each answer is recorded with
-`mt assume`: the worktree card from `defaults.mode` (`worktree` or `inplace`; it never overrides the
-linked-worktree rule, which always runs in place), the leftovers card from `defaults.leftovers` (`fix` or
-`leave`).
+preset's. Under `autonomous` the two questions are answered from `<defaults>` and each answer is recorded
+with `mt assume`: the worktree question from `defaults.mode` (`worktree` or `inplace`; it never overrides
+the linked-worktree rule, which always runs in place), the leftovers question from `defaults.leftovers`
+(`fix` or `leave`).
 
 After brainstorm every question becomes `mt assume` with the reason, at every level. The only later
-cards are the error cards (Errors), which show at every level, the gates in `<gates>` and the leftovers
-card.
+questions are the error questions (Errors), which are asked at every level, the gates in `<gates>` and the
+leftovers question.
 
-### Cards
+### Questions
 
-Write the card to `<state_dir>/ask.json` (overwrite it each time; `mt` copies it to `cards/<n>.json`):
+Every question the run asks (a brainstorm question, the preflight question, the worktree question, a gate,
+an error question, the leftovers question) is one `AskUserQuestion`, one at a time, with the options listed
+where it is asked:
 
-```json
-{"phase": "brainstorm", "title": "Where should the session store live?",
- "context": "Markdown: what is at stake, what you found, what each option changes.",
- "options": [
-   {"id": "redis", "label": "Redis", "pro": "shared across instances", "con": "a new service to run", "recommended": true},
-   {"id": "memory", "label": "In process", "pro": "nothing to deploy", "con": "lost on restart"}
- ],
- "allow_other": true}
-```
-
-- 1–4 options (`mt ask` refuses more: the fallback `AskUserQuestion` carries 2–4), unique ids, exactly one
-  `recommended: true`; the ids `other` and `delegate` are reserved. `context` is markdown (raw HTML is
-  not rendered). `phase` is a phase id.
-- Run `mt ask <state_dir>/ask.json` with `timeout: 600000`. It blocks while the card is open (up to
-  540 s, then closes it).
-- Exit `0` prints `{"choice": "<id>"}`, `{"choice": "other", "text": "..."}` or
-  `{"choice": "delegate", "id": "<recommended id>"}` (the user let you decide: act on that id). `mt` has
-  already recorded the decision (an assumption for delegate); record nothing more.
-- Exit `2` (`{"choice": null}`: dismissed with Esc/⌘W, deadline passed, or an unusable answer) and exit `3`
-  (cannot show a card: not in agterm, a run whose init fell back, `MT_NO_CARDS` set, agtermctl failed) → ask the same question
-  with `AskUserQuestion` (no timeout) and record the answer with `mt decide "<question>" "<answer>"`.
-  Before that call run `mt activity "Waiting for your answer · <topic>" --wait`; after it, a normal
-  `mt activity`. A single-option card (the `stop` and `keep` error cards) has no terminal fallback
-  (`AskUserQuestion` needs two options): on exit `2` or `3` take that one option and say why in the report.
-- Exit `1` → the card is invalid (the message says why): fix `ask.json` and run it again.
-- When `cards` is false, skip `mt ask` and use `AskUserQuestion` directly, with the same `--wait` and
-  `mt decide` steps (single-option cards: take the option and say why, as above).
+- **Text.** The question carries a short context: what is at stake and the recommendation (the worktree
+  question lists the dirty paths). Long material is named by its artifact, registered before the question
+  so the dashboard opens it: `mt artifact design <state_dir>/design.md` before the `design` gate (and, under
+  `interactive`, `mt artifact design <state_dir>/design-draft.md` with the design written so far before
+  each design-section question), `mt artifact plan <absolute plan path>` before the `plan` gate, and the
+  Review view, which `mt review start` registers, for the `review-round` gate and the leftovers question.
+- **Options.** 2–4 options. An option's pro and con become its description. The recommended option comes
+  first and its label ends in "(Recommended)". There is no delegate option: the user picks an option or
+  types an answer in "Other".
+- **Before and after.** Before it, `mt activity "Waiting for your answer · <topic>" --wait`, except before
+  an error question (`mt fail` already shows the error). After it, `mt decide "<question>" "<answer>"`,
+  then a normal `mt activity` (after an error question, the Errors row's next step).
+- **Gates.** A gate's question is its exact title, and `mt decide` records `Approve`, `Revise` or the
+  typed text, so "a gate has passed" (Gates) reads the decisions as it always did.
+- **"Other".** Typed text answers a brainstorm question, a gate (the change wanted) and the leftovers
+  question. For every other question, an "Other" answer that maps to no option asks the same question
+  again.
+- **One option.** An error question with one option (`stop`, `keep`) is not asked (`AskUserQuestion`
+  needs two): the run takes that option and says why in its report.
 
 ### Gates
 
-A gate is a card the run shows at a fixed point when `<gates>` names it, at any autonomy level. Its
+A gate is a question the run asks at a fixed point when `<gates>` names it, at any autonomy level. Its
 title is fixed: `Gate: design`, `Gate: plan`, `Gate: review-round <n>` (round `<n>`). Its options are
-`approve` labelled "Approve" (recommended) and `revise` labelled "Revise", with free text allowed
-(`"allow_other": true`): free text is the change the user wants; `revise` without text → show the same
-gate again, its `context` opening with a line that asks for the change in the text field. `approve` (or
-`delegate`) → go on. A terminal fallback records the answer the same way:
-`mt decide "<the gate's title>" "<Approve, Revise or the text>"`. A gate **has passed** when the last
-entry in `decisions` with its title is `Approve`, or `assumptions` hold `<its title> → Approve` (the user
-delegated); Recovery shows a gate that has not passed again.
+"Approve (Recommended)" and "Revise"; typed text is the change the user wants. "Revise" without text → ask
+the same gate again, its "Revise" description now asking for the change as typed text. "Approve" → go on.
+Each answer is recorded with `mt decide "<the gate's title>" "<Approve, Revise or the text>"`. A gate
+**has passed** when the last entry in `decisions` with its title is `Approve`, or `assumptions` hold
+`<its title> → Approve` (a delegated answer, which older make-task versions recorded); Recovery shows a
+gate that has not passed again.
 
-| gate | card `phase` | when | `context` | a revision |
-|---|---|---|---|---|
-| `design` | `brainstorm` | Brainstorm step 5: after `design.md` is written, before `mt artifact design` | the design | change `design.md` per the text, then show the gate again |
-| `plan` | `plan` | Plan step 4: after the plan reviewer's findings are applied, before Exec | the plan's path, goal and Task list | change the plan per the text (still before Exec, so still the orchestrator's only plan-editing window), one `mt assume "<change made>" --why "plan gate: <text>"` per change, then show the gate again |
-| `review-round` | `review` | Each round step 8: after the round's one-line report, before its fixer | the gating findings the fixer would get | the text narrows or changes which findings the fixer gets (`FINDINGS_LIST`); a gating finding it takes away is recorded for the round, and one it rules out is excluded from every later round (Each round step 8); then the fixer runs, with no second gate |
+| gate | when | the question names | a revision |
+|---|---|---|---|
+| `design` | Brainstorm step 5: after `design.md` is written and `mt artifact design` registered it | the Design view | change `design.md` per the text, `mt artifact design <state_dir>/design.md` again, then ask the gate again |
+| `plan` | Plan step 4: after the plan reviewer's findings are applied and `mt artifact plan` registered the plan, before Exec | the plan's path and goal, the Plan view | change the plan per the text (still before Exec, so still the orchestrator's only plan-editing window), one `mt assume "<change made>" --why "plan gate: <text>"` per change, then ask the gate again |
+| `review-round` | Each round step 8: after the round's one-line report, before its fixer | how many gating findings the fixer would get, the Review view | the text narrows or changes which findings the fixer gets (`FINDINGS_LIST`); a gating finding it takes away is recorded for the round, and one it rules out is excluded from every later round (Each round step 8); then the fixer runs, with no second gate |
 
 ## Subagent prompts
 
@@ -366,7 +361,7 @@ except the plan reviewer (Plan step 3: `Plan`, without `bypassPermissions`). One
    `grep -nE 'PLAN_FILE_PATH|PROGRESS_FILE_PATH|DEFAULT_BRANCH|RESOLVE_SCRIPT|PLUGIN_DATA_DIR|REVIEW_PHASE|DIFF_COMMAND|\$\{CLAUDE_PLUGIN_(ROOT|DATA)\}|<exec_scripts>|<review_base>|<pre-existing paths>' <state_dir>/prompts/<name>.md`
    must print nothing (the last three are the harness addendum's fill-ins: an unfilled `<exec_scripts>`
    would make every `[decision]` line a failed redirection). A hit →
-   `mt fail "unsubstituted placeholder in <name>.md"` and the stop card (Errors).
+   `mt fail "unsubstituted placeholder in <name>.md"` and stop (Errors).
 5. Only then insert the free-text values, so a finding or a rule that quotes a token cannot trip the
    check: `USER_RULES` = `ADDITIONAL CUSTOM RULES:` + newline + the rules output (empty string when there are
    none); `FINDINGS_LIST` = the findings (fixer only). Pass that final text as the prompt.
@@ -436,46 +431,47 @@ Inputs: the user's task text (the invocation without `--profile` and `--update`)
 1. `mt phase brainstorm --activity "Brainstorm · understanding the task"`.
 2. Read `<brainstorm_entry>` and follow it (Running a companion) with the task text as its input, then the
    profile's `## brainstorm` section. Every question goes through the Question rule for `<autonomy>`:
-   cards instead of `AskUserQuestion`, one at a time, and only for the classes the preset asks. Under
-   `interactive` the design is validated section by section before step 5, whatever the copy says: sections
-   of 200–300 words, each one a card shaped like a gate (Gates: `approve` / `revise`, free text), phase
-   `brainstorm`, title "Design section <k> of <m>: <name>", `context` the section. A revision changes the
-   section and shows its card again.
-3. The preflight card, only when Start step 3's preflight failed (Errors row "revmux preflight fails at
-   Start"). A review the profile skips has no card.
-4. **Last card — worktree or in place**, only when `linked_worktree` is false. Under `autonomous` there is
-   no card: `mt set mode=<defaults.mode>` and
+   asked as Questions says, one at a time, and only for the classes the preset asks. Under `interactive`
+   the design is validated section by section before step 5, whatever the copy says: sections of 200–300
+   words, each one a question shaped like a gate (Gates: "Approve" / "Revise", typed text), its question
+   "Design section <k> of <m>: <name>". Before it, write the sections validated so far and this one to
+   `<state_dir>/design-draft.md` and run `mt artifact design <state_dir>/design-draft.md`, so the Design
+   view shows the section. A revision changes the section and asks its question again.
+3. The preflight question, only when Start step 3's preflight failed (Errors row "revmux preflight fails at
+   Start"). A review the profile skips has no question.
+4. **Last question — worktree or in place**, only when `linked_worktree` is false. Under `autonomous` there
+   is no question: `mt set mode=<defaults.mode>` and
    `mt assume "mode <defaults.mode>" --why "autonomy autonomous: defaults.mode"` (on a dirty tree name in
    `--why` which paths stay behind in worktree mode, or are stashed in place; in worktree mode with
    `branch` set and not `default_branch`, say in `--why` that the worktree starts where
-   `worktree.baseRef` puts it, so `<branch>`'s own commits may be absent from it). Otherwise the card:
-   - title "Run the task in a worktree or in place?"; options `worktree` (recommended) and `inplace`;
+   `worktree.baseRef` puts it, so `<branch>`'s own commits may be absent from it). Otherwise the question:
+   - question "Run the task in a worktree or in place?"; options "Worktree (Recommended)" and "In place";
    - clean tree: worktree = a new branch under `.claude/worktrees/`, this checkout stays as it is;
      in place = the feature branch is created in this checkout;
-   - `branch` is not `default_branch` (the user started on a branch of their own): say so in `context`.
+   - `branch` is not `default_branch` (the user started on a branch of their own): say so in the question.
      In place make-task keeps a non-default branch, so the task's commits land on `<branch>` itself.
      A worktree starts where `EnterWorktree` puts it: the `worktree.baseRef` setting decides
      (`fresh`, the default, branches from `origin/<default_branch>`; `head` from this checkout's HEAD), so `<branch>`'s own commits may be absent from it. Either way the review covers only the
      commits after the plan commit's parent (`review_base`, set at Exec step 1);
    - dirty tree (`dirty_paths` without `.revmux/` and the paths under it is non-empty): list those paths
-     in `context` and explain both options: **worktree** — those edits stay in this checkout and are
-     absent from the worktree; **in place** — make-task stashes those paths before execution and restores
-     them at the end;
+     in the question and explain both options in their descriptions: **worktree** — those edits stay in
+     this checkout and are absent from the worktree; **in place** — make-task stashes those paths before
+     execution and restores them at the end;
    - `.revmux/` is never stashed: the review needs the project profile in place. In place, its staged
      changes are saved and unstaged for the run (so no commit takes them) and staged again at the end;
      its edits to tracked files are set aside while the finalizer rebases (`git rebase` refuses a tree with
      unstaged changes) and put back at the end;
    - record the answer: `mt set mode=worktree` or `mt set mode=inplace`.
 
-   In a linked worktree there is no card, at any autonomy level: the run stays in place (on a dirty linked
-   worktree, with the stash): `mt set mode=inplace`.
+   In a linked worktree there is no question, at any autonomy level: the run stays in place (on a dirty
+   linked worktree, with the stash): `mt set mode=inplace`.
 5. Write `<state_dir>/design.md`: goal, chosen approach and why, the design (components, data flow,
-   error handling, testing), decisions and assumptions so far, out of scope. Then the `design` gate when
-   `<gates>` has it (Gates), then `mt artifact design <state_dir>/design.md`.
+   error handling, testing), decisions and assumptions so far, out of scope. Then
+   `mt artifact design <state_dir>/design.md`, then the `design` gate when `<gates>` has it (Gates).
 
 **Brainstorm skipped** (`<brainstorm_entry>` null: the profile's `phases.brainstorm` is `skip`):
 `mt phase brainstorm --skipped --note "skipped by profile"`, then steps 3 and 4 as written (the preflight
-card when the preflight failed, and the worktree card, are still asked), then step 5 with a minimal
+question when the preflight failed, and the worktree question, are still asked), then step 5 with a minimal
 `design.md`: the task text as the goal and the design, "brainstorm skipped by profile `<profile_name>`" as
 the approach, the assumptions so far.
 
@@ -507,8 +503,9 @@ Inputs: the absolute path of `<state_dir>/design.md`, the assumptions and decisi
    (this Claude Code has none) → no plan review:
    `mt assume "no plan review" --why "the Agent tool has no Plan agent type"`, then step 4.
    `<plan_reviewer>` null → `mt assume "no plan review" --why "profile <profile_name> names no plan reviewer"`.
-4. The `plan` gate when `<gates>` has it (Gates). Steps 3 and 4 are the only time the orchestrator edits
-   the plan; from Exec on only subagents do.
+4. The `plan` gate when `<gates>` has it: first `mt artifact plan <absolute plan path>`, so the Plan view
+   shows the plan, then the gate (Gates). Steps 3 and 4 are the only time the orchestrator edits the plan;
+   from Exec on only subagents do.
 
 ## Exec
 
@@ -583,7 +580,7 @@ file: this section is the playbook.
         writes blobs, so no clean or smudge filter, `core.autocrlf` or `eol` attribute runs on either side. `revmux_saved=unsafe` (it does not, so the
         reset would lose staged content) leaves the index as it was and renames a patch made by this call
         to `revmux-index.patch.unsafe`, so no later recipe applies it.
-        A non-zero exit → `mt fail "saving staged .revmux changes failed"` and the stop card.
+        A non-zero exit → `mt fail "saving staged .revmux changes failed"` and stop (Errors).
      3. **Stash.** Re-read the dirty paths now, not the init snapshot (paths
         deleted since init would fail the push, paths dirtied since would be missed):
         `mt dirty --exclude <plan>`. It drops `.revmux/` and the plan, lists every untracked file on its own
@@ -658,7 +655,7 @@ file: this section is the playbook.
    "Execute task <n>") with the prompt; wait for it. Re-read the plan: the section's boxes checked →
    `mt checkpoint end exec.task.<n> --result done`, `mt refresh`; not checked → one retry with a fresh agent
    and the error details appended to the prompt (the checkpoint stays `begun`), then `mt fail "Task <n> failed
-   after one retry"` and the error card (its `retry` reruns the task with
+   after one retry"` and the error question (its `retry` reruns the task with
    `mt checkpoint begin exec.task.<n> --resume`). Stop when no `[ ]` remains in any Task section (max 50 iterations).
    One task agent at a time. Never fix or debug code yourself, and never stop the loop on an agent's
    return text — only the plan's checkboxes count.
@@ -672,12 +669,12 @@ Inputs: the range `<review_base>..HEAD` (`review_base` is the commit where the t
 over as the review's base), the tree under review `<toplevel>`, the main checkout `<main_checkout>` and
 the tasks dir `<D>`.
 
-The review phase is skipped in two cases, and then no round runs and no leftovers card shows; go to The
+The review phase is skipped in two cases, and then no round runs and no leftovers question is asked; go to The
 end of the run (Finalize), and the run ends `review skipped`:
 
 - `review_entry` is null (the profile skips review; Start step 3 recorded the assumption and asked
-  nothing): `mt phase review --skipped --note "skipped by profile"`. No card, at every autonomy level.
-- the preflight failed and the user chose `noreview` on the preflight card:
+  nothing): `mt phase review --skipped --note "skipped by profile"`. No question, at every autonomy level.
+- the preflight failed and the user chose `noreview` on the preflight question:
   `mt phase review --skipped --note "revmux unavailable"`.
 
 revmux runs as one loop: Before round 1 below reads `<review_entry>` and follows it (Running a companion),
@@ -729,7 +726,7 @@ drop them:
    `$(git -C <main_checkout> rev-parse --path-format=absolute --git-common-dir)/info/exclude` (local, never
    committed, shared by worktrees; mention it in the final report).
 3. `git -C <toplevel> status --porcelain -- . ':(exclude).revmux'` must print nothing, else
-   `mt fail "working dir dirty before review"` and the error card. `.revmux/` stays out of the check: the
+   `mt fail "working dir dirty before review"` and the error question. `.revmux/` stays out of the check: the
    project profile lives there, untracked or edited, and is never committed.
 4. `mt set loop_start_sha=$(git -C <toplevel> rev-parse HEAD) revmux_tasks_dir=<main_checkout>/.revmux/tasks`
    (`review_base` was set at Exec step 1), then `mt artifact changes`.
@@ -751,17 +748,19 @@ drop them:
    `(cd <main_checkout> && revmux --task <revmux_task> --run <run> --tasks-dir <D> --workdir <toplevel> --profile <profile> --no-tui > <state_dir>/revmux/round-<n>.json 2> <state_dir>/revmux/round-<n>.log)`.
    Never `2>&1` into the report.
 4. Foreground `mt review wait --round <n>` with `timeout: 600000`, repeated while it prints `running`.
+   Each call keeps the Review tab live: as the round's `events.jsonl` grows, it folds it into the
+   `review` artifact and the round's `live` summary, which the viewer and the dashboard show.
    `done` → go on. `failed` (process gone, report does not parse) → Errors row for exit 2.
 5. Read the report: gating is `critical`/`major` in `findings` (loop.md "What gates"); note whether
    `sources.degraded` is non-empty.
 6. `mt review result <state_dir>/revmux/round-<n>.json --round <n> [--not-gating <id>=<reason> ...] [--deferred <id>=<reason> ...]`:
    the loop's own gating decision; `mt` computes the verdict (`degraded`, `<k> gating` or `clean`). Scope-ruled findings (the round's `scope.md`/`goal.md` puts them outside
    the change) are `--not-gating`; prose-only majors, which loop.md says do not drive another round but are
-   still worth fixing, are `--deferred` and reach the leftovers card. Ids must be ids of `critical` or
+   still worth fixing, are `--deferred` and reach the leftovers question. Ids must be ids of `critical` or
    `major` findings in the report and appear in one list only. Deferred findings stay open across later
    rounds (even when a later round does not report them again) until the leftovers fix's confirming round.
-   This also rebuilds and registers the `review` artifact. Record a degraded round too (its computed
-   verdict is `degraded`), then go to the Errors row for a degraded round.
+   This also rebuilds the `review` artifact, registered at `mt review start`. Record a degraded round too
+   (its computed verdict is `degraded`), then go to the Errors row for a degraded round.
 7. Append a one-line round summary:
    `printf '%s\n' 'review round <n>: <counts> <verdict>' | bash <exec_scripts>/append-progress.sh <progress_path>`.
 8. Stop per loop.md "Stopping", recording the reason: zero gating → `mt set stop_reason=clean`; the code
@@ -772,7 +771,7 @@ drop them:
    on them again: run step 6's call for round `<n>` again (a second call replaces the round's result) with
    the same lists plus, per finding taken away, `--not-gating <id>="gate: <text>"` when the user rules it
    out of the change or `--deferred <id>="gate: <text>"` when the user wants it fixed at the end (the
-   leftovers card):
+   leftovers question):
    `mt review result <state_dir>/revmux/round-<n>.json --round <n> --not-gating <id>="gate: <text>" ...`.
    Every later round's Step 2 brief lists each ruled-out one under "Exclusions the user has stated", so it
    is written into that round's `scope.md`; a later round that reports any of them again records it with
@@ -799,18 +798,19 @@ round as above. Never `pgrep` from this session: the Bash call's own shell carri
 
 ## The end of the run
 
-### Leftovers card
+### Leftovers question
 
-After the loop, if anything is open, show one card (phase `review`). Context: stop reason, unresolved gating
-findings, deferred (prose-only) majors, minors, open questions — each with file:line and its mechanism.
+After the loop, if anything is open, ask one question (Questions). Its text: the stop reason and what is
+open — unresolved gating findings, deferred (prose-only) majors, minors, open questions — with their counts
+and short titles; each finding with file:line and its mechanism is in the Review view.
 
-- Gating or deferred findings open → options `fix` "Fix the remaining majors (one fixer round + one
-  confirming round)" (recommended) / `leave` "Leave them and finalize (run ends as not clean)"; free text
-  allowed.
-- Only minors or open questions → options `fix` "Fix the listed minors" / `leave` "Leave them"; free text
+- Gating or deferred findings open → options `fix` "Fix the remaining majors (Recommended)" (one fixer
+  round and one confirming round) and `leave` "Leave them and finalize" (the run ends `not clean`); typed
+  text allowed.
+- Only minors or open questions → options `fix` "Fix the listed minors" / `leave` "Leave them"; typed text
   answers open questions or narrows the list.
 
-Under `autonomous` there is no card: the answer is `defaults.leftovers` (`fix` or `leave`), recorded with
+Under `autonomous` there is no question: the answer is `defaults.leftovers` (`fix` or `leave`), recorded with
 `mt assume "leftovers: <defaults.leftovers>" --why "autonomy autonomous: defaults.leftovers"`; open
 questions stay unanswered and go to the final report.
 
@@ -1054,7 +1054,7 @@ here is reported and does not block completion.
    example by the rebase) is not a stop: the working copies were never touched, and the final report names
    `<p>` and the command that stages it again, `git -C <toplevel> apply --cached <p>`.
 4. `mt done --status "<S>" [--note "<one line>"]` with S:
-   - `stopped` — the run stopped on an error card;
+   - `stopped` — the run stopped on an error question;
    - `review skipped` — the review phase was skipped or the user chose to skip it (`stop_reason=skipped`);
    - `review stale` — `verify-final` printed `changed`;
    - `not clean` — unresolved or deferred findings left, the last round degraded, commits after the last
@@ -1073,17 +1073,17 @@ here is reported and does not block completion.
 
 ## Errors
 
-| condition | mt call | card options | next |
+| condition | mt call | question options | next |
 |---|---|---|---|
 | not a git repo | none (stop before `mt init`) | — | tell the user make-task needs git |
-| profile check fails: Start step 0's `mt profile check` prints `ok: false`, or `mt init` exits 1 on the profile (errors, or a template) | none (no run) | — | stop with the errors and how to fix them: `/make-task --update` (the only fix for an older `schema`), or edit `<profile_dir>/profile.md` and the copies; a profile path that is not one plain shell word: set `MT_CONFIG_HOME` to a path without spaces or shell metacharacters (a `phases` path: rename the file or dir and the path); no `mt init`, no card |
+| profile check fails: Start step 0's `mt profile check` prints `ok: false`, or `mt init` exits 1 on the profile (errors, or a template) | none (no run) | — | stop with the errors and how to fix them: `/make-task --update` (the only fix for an older `schema`), or edit `<profile_dir>/profile.md` and the copies; a profile path that is not one plain shell word: set `MT_CONFIG_HOME` to a path without spaces or shell metacharacters (a `phases` path: rename the file or dir and the path); no `mt init` |
 | another `mt profile` command fails at Start step 0 or in `references/profiles.md` | none (no run) | — | stop and report its message; no `mt init`. Except `another make-task command is changing …` (another session held the profile's lock longer than mt waits; nothing changed): run the same command once more first |
-| revmux preflight fails at Start, or init's `warnings` name a review `requires` command missing on PATH | `mt assume "no revmux review" --why …` | card during brainstorm: `noreview` run without review (recommended) / `stop` | review phase `--skipped`, or `mt done --status stopped` |
-| `revdiff` / view renderer missing | none (init reports it) | — | Changes / artifact buttons disabled |
+| revmux preflight fails at Start, or init's `warnings` name a review `requires` command missing on PATH | `mt assume "no revmux review" --why …` | asked during brainstorm: `noreview` run without review (recommended) / `stop` | review phase `--skipped`, or `mt done --status stopped` |
+| `revdiff` missing | none (init reports it) | — | Changes button disabled |
 | task fails after one retry | `mt fail` | `retry` retry the task / `stop` stop and keep the branch | retry → `mt activity` resumes; stop → `mt done --status stopped` |
 | working dir dirty before round 1 | `mt fail` | `commit` commit the listed changes and continue / `stop` | commit them with a literal pathspec (`git --literal-pathspecs add -- <path> ...` and the same `commit`; never a path under `.revmux/`), `mt activity`; or stop as above |
 | revmux exit 2, `mt review wait` prints `failed`, or degraded round | `mt fail` | `rerun` re-run the round / `skip` skip review and finalize (`review skipped`) / `stop` | rerun → `mt activity`, re-run the round; skip → `mt set stop_reason=skipped`, Finalize; stop as above |
-| loop not converging or 5 rounds | `mt set stop_reason=<not-converging or round-cap>` | none here; the leftovers card shows it | leftovers card |
+| loop not converging or 5 rounds | `mt set stop_reason=<not-converging or round-cap>` | none here; the leftovers question names it | leftovers question |
 | worktree branch: `EnterWorktree` or `git -C <wt> branch -m <name>` fails | `mt fail` | `stop` | `mt done --status stopped`; the report names the worktree and its `worktree-<name>` branch; never `branch -M` |
 | in-place branch: `git -C <toplevel> checkout -b <name>` fails | `mt fail` | `stop` | `mt done --status stopped`; it runs before the `.revmux/` save and the stash push, so there is nothing to give back; never fall back to `create-branch.sh <plan>` or `git checkout <name>` |
 | stash push fails (`push` and `left` not as in Exec step 1) | `mt fail` | `stop` | `mt done --status stopped`; when `after` is non-empty, the final report names that stash and `refs/make-task/<run_id>` (the edits are in it and may still be in the tree) |
@@ -1094,14 +1094,14 @@ here is reported and does not block completion.
 | a workflow-state `mt` command fails | none | — | give the stash back (below), then stop and report; never continue without the journal |
 | a UI-only `mt` failure | none | — | continue |
 
-Error cards are the exception to the Question rule: they show at every autonomy level, during brainstorm
-(the preflight card) and after it. A review the profile skips (`review_entry` null) is not an error and
-shows no card: Start step 3 records the assumption and the review phase is skipped. `mt fail "<msg>"` sets
-the error state and the sidebar status `blocked`; the run stays open, and the next `mt phase` or
-`mt activity` clears the error. A single-option card (`stop`) still goes through `mt ask` so the user sees
-why the run ends (no `AskUserQuestion` fallback for it, see Cards).
+Error questions are the exception to the Question rule: they show at every autonomy level, during
+brainstorm (the preflight question) and after it. A review the profile skips (`review_entry` null) is not
+an error and asks no question: Start step 3 records the assumption and the review phase is skipped.
+`mt fail "<msg>"` sets the error state and the sidebar status `blocked`; the run stays open, and the next
+`mt phase` or `mt activity` clears the error. A row with one option (`stop`, `keep`) asks nothing: the run takes that
+option and says why in its report (Questions).
 
-**Every stop gives the stash back**, the error-card stops before `mt done --status stopped` and the
+**Every stop gives the stash back**, the error-question stops before `mt done --status stopped` and the
 stops on a failing workflow-state `mt` command alike. `stash_restored` already set → the stash is back:
 run the recipe with `''`. Otherwise take the sha from `stash_ref` in `mt status`; when `mt status` fails
 too, or `stash_ref` is unset after a push ran, take it from the Recovery lookup of this run's stash (the
@@ -1120,8 +1120,9 @@ Both print `none` when there is nothing to put back.
 
 ## Outside agterm
 
-The flow is the same. `mt init` reports `agterm: false`: no dashboard, no sidebar status, and every card is
-an `AskUserQuestion` (Cards). Artifacts are still rendered under `<state_dir>/artifacts/` for opening by hand.
+The flow is the same. `mt init` reports `agterm: false`: no dashboard and no sidebar status. Questions are
+the same `AskUserQuestion`s (Questions). Artifacts are still rendered under `<state_dir>/artifacts/` for
+opening by hand.
 
 Outside agterm the run pointer is `current-default`, which two concurrent make-task runs share (accepted).
 Pass `--run <state_dir>` before the command on every `mt` call after init (`mt --run <state_dir> refresh`)

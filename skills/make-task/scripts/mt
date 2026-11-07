@@ -1,12 +1,12 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["markdown-it-py>=3", "pyyaml>=6"]
+# dependencies = ["markdown-it-py>=3", "mdit-py-plugins>=0.4", "pyyaml>=6"]
 # ///
 """mt - run state, journal and agterm UI for the make-task skill.
 
 The make-task orchestrator calls mt at every step boundary. mt owns the run
-directory (state.json, state.js for the dashboard, artifacts, cards) and is the
+directory (state.json, state.js for the dashboard, artifacts) and is the
 only thing that talks to agtermctl. Every command loads the state fresh, changes
 it and saves it atomically right away.
 
@@ -32,7 +32,6 @@ Usage:
     mt [--run DIR] review result FILE --round N [--not-gating ID=REASON ...]
                                 [--deferred ID=REASON ...] [--confirming]
     mt [--run DIR] review verify-final
-    mt [--run DIR] ask CARD.json
     mt [--run DIR] done --status S [--note N]
     mt [--run DIR] revmux aside --state-dir DIR --toplevel DIR
     mt [--run DIR] revmux put-back --state-dir DIR --toplevel DIR
@@ -52,15 +51,10 @@ Environment:
     MT_CONFIG_HOME    config root override (profiles live in <config root>/profiles/<name>/)
     MT_PLUGINS_JSON   installed_plugins.json, read for plugin: profile sources only
                       (default ~/.claude/plugins/installed_plugins.json)
-    MT_VIEW           markdown renderer (default ~/.claude/skills/view/scripts/view.py);
-                      called as `MT_VIEW SRC -o OUT` when executable, else through `uv run -q --script`
     MT_PGREP          process matcher for `review wait` (default pgrep; called as `MT_PGREP -f -- PATTERN`)
     MT_REVIEW_POLL    seconds between `review wait` polls (default 2)
-    MT_ASK_DEADLINE   seconds `ask` waits for a card before closing it (default 540)
     MT_PROFILE_LOCK_WAIT
                       seconds a profile command waits for another one changing the same profile (default 60)
-    MT_NO_CARDS       set (to anything but 0) to turn question cards off: init reports cards false
-                      and `ask` exits 3, so questions go to AskUserQuestion; the dashboard stays
     AGTERM_ENABLED, AGTERM_SESSION_ID, AGTERM_PANE_ID
                       agterm is used only when the first two are set; nothing calls agtermctl otherwise
 
@@ -76,25 +70,52 @@ prints within 60 s (else local git steps). The check warnings (a review `require
 on PATH among them) and one for a review phase that is `skip` join init's warnings. `status` warns
 on a run whose state has none of these keys (started before profiles).
 
+Viewer: init writes viewer-<tab>.html into the run dir for each tab (design, plan, progress,
+review, stats): assets/viewer.html with <body data-tab="<tab>">, the tab the page opens on.
+The page re-injects state.js and the current tab's artifacts/<id>.js every 1.5 s and writes
+nothing, so closing it never affects the run; a failure to write the entry pages only warns.
+
 Dashboard: init copies assets/dashboard.html into the run dir. In agterm it shows the
 split when none is shown (created_split records a split mt made), opens the page with
 `--cwd <run> --js --chromeless` over the pane the agent does not run in, and hands the
 focus back. Any failing agtermctl call there leaves `agterm: false` and init goes on.
+Its file buttons open viewer-<tab>.html over the session (Changes opens revdiff). While a
+round is live (live_round's rule, repeated in the page's script) Review shows `live` and
+the round's row in the phase rail gets a compact block from its `live` summary.
 `phase` and `activity` (not `--wait`) re-assert the sidebar status `active`, `fail`
 sets `blocked`; these are best-effort and only warn on failure.
 
 Artifacts render to <run>/artifacts/<id>.html, again only when the source mtime
-changed (on `artifact`, `plan` and `refresh`). Rendering is best-effort: a
-renderer failure prints a warning and keeps the previous html.
+changed (on `artifact`, `plan` and `refresh`): mt renders the markdown itself
+(markdown-it, raw HTML off, with tables, strikethrough, task lists, footnotes and
+`doc-` heading ids) into assets/doc.html; a source that is not markdown renders as
+a code block. Rendering is best-effort: a source mt cannot read prints a warning
+and keeps the previous html. design, stats, plan, progress and review also get
+<run>/artifacts/<id>.js, `window.mtArtifact("<id>", {...})` in ASCII-escaped JSON,
+rewritten with a new `updated` only when the rest of it changed: design and stats hold
+{title, html, toc, source, updated} (title: the first `#` heading, else the artifact's
+label), plan adds each task's checkbox `items`, progress holds {source, header, entries,
+raw, updated}, the log parsed into entries (parse_progress) and its whole text, review
+holds {rounds, updated} (review_payload), written by `review start`, `wait` and `result`.
+artifact_payload is the only builder of these payloads and write_artifact_data the only
+writer, so every caller writes the same shape. review_payload rebuilds every round from
+three sources: its state entry, its report when it has a result (findings with body and
+fix, capped), and its events.jsonl folded by fold_events (`dropped`, and the whole snapshot
+as `live` for the live round). The live round (live_round) is the highest-numbered one
+when it has started, has no result, its milestone is not `failed` and the run is not
+finished. Bodies and fixes never enter state.json.
 
 Review rounds: `review start` (note: its --run is the revmux run name; the global
 --run DIR goes before the command) records the round's `head` (HEAD of cwd's toplevel: what the
 round reviews) and prints the round's report path,
-<run>/revmux/round-<n>.json, where the launch writes revmux's stdout. `review wait`
-prints `done`, `failed` or `running` (deadline reached). `review result` records a
-round; state `unresolved` and `not_gating` are the latest round's, `deferred` collects
-every round's deferred findings since the last `--confirming` round (the leftovers fix
-round settles them). `review verify-final` prints `unchanged` or `changed`, sets
+<run>/revmux/round-<n>.json, where the launch writes revmux's stdout, and registers the
+review artifact (source <run>/review.md). `review wait` prints `done`, `failed` or
+`running` (deadline reached); on each poll where the round's events.jsonl changed (size or
+mtime) it rewrites artifacts/review.js (events.jsonl folded, read whole up to 8 MB) and
+saves the round's summary `live` when it changed. `review result` records a round (its
+`report` becomes the file it read); state `unresolved` and `not_gating` are the latest
+round's, `deferred` collects every round's deferred findings since the last `--confirming`
+round (the leftovers fix round settles them). `review verify-final` prints `unchanged` or `changed`, sets
 review_stale and stamps verified_sha: HEAD's tree must equal reviewed_sha's tree
 replayed onto HEAD's merge-base with origin/<default> (or <default>); a conflicting
 replay is `changed`, and with no rebase target the trees are compared as they are.
@@ -106,17 +127,6 @@ drops `.revmux/` and the --exclude paths, stores the rest as stash_paths and pri
 {"paths": [...], "quoted": "<shell-quoted paths>", "unstage": [...], "unstage_quoted": "..."}
 for the in-place stash; `unstage` are the paths in HEAD the index no longer has (staged
 deletions, rename sources), the only ones the stash recipe unstages.
-
-Question cards: `ask` validates the card (1-4 options, unique ids other than `other`
-and `delegate`, exactly one recommended), writes cards/<n>.json and cards/<n>.html,
-sets the status blocked with a sound, opens the card with `--block` and waits up to
-MT_ASK_DEADLINE seconds (then closes it); the whole call stays under the Bash tool's
-600 s limit. It prints {"choice": "<id>"},
-{"choice": "other", "text": "..."} or {"choice": "delegate", "id": "<recommended>"}
-and records a decision (an assumption for delegate), exit 0; {"choice": null} with
-exit 2 when the card was dismissed, expired or gave an unusable answer, and with
-exit 3 when it cannot be shown (not in agterm, a run without agterm, MT_NO_CARDS set,
-agtermctl failed).
 
 Completion: `done --status S` (clean, "not clean", "review skipped", "review stale",
 stopped) stamps the run and its running phase finished (an `error` phase keeps its
@@ -222,7 +232,7 @@ use it unquoted, so install-default, a rewriting import or fetch refuse any othe
 reports a phases path that is not one, and a rewrite refuses a ${CLAUDE_SKILL_DIR} whose skill
 dir is not.
 
-Exit codes: 0 ok, 1 failure (message on stderr); `ask` also uses 2 and 3.
+Exit codes: 0 ok, 1 failure (message on stderr).
 """
 
 from __future__ import annotations
@@ -230,6 +240,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
+import functools
 import hashlib
 import json
 import os
@@ -241,7 +252,10 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
+from datetime import datetime
+from html import escape as html_escape
+from html import unescape as html_unescape
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, overload
 
@@ -284,17 +298,24 @@ ID = r"[A-Za-z0-9][A-Za-z0-9._-]*"
 ID_RULE = "letters, digits, '.', '_' and '-', starting with a letter or digit"
 
 ARTIFACT_IDS = ("design", "plan", "progress", "review", "stats", "changes")
+# the viewer's tabs, in order: every artifact but changes, which stays revdiff
+VIEWER_TABS = ("design", "plan", "progress", "review", "stats")
+VIEWER_BODY = re.compile(r'<body data-tab="[^"]*">')
+ARTIFACT_LABELS = {
+    "design": "Design",
+    "plan": "Plan",
+    "progress": "Progress log",
+    "review": "Review",
+    "stats": "Stats",
+    "changes": "Changes",
+}
 MARKDOWN_SUFFIXES = {".md", ".markdown", ".mdown", ".mkd"}
-RENDER_TIMEOUT = 120
 
 ASSETS = Path(__file__).resolve().parent.parent / "assets"
 AGTERM_TIMEOUT = 15.0
-# `mt ask` and `mt review wait` run under the Bash tool's limit (timeout: 600000); both waits end before it
+# `mt review wait` runs under the Bash tool's limit (timeout: 600000); its wait ends before it
 BASH_LIMIT = 600.0
 REVIEW_DEADLINE = 570.0
-ASK_DEADLINE = 540.0
-# the agtermctl calls around a card's wait; short, so `mt ask` stays well under BASH_LIMIT
-ASK_CALL_TIMEOUT = 5.0
 # detect-branch.sh's last step asks the remote (`git remote show origin`), and the script is the profile's copy
 DETECT_BRANCH_TIMEOUT = 60.0
 
@@ -328,21 +349,6 @@ def plugins_json_path() -> Path:
     if os.environ.get("MT_PLUGINS_JSON"):
         return Path(os.environ["MT_PLUGINS_JSON"])
     return Path.home() / ".claude" / "plugins" / "installed_plugins.json"
-
-
-def renderer_path() -> str | None:
-    if os.environ.get("MT_VIEW"):
-        p = Path(os.environ["MT_VIEW"]).expanduser()
-        return str(p) if p.exists() else None
-    p = Path.home() / ".claude" / "skills" / "view" / "scripts" / "view.py"
-    return str(p) if p.exists() else None
-
-
-def renderer_argv(renderer: str, src: str, out: str) -> list[str]:
-    """MT_VIEW runs directly when executable; view.py (and anything else) through `uv run -q --script`."""
-    if os.environ.get("MT_VIEW") and os.access(renderer, os.X_OK):
-        return [renderer, src, "-o", out]
-    return ["uv", "run", "-q", "--script", renderer, src, "-o", out]
 
 
 def resolve_run(flag: str | None) -> Path:
@@ -380,6 +386,13 @@ def atomic_write(path: Path, text: str) -> None:
 def state_js(state: dict[str, Any]) -> str:
     body = json.dumps(state, ensure_ascii=False).replace("</", "<\\/")
     return f"window.mtState({body});\n"
+
+
+def script_json(data: Any) -> str:
+    """ASCII JSON safe inside a <script> element and in a script file read in any charset: every `<`, `>`, `&`
+    (covers `</` and `<!--`) and non-ASCII character as a \\u escape."""
+    body = json.dumps(data, ensure_ascii=True)
+    return body.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
 
 
 def load(run: Path) -> dict[str, Any]:
@@ -568,11 +581,6 @@ def agterm_session() -> str | None:
     return os.environ["AGTERM_SESSION_ID"]
 
 
-def cards_disabled() -> bool:
-    """MT_NO_CARDS turns question cards off (any value but empty or 0); the dashboard is not affected."""
-    return os.environ.get("MT_NO_CARDS", "").strip() not in ("", "0")
-
-
 def agtermctl(*args: str, timeout: float | None = None) -> AgCall:
     """The one place mt runs agtermctl (default timeout AGTERM_TIMEOUT). Outside agterm nothing runs."""
     if agterm_session() is None:
@@ -687,6 +695,14 @@ def open_dashboard(run: Path, state: dict[str, Any]) -> None:
             warn(f"agtermctl session focus {mine}: {f.why()}")
 
 
+def write_viewer_pages(run: Path) -> None:
+    """Write <run>/viewer-<tab>.html for each viewer tab: assets/viewer.html with the tab in its
+    <body data-tab>, the tab the page shows first. Raises OSError."""
+    template = (ASSETS / "viewer.html").read_text(encoding="utf-8")
+    for tab in VIEWER_TABS:
+        atomic_write(run / f"viewer-{tab}.html", VIEWER_BODY.sub(f'<body data-tab="{tab}">', template, count=1))
+
+
 # ---------------------------------------------------------------- commands
 
 
@@ -725,7 +741,6 @@ def cmd_init(args: argparse.Namespace) -> int:
         raise MtError(f"cannot create run dir {run}: {e}") from e
 
     branch = git("branch", "--show-current", cwd=toplevel, check=False) or None
-    renderer = renderer_path()
     state: dict[str, Any] = {
         **dict.fromkeys(SET_KEYS),  # the explicit entries below override these
         "title": title,
@@ -743,13 +758,11 @@ def cmd_init(args: argparse.Namespace) -> int:
         "stash_ref": None,
         "start_cwd": cwd,
         "agterm": False,
-        "cards": False,
         "created_split": False,
         "agterm_session": None,
         "dashboard_pane": None,
         "state_dir": str(run),
         **profile,
-        "renderer": renderer,
         "revdiff": shutil.which("revdiff") is not None,
         "warnings": warnings,
         "started": now(),
@@ -784,18 +797,24 @@ def cmd_init(args: argparse.Namespace) -> int:
         atomic_write(pointer_path(), str(run) + "\n")
     except OSError as e:
         raise MtError(f"cannot write run pointer {pointer_path()}: {e}") from e
+    pages_failed = False
     try:
         shutil.copyfile(ASSETS / "dashboard.html", run / "dashboard.html")
     except OSError as e:
         state["warnings"].append(f"cannot copy dashboard.html: {e}")
+        pages_failed = True
+    try:
+        write_viewer_pages(run)
+    except OSError as e:
+        state["warnings"].append(f"cannot write the viewer pages: {e}")
+        pages_failed = True
+    if pages_failed:
         save(run, state)
     if agterm_session() is not None:
         open_dashboard(run, state)
         if not state["agterm"]:
             add_event(state, "No dashboard: agterm is not available")
         save(run, state)
-    state["cards"] = bool(state["agterm"]) and not cards_disabled()
-    save(run, state)
 
     out_keys = (
         "state_dir",
@@ -812,11 +831,9 @@ def cmd_init(args: argparse.Namespace) -> int:
         "dirty_paths",
         "start_cwd",
         "agterm",
-        "cards",
         "created_split",
         "dashboard_pane",
         *PROFILE_STATE_KEYS,
-        "renderer",
         "revdiff",
         "warnings",
     )
@@ -1209,13 +1226,15 @@ FENCE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
 
 
 def parse_plan(text: str) -> list[dict[str, Any]]:
-    """Task sections of a plan: [{"n", "title", "done", "total"}] in file order.
+    """Task sections of a plan: [{"n", "title", "done", "total", "items"}] in file order.
 
     A section starts at `### Task N: title` or `### Iteration N: title` and ends at the
     next `#`, `##` or `###` header (a `####` subsection does not end it). Lines inside
     fenced code blocks are neither headers nor checkboxes. As in CommonMark, a fence closes
     only at a line of the same character, at least as long as the opening run, with nothing
     after it: a ```` fence may show a ``` example, headers and boxes included.
+    `items` holds the section's checkboxes in file order, nested ones too, as {"text", "checked"}:
+    the text is the rest of the checkbox's line.
     """
     tasks: list[dict[str, Any]] = []
     cur: dict[str, Any] | None = None
@@ -1233,7 +1252,7 @@ def parse_plan(text: str) -> list[dict[str, Any]]:
             continue
         h = TASK_HEADER.match(line)
         if h:
-            cur = {"n": int(h.group(2)), "title": h.group(3).strip(), "done": 0, "total": 0}
+            cur = {"n": int(h.group(2)), "title": h.group(3).strip(), "done": 0, "total": 0, "items": []}
             tasks.append(cur)
             continue
         if SECTION_END.match(line):
@@ -1242,9 +1261,10 @@ def parse_plan(text: str) -> list[dict[str, Any]]:
         if cur is not None:
             c = CHECKBOX.match(line)
             if c:
+                checked = c.group(1) in "xX"
+                cur["items"].append({"text": line[c.end() :].strip(), "checked": checked})
                 cur["total"] += 1
-                if c.group(1) in "xX":
-                    cur["done"] += 1
+                cur["done"] += checked
     return tasks
 
 
@@ -1315,63 +1335,290 @@ def text_as_markdown(name: str, text: str) -> str:
     return f"# {name}\n\n{fence}text\n{text.rstrip(chr(10))}\n{fence}\n"
 
 
-def render_artifact(run: Path, art: dict[str, Any]) -> str | None:
-    """Render art's source to <run>/artifacts/<id>.html when its mtime changed; return a warning or None.
+def doc_slug(title: str) -> str:
+    """A heading id: `doc-` (the viewer's own ids never start with it) and the GitHub-style slug of the title."""
+    return "doc-" + re.sub(r"[^\w\- ]", "", title.strip().lower()).replace(" ", "-")
 
-    No renderer: the entry keeps html None (its dashboard button stays disabled). A renderer
-    failure leaves html and mtime as they were, so the previous page stays and the next
-    call retries.
+
+@functools.cache
+def markdown_parser() -> Any:
+    """commonmark with raw HTML off (markdown-it also refuses javascript: links), tables, strikethrough, task
+    lists, footnotes and ids on ## and ### headings."""
+    from markdown_it import MarkdownIt
+    from mdit_py_plugins.anchors import anchors_plugin
+    from mdit_py_plugins.footnote import footnote_plugin
+    from mdit_py_plugins.tasklists import tasklists_plugin
+
+    md = MarkdownIt("commonmark", {"html": False}).enable(["table", "strikethrough"])
+    return (
+        md.use(tasklists_plugin).use(footnote_plugin).use(anchors_plugin, min_level=2, max_level=3, slug_func=doc_slug)
+    )
+
+
+def render_markdown(text: str) -> tuple[str, list[dict[str, Any]]]:
+    """(html, toc): the document as an HTML fragment, and its ## and ### headings as [{level, id, text}]."""
+    md = markdown_parser()
+    env: dict[str, Any] = {}  # footnotes: parse collects them, render writes them out
+    tokens = md.parse(text, env)
+    toc = []
+    for i, tok in enumerate(tokens):
+        if tok.type == "heading_open" and tok.attrGet("id"):
+            # the heading's text as the anchors plugin reads it for the id
+            title = "".join(c.content for c in tokens[i + 1].children or [] if c.type in ("text", "code_inline"))
+            toc.append({"level": int(tok.tag[1]), "id": tok.attrGet("id"), "text": title.strip()})
+    return md.renderer.render(tokens, md.options, env), toc
+
+
+def render_inline(text: str) -> str:
+    """One line of markdown (a task title, a checklist item) as inline HTML, raw HTML off."""
+    return markdown_parser().renderInline(text)
+
+
+DOC_SLOTS = re.compile(r"<!-- mt:(title|toc|body) -->")
+
+
+def doc_page(title: str, body: str, toc: list[dict[str, Any]]) -> str:
+    """assets/doc.html with the title, the table of contents (left out when there are no headings) and the body."""
+    template = (ASSETS / "doc.html").read_text(encoding="utf-8")
+    nav = ""
+    if toc:
+        links = "".join(
+            f'<a class="l{t["level"]}" href="#{html_escape(t["id"])}">{html_escape(t["text"])}</a>' for t in toc
+        )
+        nav = f'<nav class="toc">{links}</nav>'
+    slots = {"title": html_escape(title), "toc": nav, "body": body}
+    return DOC_SLOTS.sub(lambda m: slots[m.group(1)], template)  # one pass: nothing inserted is read again
+
+
+H1 = re.compile(r"<h1[^>]*>(.*?)</h1>", re.DOTALL)
+TAG = re.compile(r"<[^>]*>")
+
+
+def first_heading(html: str) -> str | None:
+    """The text of the first `#` heading in render_markdown's html (raw HTML is off: every tag there is its own)."""
+    m = H1.search(html)
+    text = html_unescape(TAG.sub("", m.group(1))).strip() if m else ""
+    return text or None
+
+
+def read_source(src: Path) -> str:
+    """An artifact source's text as it is on disk, undecodable bytes replaced. Line ends are not translated:
+    a lone \\r inside a progress log line stays in that line (markdown-it normalizes them itself). Raises
+    OSError."""
+    with open(src, encoding="utf-8", errors="replace", newline="") as f:
+        return f.read()
+
+
+def source_markdown(src: Path, text: str) -> str:
+    """text, src's content, as markdown: a file that is not markdown as a code block (text_as_markdown)."""
+    if src.suffix.lower() not in MARKDOWN_SUFFIXES:
+        text = text_as_markdown(src.name, text)
+    return text
+
+
+def document_payload(art: dict[str, Any], text: str | None = None) -> dict[str, Any]:
+    """{title, html, toc, source} of art's source; the title is its first `#` heading, else the artifact's label.
+    text is the source's content when the caller read it already. Raises OSError."""
+    src = Path(art["source"])
+    html, toc = render_markdown(source_markdown(src, read_source(src) if text is None else text))
+    title = first_heading(html) or ARTIFACT_LABELS.get(art["id"], art["id"])
+    return {"title": title, "html": html, "toc": toc, "source": str(src)}
+
+
+def plan_items(text: str) -> dict[str, list[dict[str, Any]]]:
+    """The plan's checkbox items by task n (a string key, as in JSON): [{text, html, checked}] in file order,
+    html being the text as inline markdown. When two sections share a number, the first one's items count."""
+    items: dict[str, list[dict[str, Any]]] = {}
+    for task in parse_plan(text):
+        items.setdefault(str(task["n"]), [{**i, "html": render_inline(i["text"])} for i in task["items"]])
+    return items
+
+
+# the progress log (the exec scripts' format): append-progress.sh stamps a one-line message, not piped lines
+PROGRESS_STAMP = re.compile(r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\] ?")
+PROGRESS_FIELD = re.compile(r"([A-Za-z][\w -]*):\s*(.*)")
+PROGRESS_TASK = re.compile(r"task (\d+):\s*(.*)", re.IGNORECASE)
+PROGRESS_ENTRY = re.compile(r"(?:fixer|finalize):(?:\s|$)")
+PROGRESS_MARK = re.compile(r"\[(decision|deviation)\]\s*(.*)")
+PROGRESS_REVIEW = re.compile(r"review (?:round|fix round|leftovers)\b")
+PROGRESS_ITEM = re.compile(r"(\s*)- (.*)")
+
+
+def progress_header(lines: list[str]) -> tuple[dict[str, str], int]:
+    """(fields, n): the header init-progress.sh writes, `# progress`, `Key: value` lines, `---`, as
+    {lowercased key: value}, and the number of lines it takes. A block with any other line is no header."""
+    end = next((i for i, line in enumerate(lines) if line.strip() == "---"), None)
+    if not lines or not lines[0].startswith("# ") or end is None:
+        return {}, 0
+    fields = {}
+    for line in lines[1:end]:
+        m = PROGRESS_FIELD.fullmatch(line.strip())
+        if not m or PROGRESS_TASK.match(line) or PROGRESS_STAMP.match(line):
+            return {}, 0
+        fields[m.group(1).strip().lower()] = m.group(2).strip()
+    return fields, end + 1
+
+
+def parse_progress(text: str) -> dict[str, Any]:
+    """The progress log as {header, entries}: entries [{at, task, title, lines}], lines [{at, kind, text,
+    children}] with kind item, decision, deviation, review or text.
+
+    Any line may start with a `[YYYY-MM-DD HH:MM:SS] ` stamp, its `at` (else None). `task N: title` starts
+    an entry with task N; `fixer: …` and `finalize: …` start one with task None and the line as its title.
+    A review line (`review round N…`, and older runs' `review fix round …` and `review leftovers …`) opens a
+    "Review" entry unless one is open, so the fixer lines that follow it are not filed under the last task.
+    `- x` is an item, an indented `- x` a child of the line before it; `[decision] x` and `[deviation] x`
+    keep x as their text. Any other line is kept as text, never dropped; blank lines are. Lines before the
+    first entry go to an entry with task None and an empty title.
+    """
+    lines = text.split("\n")  # not splitlines: a lone \r (or \f, \u2028) inside a logged line is not a break
+    header, start = progress_header(lines)
+    entries: list[dict[str, Any]] = []
+    cur: dict[str, Any] | None = None
+    in_review = False
+
+    def open_entry(at: str | None, task: int | None, title: str) -> dict[str, Any]:
+        entry = {"at": at, "task": task, "title": title, "lines": []}
+        entries.append(entry)
+        return entry
+
+    for line in lines[start:]:
+        line = line.rstrip()
+        s = PROGRESS_STAMP.match(line)
+        at, body = (s.group(1), line[s.end() :]) if s else (None, line)
+        if not body.strip():
+            continue
+        t = PROGRESS_TASK.match(body)
+        if t or PROGRESS_ENTRY.match(body):
+            cur = open_entry(at, int(t.group(1)), t.group(2).strip()) if t else open_entry(at, None, body)
+            in_review = False
+            continue
+        nested = False
+        m = PROGRESS_MARK.match(body)
+        if m:
+            kind, content = m.group(1), m.group(2)
+        elif PROGRESS_REVIEW.match(body):
+            kind, content = "review", body
+            if not in_review:
+                cur, in_review = open_entry(at, None, "Review"), True
+        elif item := PROGRESS_ITEM.match(body):
+            kind, content, nested = "item", item.group(2), bool(item.group(1))
+        else:
+            kind, content = "text", body
+        if cur is None:
+            cur = open_entry(None, None, "")
+        row = {"at": at, "kind": kind, "text": content.strip(), "children": []}
+        if nested and cur["lines"]:
+            cur["lines"][-1]["children"].append(row)
+        else:
+            cur["lines"].append(row)
+    return {"header": header, "entries": entries}
+
+
+# the ids whose payload is the document alone
+DOCUMENT_IDS = ("design", "stats")
+# the ids artifact_payload builds a payload for: render_artifact keeps their artifacts/<id>.js too
+PAYLOAD_IDS = (*DOCUMENT_IDS, "plan", "progress", "review")
+
+
+def artifact_payload(
+    run: Path,
+    state: dict[str, Any],
+    art: dict[str, Any],
+    doc: dict[str, Any] | None = None,
+    text: str | None = None,
+) -> dict[str, Any] | None:
+    """The data artifacts/<id>.js holds for art (without `updated`), or None for an id outside PAYLOAD_IDS.
+
+    The one builder per id: every writer of artifacts/<id>.js goes through it, so a later write never
+    replaces a payload with another shape. doc is art's document_payload and text its source's content when
+    the caller has them already; the plan's items then come from the text its document was rendered from.
+    The plan's payload is its document plus `items` (plan_items); the progress log's is {source, header,
+    entries, raw} (parse_progress, raw the whole text), without the document. The review's is
+    review_payload's {rounds}, built from the state, the rounds' reports and events.jsonl files, never from
+    review.md (its doc and text are not used). Raises OSError.
+    """
+    aid = art["id"]
+    if aid in DOCUMENT_IDS:
+        return dict(doc) if doc is not None else document_payload(art, text)
+    if aid == "review":
+        return review_payload(run, state)
+    if aid not in ("plan", "progress"):
+        return None
+    if text is None:
+        text = read_source(Path(art["source"]))
+    if aid == "plan":
+        payload = dict(doc) if doc is not None else document_payload(art, text)
+        payload["items"] = plan_items(text)
+        return payload
+    return {"source": str(Path(art["source"])), **parse_progress(text), "raw": text}
+
+
+ARTIFACT_JS = re.compile(r'\Awindow\.mtArtifact\("[^"]*", (.*)\);\n\Z', re.DOTALL)
+
+
+def read_artifact_data(path: Path) -> dict[str, Any] | None:
+    """The payload in an artifacts/<id>.js, or None when there is none or it cannot be read."""
+    try:
+        m = ARTIFACT_JS.match(path.read_text(encoding="utf-8"))
+        data = json.loads(m.group(1)) if m else None
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def write_artifact_data(run: Path, aid: str, payload: dict[str, Any]) -> bool:
+    """Write payload to <run>/artifacts/<aid>.js as `window.mtArtifact("<aid>", {...});`, ASCII-escaped JSON.
+
+    The file is written, with a new `updated`, only when the payload, `updated` aside, differs from the one
+    written; otherwise it and its `updated` stay. Returns whether it wrote. Raises OSError.
+    """
+    path = run / "artifacts" / f"{aid}.js"
+    data = {k: v for k, v in payload.items() if k != "updated"}
+    old = read_artifact_data(path)
+    if old is not None:
+        old.pop("updated", None)
+        if json.dumps(old, sort_keys=True) == json.dumps(data, sort_keys=True):
+            return False
+    path.parent.mkdir(exist_ok=True)
+    atomic_write(path, f"window.mtArtifact({json.dumps(aid)}, {script_json({**data, 'updated': now()})});\n")
+    return True
+
+
+def render_artifact(run: Path, state: dict[str, Any], art: dict[str, Any]) -> str | None:
+    """Render art's source to <run>/artifacts/<id>.html, and its payload to <id>.js, when its mtime changed;
+    return a warning or None.
+
+    The source is read and rendered once (read_source, document_payload): the page and the payload share it.
+    It renders again when the page is gone, or, for an id in PAYLOAD_IDS, the data script. A source that is
+    not markdown renders as a code block (text_as_markdown). A failure leaves html and mtime as they were, so
+    the previous page stays and the next call retries.
     """
     aid, src = art["id"], Path(art["source"])
     try:
         mtime = src.stat().st_mtime
     except OSError as e:
         return f"artifact {aid}: cannot stat {src}: {e.strerror or e}"
-    renderer = renderer_path()
-    have_html = bool(art.get("html")) and Path(art["html"]).is_file()
-    if art.get("mtime") == mtime and (have_html or renderer is None):
-        return None
-    if renderer is None:
-        art.update(mtime=mtime, updated=now())
+    js = run / "artifacts" / f"{aid}.js"
+    if (
+        art.get("mtime") == mtime
+        and art.get("html")
+        and Path(art["html"]).is_file()
+        and (aid not in PAYLOAD_IDS or js.is_file())
+    ):
         return None
     out = run / "artifacts" / f"{aid}.html"
-    tmp_out: str | None = None
-    tmp_md: str | None = None
     try:
+        text = read_source(src)
+        doc = document_payload(art, text)
+        page = doc_page(f"{ARTIFACT_LABELS.get(aid, aid)} · {src.name}", doc["html"], doc["toc"])
         out.parent.mkdir(exist_ok=True)
-        fd, tmp_out = tempfile.mkstemp(dir=out.parent, prefix=f".{aid}.", suffix=".html")
-        os.close(fd)
-        input_path = str(src)
-        if src.suffix.lower() not in MARKDOWN_SUFFIXES:
-            text = src.read_text(encoding="utf-8", errors="replace")
-            fd, tmp_md = tempfile.mkstemp(dir=out.parent, prefix=f".{aid}.", suffix=".md")
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(text_as_markdown(src.name, text))
-            input_path = tmp_md
-        r = subprocess.run(
-            renderer_argv(renderer, input_path, tmp_out),
-            capture_output=True,
-            text=True,
-            timeout=RENDER_TIMEOUT,
-            check=False,
-        )
-        if r.returncode != 0 or os.path.getsize(tmp_out) == 0:
-            detail = (r.stderr.strip() or r.stdout.strip())[-300:]
-            return f"artifact {aid}: renderer failed (exit {r.returncode}){': ' + detail if detail else ''}"
-        os.chmod(tmp_out, 0o644)  # mkstemp makes it 0600
-        os.replace(tmp_out, out)
-        tmp_out = None
-    except subprocess.TimeoutExpired:
-        return f"artifact {aid}: renderer timed out after {RENDER_TIMEOUT}s"
+        atomic_write(out, page)
+        payload = artifact_payload(run, state, art, doc, text)
+        if payload is not None:
+            write_artifact_data(run, aid, payload)
     except OSError as e:
         return f"artifact {aid}: cannot render {src}: {e}"
-    finally:
-        for leftover in (tmp_out, tmp_md):
-            if leftover:
-                try:
-                    os.unlink(leftover)
-                except OSError:
-                    pass
     art.update(html=str(out), mtime=mtime, updated=now())
     return None
 
@@ -1383,7 +1630,7 @@ def render_changed(run: Path, state: dict[str, Any]) -> None:
             continue
         if not Path(art["source"]).exists():
             continue  # e.g. the progress log before the first task writes it
-        warning = render_artifact(run, art)
+        warning = render_artifact(run, state, art)
         if warning:
             warn(warning)
 
@@ -1530,7 +1777,7 @@ def cmd_artifact(args: argparse.Namespace) -> int:
         if not src.is_file():
             raise MtError(f"artifact {aid}: no such file {src}")
         art = register_artifact(state, aid, str(src), args.hint)
-        warning = render_artifact(run, art)
+        warning = render_artifact(run, state, art)
         if warning:
             warn(warning)
     save(run, state)
@@ -1610,6 +1857,7 @@ def cmd_review_start(args: argparse.Namespace) -> int:
             degraded=[],
             verdict=None,
             milestone="starting",
+            live=None,
             started=t,
             finished=None,
             duration=None,
@@ -1619,9 +1867,34 @@ def cmd_review_start(args: argparse.Namespace) -> int:
         entry.update(round_dir=round_dir, report=str(report))
     state["activity"] = f"Review round {n} · starting"
     state["now_kind"] = ""
+    write_review_data(run, state)  # the Review tab follows the round from here
     save(run, state)
     print(json.dumps({"round": n, "run": name, "round_dir": round_dir, "report": str(report)}))
     return 0
+
+
+# JSON text that may decode to a surrogate (a \uD800-\uDFFF escape, or the code point itself); a surrogate in a str
+SURROGATE_IN_JSON = re.compile(r"\\u[dD][89a-fA-F]|[\ud800-\udfff]")
+LONE_SURROGATE = re.compile(r"[\ud800-\udfff]")
+
+
+def without_surrogates(value: Any) -> Any:
+    """value with every unpaired surrogate in its strings, keys included, replaced by U+FFFD."""
+    if isinstance(value, str):
+        return LONE_SURROGATE.sub("\ufffd", value)
+    if isinstance(value, list):
+        return [without_surrogates(v) for v in value]
+    if isinstance(value, dict):
+        return {without_surrogates(k): without_surrogates(v) for k, v in value.items()}
+    return value
+
+
+def revmux_json(text: str) -> Any:
+    """json.loads for JSON revmux wrote (an events.jsonl line, a report). An unpaired surrogate escape such as
+    `\\ud800` becomes U+FFFD: json.loads keeps it as a lone surrogate, which the strict UTF-8 writes of
+    state.json, state.js and review.md cannot encode. Raises ValueError like json.loads."""
+    value = json.loads(text)
+    return without_surrogates(value) if SURROGATE_IN_JSON.search(text) else value
 
 
 def read_events(path: Path) -> list[dict[str, Any]]:
@@ -1633,7 +1906,7 @@ def read_events(path: Path) -> list[dict[str, Any]]:
     events = []
     for line in text.split("\n")[:-1]:
         try:
-            ev = json.loads(line)
+            ev = revmux_json(line)
         except ValueError:
             continue
         if isinstance(ev, dict):
@@ -1663,6 +1936,249 @@ def milestone(events: list[dict[str, Any]]) -> str:
     return text + (f" · {len(degraded)} degraded" if degraded else "")
 
 
+# revmux's events.jsonl kinds (its app/pipeline/event.go); any other kind is counted and ignored
+EVENT_KINDS = frozenset(
+    {
+        "stage",
+        "agent_started",
+        "agent_state",
+        "agent_progress",
+        "agent_activity",
+        "agent_done",
+        "agent_retried",
+        "agent_degraded",
+        "rate_limit",
+        "findings",
+        "dropped",
+    }
+)
+SYNTHESIS = "synthesis"
+FOLD_FINDINGS = 200
+FOLD_BODY = 4000
+FOLD_FIX = 2000
+FOLD_TEXT = 300
+FOLD_RECENT = 5
+VERIFY_KEPT = re.compile(r"(\d+) of (\d+) kept\b")
+FINDING_TEXT = ("id", "file", "severity", "title", "body", "fix", "verdict")
+FINDING_NUMBER = ("line", "end_line", "confidence")
+FINDING_LIST = ("sources", "lenses")
+FINDING_CAP = {"body": FOLD_BODY, "fix": FOLD_FIX}
+# an agent's status line: (state, prefix as revmux's own renderers print it)
+AGENT_NOTES = {
+    "agent_retried": ("retrying", "retrying: "),
+    "agent_degraded": ("degraded", "degraded: "),
+    "rate_limit": ("rate-limited", "rate limited: "),
+}
+AGENT_FINISHED = ("done", "degraded")
+
+
+def clip(text: str, limit: int) -> str:
+    """text cut to at most limit characters, the last one an ellipsis when it was cut."""
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def event_time(value: Any) -> float | None:
+    """An event's ISO 8601 `at` as epoch seconds, or None when it is missing or not a time."""
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def event_text(ev: dict[str, Any], key: str) -> str:
+    value = ev.get(key)
+    return value if isinstance(value, str) else ""
+
+
+def fold_finding(raw: dict[str, Any], agent: str) -> dict[str, Any]:
+    """A revmux finding with every key present (blank when missing), body and fix capped, and the agent
+    whose event carried it."""
+    f: dict[str, Any] = {}
+    for key in FINDING_TEXT:
+        value = event_text(raw, key)
+        f[key] = clip(value, FINDING_CAP[key]) if key in FINDING_CAP else value
+    for key in FINDING_NUMBER:
+        value = raw.get(key)
+        f[key] = value if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+    for key in FINDING_LIST:
+        value = raw.get(key)
+        f[key] = [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
+    f["agent"] = agent
+    return f
+
+
+def fold_findings(ev: dict[str, Any], agent: str) -> list[dict[str, Any]]:
+    raw = ev.get("findings")
+    return [fold_finding(f, agent) for f in raw if isinstance(f, dict)] if isinstance(raw, list) else []
+
+
+def severity_rank(f: dict[str, Any]) -> int:
+    return SEVERITIES.index(f["severity"]) if f["severity"] in SEVERITIES else len(SEVERITIES)
+
+
+def fold_events(lines: Iterable[str]) -> dict[str, Any]:
+    """A revmux round's events.jsonl folded into the Review tab's snapshot. Pure: the caller reads the file.
+
+    lines are the file's lines, each with its "\\n"; one without (the line revmux is still writing) is
+    skipped, and so is a blank one. A line that is not JSON, or not an object, is skipped and counted in
+    `skipped`; one of a kind outside EVENT_KINDS in `unknown`. A missing or mistyped field reads blank
+    (`at` None), an unpaired surrogate as U+FFFD (revmux_json). `format_ok` is false when there are complete
+    lines but none of a known kind.
+
+    The snapshot: `stages` [{name, started, finished}] (finished when the next stage starts, the last one
+    when all its agents finished) and `stage`, the latest's name; `agents` [{name, stage, lenses, model,
+    state, started, finished, findings, result, retries, activity, progress, recent}] keyed by name, placed
+    under the stage active at their `agent_started` (an event before it opens the row under the current
+    one). state is running, done, retrying, rate-limited or degraded; a done or degraded agent stays so.
+    findings is the count of its latest `findings` event (None before one), result its done or degraded
+    text, recent its last FOLD_RECENT lines (activity, state other than `model: …`, and the retry,
+    degrade and rate-limit notes); every text is capped at FOLD_TEXT characters. `activity` is the latest
+    line of any agent, progress included: {agent, text, at}.
+
+    Findings: each finder's latest `findings` event replaces its own list; synthesis's (the agent named
+    synthesis, or one under that stage) replaces them all (`merged` true). `found` is the finders' total
+    (the "13 → 10" line), `total` and `counts` (by severity) cover the current list, which is sorted by
+    severity and capped at FOLD_FINDINGS, body at FOLD_BODY and fix at FOLD_FIX characters. `dropped` is
+    the latest `dropped` event's list, apart, capped the same (`dropped_total`). `verify` sums the
+    `N of M kept` texts of the agents done: {kept, total, agents}. `started` and `updated` are the
+    earliest and latest event times.
+    """
+    stages: list[dict[str, Any]] = []
+    agents: dict[str, dict[str, Any]] = {}
+    finders: dict[str, list[dict[str, Any]]] = {}
+    merged: list[dict[str, Any]] | None = None
+    dropped: list[dict[str, Any]] = []
+    activity: dict[str, Any] | None = None
+    complete = known = skipped = unknown = 0
+    times: list[float] = []
+
+    for line in lines:
+        if not line.endswith("\n") or not line.strip():
+            continue
+        complete += 1
+        try:
+            ev = revmux_json(line)
+        except ValueError:
+            skipped += 1
+            continue
+        if not isinstance(ev, dict):
+            skipped += 1
+            continue
+        kind = event_text(ev, "kind")
+        if kind not in EVENT_KINDS:
+            unknown += 1
+            continue
+        known += 1
+        at = event_time(ev.get("at"))
+        if at is not None:
+            times.append(at)
+        text = clip(event_text(ev, "text"), FOLD_TEXT)
+        if kind == "stage":
+            if stages and stages[-1]["finished"] is None:
+                stages[-1]["finished"] = at
+            stages.append({"name": event_text(ev, "stage"), "started": at, "finished": None})
+            continue
+        stage = stages[-1]["name"] if stages else ""
+        name = event_text(ev, "agent")
+        a = agents.get(name)
+        if a is None and name:
+            a = agents[name] = {
+                "name": name,
+                "stage": stage,
+                "lenses": "",
+                "model": "",
+                "state": "running",
+                "started": at,
+                "finished": None,
+                "findings": None,
+                "result": "",
+                "retries": 0,
+                "activity": "",
+                "progress": "",
+                "recent": [],
+            }
+        if kind == "findings":
+            found = fold_findings(ev, name)
+            if name == SYNTHESIS or (a is not None and a["stage"] == SYNTHESIS):
+                merged = found
+            else:
+                finders[name] = found
+            if a is not None:
+                a["findings"] = len(found)
+            continue
+        if kind == "dropped":
+            dropped = fold_findings(ev, name)
+            continue
+        if a is None:
+            continue
+        line_text = ""
+        if kind == "agent_started":
+            a.update(stage=stage, lenses=text, state="running", finished=None)
+            if a["started"] is None:
+                a["started"] = at
+        elif kind == "agent_done":
+            a.update(state="done", finished=at, result=text)
+        elif kind in AGENT_NOTES:
+            state, prefix = AGENT_NOTES[kind]
+            line_text = prefix + text
+            if kind == "agent_retried":
+                a["retries"] += 1
+            if kind == "agent_degraded":
+                a.update(state=state, finished=at, result=text)
+            elif a["state"] not in AGENT_FINISHED:
+                a["state"] = state
+        else:  # agent_state, agent_activity, agent_progress: the agent is at work
+            if a["state"] not in AGENT_FINISHED:
+                a["state"] = "running"
+            if kind == "agent_state" and text.startswith("model: "):
+                a["model"] = text.removeprefix("model: ")
+            elif kind == "agent_progress":
+                a["progress"] = text
+                activity = {"agent": name, "text": text, "at": at}
+            else:
+                line_text = text
+                if kind == "agent_activity":
+                    a["activity"] = text
+        if line_text:
+            a["recent"] = [*a["recent"], {"at": at, "kind": kind, "text": line_text}][-FOLD_RECENT:]
+            activity = {"agent": name, "text": line_text, "at": at}
+
+    if stages and stages[-1]["finished"] is None:
+        last = [a for a in agents.values() if a["stage"] == stages[-1]["name"]]
+        if last and all(a["state"] in AGENT_FINISHED for a in last):
+            ends = [a["finished"] for a in last if a["finished"] is not None]
+            stages[-1]["finished"] = max(ends) if ends else None
+    current = merged if merged is not None else [f for found in finders.values() for f in found]
+    current = sorted(current, key=severity_rank)
+    kept = [m for a in agents.values() if a["state"] == "done" and (m := VERIFY_KEPT.match(a["result"]))]
+    return {
+        "format_ok": complete == 0 or known > 0,
+        "events": known,
+        "skipped": skipped,
+        "unknown": unknown,
+        "started": min(times) if times else None,
+        "updated": max(times) if times else None,
+        "stage": stages[-1]["name"] if stages else "",
+        "stages": stages,
+        "agents": list(agents.values()),
+        "findings": current[:FOLD_FINDINGS],
+        "total": len(current),
+        "found": sum(len(found) for found in finders.values()),
+        "merged": merged is not None,
+        "counts": {sev: sum(1 for f in current if f["severity"] == sev) for sev in SEVERITIES},
+        "dropped": sorted(dropped, key=severity_rank)[:FOLD_FINDINGS],
+        "dropped_total": len(dropped),
+        "verify": {
+            "kept": sum(int(m.group(1)) for m in kept),
+            "total": sum(int(m.group(2)) for m in kept),
+            "agents": len(kept),
+        },
+        "activity": activity,
+    }
+
+
 def process_alive(task: str, name: str) -> bool:
     """Is a revmux launched as `revmux --task <task> --run <name> ...` still running?"""
     pattern = f"--task {ere_escape(task)} --run {ere_escape(name)}( |$)"
@@ -1679,7 +2195,7 @@ def process_alive(task: str, name: str) -> bool:
 def load_report(path: Path) -> dict[str, Any]:
     """A revmux JSON report; MtError when it is missing, empty or not a report."""
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = revmux_json(path.read_text(encoding="utf-8"))
     except OSError as e:
         raise MtError(f"cannot read revmux report {path}: {e.strerror or e}") from e
     except ValueError as e:
@@ -1690,6 +2206,148 @@ def load_report(path: Path) -> dict[str, Any]:
         if not isinstance(f, dict) or not f.get("id"):
             raise MtError(f"revmux report {path}: a finding without an id")
     return data
+
+
+# ---------------------------------------------------------------- review data (artifacts/review.js)
+
+# events.jsonl is read whole up to this many bytes; past it the round's snapshot is {"truncated": true}
+EVENTS_CAP = 8 << 20
+REVIEW_HINT = "revmux review rounds"
+
+
+def events_path(entry: dict[str, Any]) -> Path | None:
+    rd = entry.get("round_dir")
+    return Path(rd) / "events.jsonl" if rd else None
+
+
+def events_signature(path: Path | None) -> tuple[int, int] | None:
+    """(size, mtime_ns) of a round's events.jsonl, or None while there is none."""
+    try:
+        st = path.stat() if path is not None else None
+    except OSError:
+        return None
+    return (st.st_size, st.st_mtime_ns) if st else None
+
+
+def round_snapshot(path: Path | None) -> dict[str, Any]:
+    """fold_events over a round's events.jsonl, read whole when it holds at most EVENTS_CAP bytes, else
+    {"truncated": True}. A file that is not there (yet) or cannot be read folds as an empty one."""
+    data = b""
+    if path is not None:
+        try:
+            with open(path, "rb") as f:
+                data = f.read(EVENTS_CAP + 1)
+        except OSError:
+            data = b""
+    if len(data) > EVENTS_CAP:
+        return {"truncated": True}
+    parts = data.decode("utf-8", errors="replace").split("\n")
+    return fold_events([p + "\n" for p in parts[:-1]] + parts[-1:])
+
+
+def live_round(state: dict[str, Any]) -> int | None:
+    """The round the Review tab follows live: the highest-numbered one, when it has started, has no result,
+    its milestone is not `failed`, and the run is not finished."""
+    rounds = state.get("review") or []
+    if state.get("finished") or not rounds:
+        return None
+    last = max(rounds, key=lambda r: r.get("round", 0))
+    if last.get("started") and not last.get("finished") and last.get("milestone") != "failed":
+        return last.get("round")
+    return None
+
+
+def report_findings(entry: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """(findings, open questions) of a finished round: the full objects of its report at entry["report"], body
+    and fix capped (fold_finding); the state's summaries, without body or fix, when the report cannot be read."""
+    try:
+        report = load_report(Path(entry["report"]))
+        found, questions = report["findings"], report.get("open_questions")
+    except (MtError, KeyError, TypeError):
+        found, questions = entry.get("findings"), entry.get("questions")
+
+    def full(items: Any) -> list[dict[str, Any]]:
+        raw = [f for f in items if isinstance(f, dict)] if isinstance(items, list) else []
+        return [fold_finding({**f, "id": str(f.get("id") or "")}, "") for f in raw]
+
+    return full(found), full(questions)
+
+
+def round_payload(run: Path, entry: dict[str, Any], live: bool) -> dict[str, Any]:
+    """One round of the review payload. state: done (it has a result), running (the live round) or failed
+    (no result and no longer followed: its wait failed, a later round replaced it, or the run ended)."""
+    n = entry.get("round")
+    events = events_path(entry)
+    snap = round_snapshot(events)
+    findings: list[dict[str, Any]] = []
+    questions: list[dict[str, Any]] = []
+    if entry.get("finished"):
+        status = "done"
+        findings, questions = report_findings(entry)
+    else:
+        status = "running" if live else "failed"
+    return {
+        "round": n,
+        "run": entry.get("run") or "",
+        "state": status,
+        "verdict": entry.get("verdict"),
+        "milestone": entry.get("milestone") or "",
+        "counts": {sev: entry.get(sev) or 0 for sev in SEVERITIES},
+        "findings": findings,
+        "questions": questions,
+        "not_gating": entry.get("not_gating") or [],
+        "deferred": entry.get("deferred") or [],
+        "dropped": snap.get("dropped") or [],
+        "degraded": entry.get("degraded") or [],
+        "confirming": bool(entry.get("confirming")),
+        "started": entry.get("started"),
+        "finished": entry.get("finished"),
+        "duration": entry.get("duration"),
+        "events": str(events) if events else "",
+        "log": str(report_path(run, n).with_suffix(".log")) if isinstance(n, int) else "",
+        "live": snap if live else None,
+    }
+
+
+def review_payload(run: Path, state: dict[str, Any]) -> dict[str, Any]:
+    """artifacts/review.js's data, {rounds}, rebuilt from three sources each time: the state's round entries,
+    each finished round's report (report_findings) and each round's events.jsonl (round_snapshot): `dropped`
+    for every round, `live` the whole snapshot for the live round (live_round), None for the others. Bodies
+    and fixes come from the files only, never from state.json."""
+    live = live_round(state)
+    rounds = sorted(state.get("review") or [], key=lambda r: r.get("round", 0))
+    return {"rounds": [round_payload(run, r, live is not None and r.get("round") == live) for r in rounds]}
+
+
+def live_summary(snap: dict[str, Any]) -> dict[str, Any]:
+    """The live round's summary kept in its state entry as `live`, for the dashboard: stage, the stages seen,
+    agents done (or degraded) of all, counts by severity, the latest activity and the latest event time."""
+    if snap.get("truncated"):
+        return {"truncated": True}
+    agents = snap["agents"]
+    return {
+        "format_ok": snap["format_ok"],
+        "stage": snap["stage"],
+        "stages": [s["name"] for s in snap["stages"]],
+        "agents_done": sum(1 for a in agents if a["state"] in AGENT_FINISHED),
+        "agents": len(agents),
+        "counts": snap["counts"],
+        "activity": snap["activity"],
+        "updated": snap["updated"],
+    }
+
+
+def write_review_data(run: Path, state: dict[str, Any]) -> dict[str, Any]:
+    """Register the review artifact (source review.md, which render_changed skips until `review result`
+    writes it) and rewrite artifacts/review.js through artifact_payload; a write failure is a warning.
+    Returns the payload."""
+    art = register_artifact(state, "review", str(run / "review.md"), REVIEW_HINT)
+    payload = artifact_payload(run, state, art) or {"rounds": []}
+    try:
+        write_artifact_data(run, "review", payload)
+    except OSError as e:
+        warn(f"artifact review: cannot write {run / 'artifacts' / 'review.js'}: {e}")
+    return payload
 
 
 def review_poll() -> float:
@@ -1722,27 +2380,43 @@ def cmd_review_wait(args: argparse.Namespace) -> int:
     poll = review_poll()
     end = time.monotonic() + args.deadline
     last = entry.get("milestone")
+    seen: tuple[int, int] | None | Literal[False] = False  # events.jsonl's signature at the last fold
+    events_mark = last
     while True:
         alive = process_alive(task, name)
-        mark = milestone(read_events(events_file))
-        outcome = None
+        sig = events_signature(events_file)
+        fresh = sig != seen
+        if fresh:
+            events_mark, seen = milestone(read_events(events_file)), sig
+        mark, outcome = events_mark, None
         if not alive:
             try:
                 load_report(report)
                 outcome, mark = "done", "report ready"
             except MtError:
                 outcome, mark = "failed", "failed"
-        if mark != last:
+        if fresh or mark != last:
+            # the events (or the outcome) changed: the Review tab's data, and the round's milestone and
+            # summary in the state when they changed
             state = load(run)
             entry = review_round(state, n)
             if entry is None:
                 raise MtError(f"review wait: round {n} disappeared from the state")
-            entry["milestone"] = mark
-            state["activity"] = f"Review round {n} · {mark}"
-            state["now_kind"] = ""
-            if outcome == "failed":
-                add_event(state, f"Review round {n} failed · no report from {name}")
-            save(run, state)
+            changed = mark != last
+            if changed:
+                entry["milestone"] = mark
+                state["activity"] = f"Review round {n} · {mark}"
+                state["now_kind"] = ""
+                if outcome == "failed":
+                    add_event(state, f"Review round {n} failed · no report from {name}")
+            payload = write_review_data(run, state)
+            snap = next((r["live"] for r in payload["rounds"] if r["round"] == n and r["live"]), None)
+            summary = live_summary(snap) if snap is not None else None
+            if summary is not None and summary != entry.get("live"):
+                entry["live"] = summary
+                changed = True
+            if changed:
+                save(run, state)
             last = mark
         if outcome:
             print(outcome)
@@ -1873,7 +2547,8 @@ def cmd_review_result(args: argparse.Namespace) -> int:
     entry = review_round(state, n)
     if entry is None:
         raise MtError(f"review result: round {n} was never started (run `mt review start --round {n}` first)")
-    report = load_report(Path(os.path.abspath(args.file)))
+    report_file = Path(os.path.abspath(args.file))
+    report = load_report(report_file)
     findings = [finding_summary(f) for f in report["findings"]]
     ids = {f["id"] for f in findings}
     unknown = sorted((set(not_gating) | set(deferred)) - ids)
@@ -1911,6 +2586,7 @@ def cmd_review_result(args: argparse.Namespace) -> int:
     t = now()
     entry.update(
         **counts,
+        report=str(report_file),  # the Review tab reads the full findings from the report the result came from
         open_questions=len(questions),
         degraded=degraded,
         verdict=verdict,
@@ -1933,8 +2609,11 @@ def cmd_review_result(args: argparse.Namespace) -> int:
         atomic_write(md, review_markdown(state))
     except OSError as e:
         raise MtError(f"review result: cannot write {md}: {e}") from e
-    art = register_artifact(state, "review", str(md), "revmux review rounds")
-    warning = render_artifact(run, art)
+    art = register_artifact(state, "review", str(md), REVIEW_HINT)
+    # review.md was just rewritten, maybe within the clock tick of the last render: render the page and
+    # rewrite the data (the round now `done`, through artifact_payload) whatever its mtime says
+    art["mtime"] = 0
+    warning = render_artifact(run, state, art)
     if warning:
         warn(warning)
     save(run, state)
@@ -2080,258 +2759,6 @@ def cmd_review_verify_final(args: argparse.Namespace) -> int:
     save(run, state)
     print("changed" if stale else "unchanged")
     return 0
-
-
-# ---------------------------------------------------------------- question cards
-
-MAX_OPTIONS = 4  # the AskUserQuestion fallback carries at most 4
-RESERVED_OPTION_IDS = ("other", "delegate")
-
-
-def card_text(card: dict[str, Any], key: str, where: str, required: bool = False) -> str:
-    value = card.get(key)
-    if value is None and not required:
-        return ""
-    if not isinstance(value, str) or (required and not value.strip()):
-        raise MtError(f"ask: {where}{key} must be a {'non-empty ' if required else ''}string")
-    return value.strip() if required else value
-
-
-def validate_card(data: Any) -> dict[str, Any]:
-    """The card with defaults filled in; MtError names the first problem.
-
-    1-4 options, unique non-empty ids (not `other` or `delegate`, which the answer uses),
-    non-empty labels, exactly one recommended; pro, con, context and phase are optional strings.
-    """
-    if not isinstance(data, dict):
-        raise MtError("ask: the card must be a JSON object")
-    card: dict[str, Any] = {
-        "phase": card_text(data, "phase", ""),
-        "title": card_text(data, "title", "", required=True),
-        "context": card_text(data, "context", ""),
-    }
-    allow_other = data.get("allow_other", True)
-    if not isinstance(allow_other, bool):
-        raise MtError("ask: allow_other must be true or false")
-    card["allow_other"] = allow_other
-    options = data.get("options")
-    if not isinstance(options, list) or not 1 <= len(options) <= MAX_OPTIONS:
-        count = len(options) if isinstance(options, list) else "no"
-        raise MtError(f"ask: a card needs 1 to {MAX_OPTIONS} options, got {count}")
-    out: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for i, o in enumerate(options, 1):
-        where = f"option {i}: "
-        if not isinstance(o, dict):
-            raise MtError(f"ask: {where}must be a JSON object")
-        oid = card_text(o, "id", where, required=True)
-        if oid in RESERVED_OPTION_IDS:
-            raise MtError(f"ask: {where}id {oid!r} is reserved ({', '.join(RESERVED_OPTION_IDS)})")
-        if oid in seen:
-            raise MtError(f"ask: duplicate option id {oid!r}")
-        seen.add(oid)
-        rec = o.get("recommended", False)
-        if not isinstance(rec, bool):
-            raise MtError(f"ask: {where}recommended must be true or false")
-        out.append(
-            {
-                "id": oid,
-                "label": card_text(o, "label", where, required=True),
-                "pro": card_text(o, "pro", where),
-                "con": card_text(o, "con", where),
-                "recommended": rec,
-            }
-        )
-    recommended = sum(o["recommended"] for o in out)
-    if recommended != 1:
-        raise MtError(f"ask: exactly one option must be recommended, got {recommended}")
-    card["options"] = out
-    return card
-
-
-def render_context(text: str) -> str:
-    """Markdown to HTML with raw HTML disabled (markdown-it also refuses javascript: links)."""
-    from markdown_it import MarkdownIt
-
-    return MarkdownIt("commonmark", {"html": False}).render(text) if text.strip() else ""
-
-
-def script_json(data: Any) -> str:
-    """JSON safe inside a <script> element: every `<`, `>` and `&` as a \\u escape (covers `</` and `<!--`)."""
-    body = json.dumps(data, ensure_ascii=False)
-    return body.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
-
-
-def card_page(card: dict[str, Any], n: int, run_title: str) -> str:
-    """cards/<n>.html: assets/card.html with its title and the embedded card JSON filled in."""
-    try:
-        template = (ASSETS / "card.html").read_text(encoding="utf-8")
-    except OSError as e:
-        raise MtError(f"ask: cannot read {ASSETS / 'card.html'}: {e}") from e
-    labels = dict(PHASES)
-    who = labels.get(card["phase"], card["phase"]) or "make-task"
-    embedded = {
-        "n": n,
-        "from": f"{who} needs your call",
-        "run_title": run_title,
-        "title": card["title"],
-        "context_html": render_context(card["context"]),
-        "options": card["options"],
-        "allow_other": card["allow_other"],
-    }
-    page = template.replace("{{TITLE}}", f"make-task question {n}")
-    return page.replace("{{CARD}}", script_json(embedded))
-
-
-def next_card_number(cards: Path) -> int:
-    numbers = [int(p.stem) for p in cards.glob("*.json") if p.stem.isdigit()] if cards.is_dir() else []
-    return max(numbers, default=0) + 1
-
-
-def ask_deadline() -> float:
-    raw = os.environ.get("MT_ASK_DEADLINE")
-    if not raw:
-        return ASK_DEADLINE
-    try:
-        value = float(raw)
-    except ValueError:
-        value = 0
-    if value <= 0:
-        raise MtError(f"ask: MT_ASK_DEADLINE must be a positive number of seconds, got {raw!r}")
-    return value
-
-
-def block_outcome(out: str) -> tuple[str | None, Any]:
-    """(outcome, value) from `overlay open --block` output; (None, None) when it does not parse."""
-    try:
-        reply = json.loads(out.strip().splitlines()[-1]) if out.strip() else None
-    except ValueError:
-        return None, None
-    if isinstance(reply, dict) and "outcome" not in reply and isinstance(reply.get("result"), dict):
-        reply = reply["result"]
-    if not isinstance(reply, dict):
-        return None, None
-    return reply.get("outcome"), reply.get("value")
-
-
-def normalize_answer(card: dict[str, Any], value: Any) -> dict[str, Any] | None:
-    """The page's submitted value as mt's answer, or None when it is not a valid answer to this card."""
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except ValueError:
-            return None
-    if not isinstance(value, dict):
-        return None
-    choice = value.get("choice")
-    if choice == "delegate":
-        rec = next(o for o in card["options"] if o["recommended"])
-        return {"choice": "delegate", "id": rec["id"]}
-    if choice == "other":
-        text = value.get("text")
-        if card["allow_other"] and isinstance(text, str) and text.strip():
-            return {"choice": "other", "text": text.strip()}
-        return None
-    if any(o["id"] == choice for o in card["options"]):
-        return {"choice": choice}
-    return None
-
-
-def cmd_ask(args: argparse.Namespace) -> int:
-    """Show a question card, wait for it, print the normalized answer.
-
-    0 + the answer (a decision is recorded, or an assumption for delegate); 2 + {"choice": null}
-    when the card was dismissed, the deadline passed or the answer was unusable; 3 + {"choice": null}
-    when the card cannot be shown (not in agterm, the run has no agterm, MT_NO_CARDS, or agtermctl failed).
-    """
-    path = Path(args.card).expanduser()
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except OSError as e:
-        raise MtError(f"ask: cannot read {path}: {e.strerror or e}") from e
-    except ValueError as e:
-        raise MtError(f"ask: {path} is not valid JSON: {e}") from e
-    card = validate_card(data)
-    deadline = ask_deadline()
-    run = resolve_run(args.run)
-    state = load(run)
-    none = json.dumps({"choice": None})
-
-    if cards_disabled():
-        warn("ask: question cards are off (MT_NO_CARDS); ask in the terminal")
-        print(none)
-        return 3
-    sid = agterm_session()
-    if sid is None or not state.get("agterm"):
-        print(none)
-        return 3
-
-    cards = run / "cards"
-    try:
-        cards.mkdir(exist_ok=True)
-        n = next_card_number(cards)
-        page = cards / f"{n}.html"
-        atomic_write(cards / f"{n}.json", json.dumps(card, ensure_ascii=False, indent=1) + "\n")
-        atomic_write(page, card_page(card, n, state.get("title") or ""))
-    except OSError as e:
-        raise MtError(f"ask: cannot write the card in {cards}: {e}") from e
-
-    prev_activity, prev_kind = state.get("activity"), state.get("now_kind") or ""
-    waiting = f"Waiting for your answer · {card['title']}"
-    state["activity"], state["now_kind"] = waiting, "wait"
-    add_event(state, f"Question {n}: {card['title']}")
-    save(run, state)
-    set_status(state, "blocked", sound="default", timeout=ASK_CALL_TIMEOUT)
-
-    r = agtermctl(
-        "session", "overlay", "open", "--html", str(page), "--js", "--chromeless",
-        "--size-percent", "85", "--block", "--follow", "--target", sid,
-        timeout=deadline,
-    )  # fmt: skip
-    if r.timed_out:
-        c = agtermctl("session", "overlay", "close", "--target", sid, timeout=ASK_CALL_TIMEOUT)
-        if not c.ok:
-            warn(f"agtermctl session overlay close: {c.why()}")
-    set_status(state, "active", timeout=ASK_CALL_TIMEOUT)
-
-    outcome, value = (None, None) if r.timed_out else block_outcome(r.out)
-    answer: dict[str, Any] | None = None
-    code = 2
-    if r.timed_out:
-        note = f"Question {n} expired after {deadline:g}s"
-    elif r.code == 2 or outcome == "dismissed":
-        note = f"Question {n} dismissed"
-    elif r.ok and outcome == "submitted":
-        answer = normalize_answer(card, value)
-        note = f"Question {n}: unusable answer {value!r}"
-        if answer is None:
-            warn(f"card {n} returned an answer that does not fit the card: {value!r}")
-    else:
-        code = 3
-        note = f"Question {n} could not be shown"
-        warn(f"agtermctl session overlay open: {r.why()}")
-
-    state = load(run)
-    if state.get("activity") == waiting:
-        state["activity"], state["now_kind"] = prev_activity, prev_kind
-    if answer is not None:
-        code = 0
-        if answer["choice"] == "other":
-            text = answer["text"]
-            state.setdefault("decisions", []).append({"q": card["title"], "a": text})
-        else:
-            oid = answer["id"] if answer["choice"] == "delegate" else answer["choice"]
-            text = next(o["label"] for o in card["options"] if o["id"] == oid)
-            if answer["choice"] == "delegate":
-                why = "delegated on the card (Decide for me): took the recommended option"
-                state.setdefault("assumptions", []).append({"text": f"{card['title']} → {text}", "why": why})
-            else:
-                state.setdefault("decisions", []).append({"q": card["title"], "a": text})
-        note = f"Answer {n}: {text}"
-    add_event(state, note)
-    save(run, state)
-    print(json.dumps(answer, ensure_ascii=False) if answer is not None else none)
-    return code
 
 
 # ---------------------------------------------------------------- .revmux/ working copies
@@ -2666,7 +3093,7 @@ AUTONOMY_PRESETS: dict[str, tuple[str, ...]] = {
     "default": (),
     "interactive": GATES,
 }
-# `defaults` answer the worktree and leftovers cards under `autonomous`; defaults.mode goes to `mt set mode=`
+# `defaults` answer the worktree and leftovers questions under `autonomous`; defaults.mode goes to `mt set mode=`
 DEFAULTS_CHOICES = {"mode": SET_CHOICES["mode"], "leftovers": ("leave", "fix")}
 PROFILE_KEYS = ("schema", "template", "autonomy", "gates", "defaults", "phases")
 # the path variables a profile install rewrites (import, install-default, fetch)
@@ -4199,18 +4626,6 @@ def build_parser() -> argparse.ArgumentParser:
     r.set_defaults(func=cmd_review_result)
     v = rv.add_parser("verify-final", help="check that finalize kept the reviewed content (rebased)")
     v.set_defaults(func=cmd_review_verify_final)
-
-    p = sub.add_parser(
-        "ask",
-        help="show a question card (1-4 options) and print the answer (exit 0 answered, 2 dismissed/expired, "
-        "3 not shown: not in agterm, a run without agterm, or agtermctl failed)",
-    )
-    p.add_argument(
-        "card",
-        metavar="CARD.json",
-        help='{"phase","title","context","options":[{"id","label","pro","con","recommended"}],"allow_other"}',
-    )
-    p.set_defaults(func=cmd_ask)
 
     p = sub.add_parser("done", help="finish the run with a final status; sidebar status completed")
     p.add_argument(

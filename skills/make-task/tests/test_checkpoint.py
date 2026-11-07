@@ -7,7 +7,7 @@ import stat
 from pathlib import Path
 
 import pytest
-from conftest import init_run
+from conftest import RUN_FILES, init_run
 
 
 def checkpoint(state: dict, key: str) -> dict:
@@ -214,7 +214,7 @@ def test_write_failure_read_only_run_dir(mt, git_repo, run_state, read_only, arg
     assert r.err.splitlines()[-1].startswith("mt: error: cannot write state in ")
     assert str(run) in r.err
     assert run_state(run) == before
-    assert sorted(p.name for p in run.iterdir()) == ["dashboard.html", "state.js", "state.json"]
+    assert sorted(p.name for p in run.iterdir()) == RUN_FILES
 
 
 def test_corrupt_state_json(mt, git_repo):

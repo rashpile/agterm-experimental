@@ -103,7 +103,7 @@ def test_degraded_round_blocks_clean_until_a_rerun_is_clean(mt, git_repo, tmp_pa
     assert run_state(run)["review"][0]["verdict"] == "degraded"
     assert mt("fail", "round 1 degraded").code == 0
     refuse_clean(mt, "last review round was degraded", "error state")
-    # the error card's rerun: mt activity resumes, the re-run is a new round
+    # the error question's rerun: mt activity resumes, the re-run is a new round
     assert mt("activity", "Review · re-running round 1 as round 2").code == 0
     flags = [x for i in GATING for x in ("--not-gating", f"{i}=x")]
     round_(mt, tmp_path, 2, FINDINGS, *flags)
@@ -137,7 +137,7 @@ def test_crashed_confirming_round_blocks_clean(mt, git_repo, tmp_path):
 
 
 def leftovers_fix(mt, repo: Path) -> str:
-    """The leftovers card's `fix`: one fixer between the checkpoint pair, committing a fix."""
+    """The leftovers question's `fix`: one fixer between the checkpoint pair, committing a fix."""
     assert mt("checkpoint", "begin", "review.fix.leftovers").code == 0
     (repo / "src" / "a.txt").write_text("a\nfixed minor\n")
     sha = commit(repo, "fix: leftovers")
@@ -214,7 +214,7 @@ def test_degraded_confirming_round_ends_not_clean(mt, git_repo, tmp_path, run_st
     round_(mt, tmp_path, 1, FINDINGS, "--deferred", "adversarial-1=prose", "--not-gating", "adversarial-2=vendor")
     assert mt("set", "stop_reason=not-converging").code == 0
     assert [d["id"] for d in run_state(run)["deferred"]] == ["adversarial-1"]
-    # leftovers card → fix → one confirming round, which comes back degraded
+    # leftovers question → fix → one confirming round, which comes back degraded
     round_(mt, tmp_path, 2, DEGRADED, "--confirming")
     assert mt("set", "stop_reason=degraded").code == 0
     st = run_state(run)
@@ -245,27 +245,24 @@ def test_stale_review_after_finalize_without_origin(mt, git_repo, run_state):
 # ---------------------------------------------------------------- outside agterm
 
 
-def test_outside_agterm_two_runs_share_the_pointer_and_run_flag_keeps_them_apart(
-    mt, git_repo, tmp_path, isolate, run_state
-):
+def test_outside_agterm_two_runs_share_the_pointer_and_run_flag_keeps_them_apart(mt, git_repo, isolate, run_state):
     first = Path(init(mt, git_repo)["state_dir"])
     assert init(mt, git_repo)["agterm"] is False
     second = Path((isolate.state_home / "current-default").read_text().strip())
     assert second != first, "the second run took over current-default"
     for args in (("phase", "brainstorm"), ("assume", "x", "--why", "y"), ("phase", "plan")):
         assert mt("--run", str(first), *args).code == 0
-    card = tmp_path / "ask.json"
-    card.write_text(json.dumps({"phase": "brainstorm", "title": "Q?", "options": [{"id": "a", "label": "A",
-                                "recommended": True}, {"id": "b", "label": "B"}]}))  # fmt: skip
-    r = mt("--run", str(first), "ask", str(card))
-    assert r.code == 3 and json.loads(r.out) == {"choice": None}
+    # a question is an AskUserQuestion in the terminal: the wait is marked, then the answer recorded
+    assert mt("--run", str(first), "activity", "Waiting for your answer · Q?", "--wait").code == 0
+    assert run_state(first)["now_kind"] == "wait"
     assert mt("--run", str(first), "decide", "Q?", "b").code == 0
+    assert mt("--run", str(first), "activity", "Plan · drafting").code == 0
+    assert run_state(first)["now_kind"] == "" and run_state(second)["now_kind"] == ""
     assert mt("--run", str(first), "done", "--status", "stopped").code == 0
     one, two = run_state(first), run_state(second)
     assert one["final_status"] == "stopped" and one["decisions"] == [{"q": "Q?", "a": "b"}]
     assert two["final_status"] is None and two["decisions"] == [] and two["assumptions"] == []
     assert isolate.agterm_calls() == []
-    assert not (first / "cards").exists() or not any((first / "cards").iterdir()), "exit 3 writes no card"
 
 
 # ---------------------------------------------------------------- dirty tree, worktree mode

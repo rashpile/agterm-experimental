@@ -2967,7 +2967,12 @@ TEMPLATE_EDITS = [
         "Every question goes to the orchestrator's question handling, never straight to AskUserQuestion",
         True,
     ),
-    ("brainstorm questions on cards", "brainstorm/skills/brainstorm/SKILL.md", "make-task's question cards", True),
+    (
+        "brainstorm questions as make-task's own",
+        "brainstorm/skills/brainstorm/SKILL.md",
+        "asks it as one of make-task's questions",
+        True,
+    ),
     # brainstorm Phase 2: the approach is asked only when it needs the user's knowledge or taste
     (
         "brainstorm approach asked on knowledge or taste only",
@@ -3052,8 +3057,13 @@ TEMPLATE_EDITS = [
     ),
     ("plan principle no let user decide", "planning/commands/make.md", "but let user decide", False),
     ("plan principle no ask user", "planning/commands/make.md", "when code repeats, ask user", False),
-    # revmux non-negotiable 0: the user's answer is make-task's own card, not a question per round
-    ("revmux answer is a card", "revmux/SKILL.md", "**Under make-task that answer is make-task's own card**", True),
+    # revmux non-negotiable 0: the user's answer is make-task's own question, not this skill's question per round
+    (
+        "revmux answer is make-task's question",
+        "revmux/SKILL.md",
+        "**Under make-task that answer is make-task's own question**",
+        True,
+    ),
     # revmux Step 0: preflight already ran at make-task's start; once more with round 1's profile
     ("revmux preflight already ran", "revmux/SKILL.md", "**Under make-task preflight already ran**", True),
     ("revmux preflight round 1 profile", "revmux/SKILL.md", "with the profile Step 3 picks for round 1", True),
@@ -3093,18 +3103,23 @@ TEMPLATE_EDITS = [
         "Under make-task that cumulative diff starts at",
         True,
     ),
-    # revmux loop.md: the closing question is the leftovers card, whose fix gets one confirming round
+    # revmux loop.md: the closing question is the leftovers question, whose fix gets one confirming round
     (
         "revmux loop no closing question",
         "revmux/references/loop.md",
         "**Under make-task the closing question below is not asked.**",
         True,
     ),
-    ("revmux loop leftovers card", "revmux/references/loop.md", "make-task's leftovers card replaces it", True),
+    (
+        "revmux loop leftovers question",
+        "revmux/references/loop.md",
+        "make-task's leftovers question replaces it",
+        True,
+    ),
     (
         "revmux loop confirming round",
         "revmux/references/loop.md",
-        "**Under make-task one review round does run after the leftovers card.**",
+        "**Under make-task one review round does run after the leftovers question.**",
         True,
     ),
     (
@@ -3157,7 +3172,7 @@ def test_mt_command_pattern(text: str, hit: bool) -> None:
 
 
 def test_template_companions_name_no_mt_command() -> None:
-    """Copies say "the orchestrator", "make-task's question cards", "record it as an assumption"; the `mt` calls
+    """Copies say "the orchestrator", "make-task's questions", "record it as an assumption"; the `mt` calls
     stay in SKILL.md."""
     pattern = mt_command_re()
     hits = []
@@ -3213,7 +3228,7 @@ def test_template_changes_name_every_edited_file() -> None:
 
 def test_template_revmux_copy_keeps_the_safety_non_negotiables() -> None:
     """make-task's overrides never relax a safety rule: revmux non-negotiables 1, 3, 4, 5 and 6 read as upstream's
-    (0 gives way to make-task's cards, 2 holds through make-task's own wait)."""
+    (0 gives way to make-task's questions, 2 holds through make-task's own wait)."""
 
     def rules(root: Path) -> dict[str, str]:
         text = (root / "revmux" / "SKILL.md").read_text(encoding="utf-8")

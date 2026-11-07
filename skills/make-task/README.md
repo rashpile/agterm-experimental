@@ -1,5 +1,5 @@
 # make-task
-Run one development task end to end: brainstorm, plan, plan review, task-by-task execution, revmux review loop, finalize. Inside agterm it shows a live dashboard and asks questions with floating cards.
+Run one development task end to end: brainstorm, plan, plan review, task-by-task execution, revmux review loop, finalize. Inside agterm it shows a live dashboard, and its buttons open the viewer: one page with the tabs Design, Plan, Progress, Review and Stats, updated while the run goes on. The Review tab follows a running revmux round live (stages, agents, findings). Closing the viewer never affects the run. Every question is an `AskUserQuestion` in the terminal, in agterm or not, also in a remote session.
 
 **Usage:** `/make-task [--profile=<name>] [--update] [task text]`. Without `--profile` the profile is `default`.
 
@@ -15,11 +15,11 @@ The first run installs `default` and asks one question, the autonomy. `--update`
 - `uv`: every `scripts/mt` call is `uv run -q --script …`
 - for the review: the `revmux` CLI on PATH, `jq`, and the model CLIs (`claude`, `codex`) its review profile names; the copy's `preflight.sh` checks them. Without them the review is skipped and the run ends `review skipped`, never `clean`
 - no umputun or revmux plugin: the profile's copies take their place
-- optional: agterm for the dashboard and question cards (outside agterm, or with `MT_NO_CARDS=1`, questions come as `AskUserQuestion`); `revdiff` for the Changes button (disabled without it); the `view` skill at `~/.claude/skills/view/scripts/view.py`, or `MT_VIEW`, to render artifacts (a plugin-installed `view` is not found; without a renderer the artifact buttons stay disabled); network access for a companion with a `git:` source (`--update` only); `gh` to file an issue proposal
+- optional: agterm for the dashboard, the viewer and the sidebar status; `revdiff` for the Changes button (disabled without it); network access for a companion with a `git:` source (`--update` only); `gh` to file an issue proposal
 
 **What it changes:**
 - the first run creates `~/.config/make-task/profiles/default/`; `--update` and the interview edit `profile.md` and `UPDATE.md` there
-- run state under `${MT_STATE_HOME:-${XDG_STATE_HOME:-~/.local/state}/make-task}/<repo>-<slug>-<date>` (dashboard, cards, rendered artifacts)
+- run state under `${MT_STATE_HOME:-${XDG_STATE_HOME:-~/.local/state}/make-task}/<repo>-<slug>-<date>` (dashboard, viewer pages, rendered artifacts and the data scripts the viewer reads)
 - a feature branch, plus a worktree under `.claude/worktrees/` when you choose one
 - in place on a dirty tree: your dirty paths are stashed before execution and restored at the end (also when the run stops); only make-task's own stash entry is touched
 - `.revmux/tasks/` is appended to `.git/info/exclude` when it is not ignored

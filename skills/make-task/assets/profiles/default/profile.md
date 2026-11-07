@@ -14,7 +14,7 @@ phases:
 
 # default profile
 
-make-task's `default` profile: today's phases and cards, with copies of the brainstorm, planning and
+make-task's `default` profile: today's phases and questions, with copies of the brainstorm, planning and
 revmux skills. A `## <phase>` section added below (`## brainstorm`, `## plan`, `## exec`, `## review`)
 gives that phase more instructions. They take precedence over the phase's companion text, never over
 make-task's own rules.

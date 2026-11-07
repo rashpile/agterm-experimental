@@ -1,4 +1,4 @@
-"""Plan parsing, `mt plan` and `mt refresh`."""
+"""Plan parsing, `mt plan`, `mt refresh` and the plan's data script."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from conftest import FIXTURES, MT, git, init_run
+from test_artifacts import artifact_data, bump_mtime
 
 PLAN_REL = "docs/plans/20261029-session-store.md"
 
@@ -34,33 +35,136 @@ def by_n(state: dict) -> dict[int, dict]:
     return {t["n"]: t for t in state["tasks"]}
 
 
+def counts(text: str) -> list[dict]:
+    """parse_plan without the items, after checking that the counts are the items'."""
+    out = []
+    for task in MT.parse_plan(text):
+        items = task.pop("items")
+        assert (task["done"], task["total"]) == (sum(i["checked"] for i in items), len(items)), task
+        out.append(task)
+    return out
+
+
+def items_of(text: str) -> dict[int, list[tuple[str, bool]]]:
+    return {t["n"]: [(i["text"], i["checked"]) for i in t["items"]] for t in MT.parse_plan(text)}
+
+
+FIXTURE_ITEMS = {
+    1: [
+        ("create the schema", True),
+        ("write the store", True),
+        ("an indented sub-item counts", True),
+        ("a box under a #### subsection still belongs to task 1", False),
+    ],
+    2: [("login handler", True), ("logout handler", False), ("write tests", False)],
+    3: [("tidy the README", False)],
+    4: [("already done", True)],
+}
+
+
 # ---------------------------------------------------------------- parser
 
 
 def test_parse_fixture():
-    tasks = MT.parse_plan((FIXTURES / "plan.md").read_text())
-    assert tasks == [
+    text = (FIXTURES / "plan.md").read_text()
+    assert counts(text) == [
         {"n": 1, "title": "Storage layer", "done": 3, "total": 4},
         {"n": 2, "title": "Login and logout handlers", "done": 1, "total": 3},
         {"n": 3, "title": "Polish", "done": 0, "total": 1},
         {"n": 4, "title": "Done before the run", "done": 1, "total": 1},
     ]
+    assert items_of(text) == FIXTURE_ITEMS
+    assert all(set(i) == {"text", "checked"} for t in MT.parse_plan(text) for i in t["items"])
+
+
+def test_items_of_nested_lists_in_file_order():
+    text = (
+        "### Task 1: A\n"
+        "- [ ] top\n"
+        "  - [x] nested\n"
+        "    - [X] deeper `code`\n"
+        "  - a plain sub-bullet\n"
+        "  continuation of the paragraph\n"
+        "- [ ]   padded text  \n"
+        "- [x]\n"
+        "* [ ] a star bullet\n"
+        "1. [ ] an ordered item\n"
+    )
+    assert items_of(text) == {
+        1: [("top", False), ("nested", True), ("deeper `code`", True), ("padded text", False), ("", True)]
+    }
+
+
+def test_items_skip_boxes_inside_fences():
+    text = (
+        "### Task 1: A\n"
+        "- [ ] before\n"
+        "```markdown\n- [x] backtick fence\n```\n"
+        "~~~\n- [ ] tilde fence\n~~~\n"
+        "- [x] item with an example\n"
+        "  ````\n"
+        "  ```\n"
+        "  - [ ] a longer fence holds a shorter one\n"
+        "  ```\n"
+        "  ````\n"
+        "- [ ] after\n"
+        "```\n- [ ] in a fence never closed\n"
+    )
+    assert items_of(text) == {1: [("before", False), ("item with an example", True), ("after", False)]}
+
+
+def test_items_keep_h4_subsections_and_stop_at_the_section_end():
+    text = (
+        "### Task 1: A\n- [x] one\n#### Notes\n- [ ] in the subsection\n"
+        "### Task 2: B\n#### Only a subsection\n- [ ] two\n"
+        "## Post-Completion\n- [ ] belongs to no task\n"
+    )
+    assert items_of(text) == {1: [("one", True), ("in the subsection", False)], 2: [("two", False)]}
+
+
+def test_task_with_no_boxes_has_no_items():
+    text = "### Task 1: Verify\nRead the code.\n\n- a plain bullet\n### Task 2: B\n- [ ] two\n"
+    assert MT.parse_plan(text)[0] == {"n": 1, "title": "Verify", "done": 0, "total": 0, "items": []}
+
+
+def test_plan_items_by_task_with_inline_html():
+    text = (
+        "### Task 1: A\n- [x] add `mt plan` and **bold**\n- [ ] <script>alert(1)</script> & co\n"
+        "### Task 2: Nothing to tick\n"
+        "### Task 1: A again\n- [ ] the first section with this number wins\n"
+    )
+    assert MT.plan_items(text) == {
+        "1": [
+            {
+                "text": "add `mt plan` and **bold**",
+                "checked": True,
+                "html": "add <code>mt plan</code> and <strong>bold</strong>",
+            },
+            {
+                "text": "<script>alert(1)</script> & co",
+                "checked": False,
+                "html": "&lt;script&gt;alert(1)&lt;/script&gt; &amp; co",
+            },
+        ],
+        "2": [],
+    }
+    assert MT.plan_items("# no tasks\n- [ ] x\n") == {}
 
 
 @pytest.mark.parametrize("end", ["# Top", "## Next", "### Notes"])
 def test_section_ends_at_h1_h2_h3(end):
     text = f"### Task 1: A\n- [ ] one\n{end}\n- [ ] outside\n"
-    assert MT.parse_plan(text) == [{"n": 1, "title": "A", "done": 0, "total": 1}]
+    assert counts(text) == [{"n": 1, "title": "A", "done": 0, "total": 1}]
 
 
 def test_h4_does_not_end_section_and_header_needs_colon():
     text = "### Task 1: A\n#### Sub\n- [x] in sub\n### Task two: no\n- [ ] not a task\n### Task 2 missing colon\n"
-    assert MT.parse_plan(text) == [{"n": 1, "title": "A", "done": 1, "total": 1}]
+    assert counts(text) == [{"n": 1, "title": "A", "done": 1, "total": 1}]
 
 
 def test_tilde_fence_and_unclosed_fence():
     text = "### Task 1: A\n~~~\n## not a header\n- [ ] no\n~~~\n- [ ] yes\n```\n- [ ] never closed\n"
-    assert MT.parse_plan(text) == [{"n": 1, "title": "A", "done": 0, "total": 1}]
+    assert counts(text) == [{"n": 1, "title": "A", "done": 0, "total": 1}]
 
 
 def test_longer_fence_holds_a_shorter_one():
@@ -70,7 +174,7 @@ def test_longer_fence_holds_a_shorter_one():
         "### Task 1: Docs\n- [x] write\n````markdown\n```\n### Task 9: Example\n- [ ] example box\n```\n"
         "````\n- [ ] after the fence\n### Task 2: Real\n- [ ] real\n"
     )
-    assert MT.parse_plan(text) == [
+    assert counts(text) == [
         {"n": 1, "title": "Docs", "done": 1, "total": 2},
         {"n": 2, "title": "Real", "done": 0, "total": 1},
     ]
@@ -87,18 +191,18 @@ def test_longer_fence_holds_a_shorter_one():
 )
 def test_fence_closes_only_on_a_bare_run_of_the_same_char_at_least_as_long(opening, closing):
     text = f"### Task 1: A\n{opening}\n{closing}\n- [ ] inside\n### Task 2: Hidden\n"
-    assert MT.parse_plan(text) == [{"n": 1, "title": "A", "done": 0, "total": 0}]
+    assert counts(text) == [{"n": 1, "title": "A", "done": 0, "total": 0}]
 
 
 @pytest.mark.parametrize(("opening", "closing"), [("~~~", "~~~~~"), ("````", "`````  "), ("  ```", "```")])
 def test_fence_closes_on_a_longer_or_padded_run(opening, closing):
     text = f"### Task 1: A\n{opening}\n- [ ] inside\n{closing}\n- [ ] outside\n"
-    assert MT.parse_plan(text) == [{"n": 1, "title": "A", "done": 0, "total": 1}]
+    assert counts(text) == [{"n": 1, "title": "A", "done": 0, "total": 1}]
 
 
 def test_inline_code_with_backticks_does_not_open_a_fence():
     text = "### Task 1: A\n```code``` inline\n- [ ] counted\n"
-    assert MT.parse_plan(text) == [{"n": 1, "title": "A", "done": 0, "total": 1}]
+    assert counts(text) == [{"n": 1, "title": "A", "done": 0, "total": 1}]
 
 
 def test_plan_with_no_tasks():
@@ -323,3 +427,67 @@ def test_without_active_run(mt, git_repo, args):
     r = mt(*args, cwd=git_repo)
     assert r.code == 1
     assert "no active run" in r.err
+
+
+# ---------------------------------------------------------------- the plan's data script
+
+
+def payload_items(run: Path) -> dict[int, list[tuple[str, bool]]]:
+    data = artifact_data(run, "plan")
+    return {int(n): [(i["text"], i["checked"]) for i in items] for n, items in data["items"].items()}
+
+
+def test_plan_writes_the_plan_payload(mt, git_repo, run_state):
+    run = init_run(mt, git_repo)
+    plan = add_plan(git_repo)
+    assert mt("plan", PLAN_REL, cwd=git_repo).code == 0
+    data = artifact_data(run, "plan")
+    assert sorted(data) == ["html", "items", "source", "title", "toc", "updated"]
+    assert data["title"] == "Session store" and data["source"] == str(plan)
+    assert {"level": 3, "id": "doc-task-1-storage-layer", "text": "Task 1: Storage layer"} in data["toc"]
+    assert payload_items(run) == FIXTURE_ITEMS
+    assert data["items"]["1"][0] == {"text": "create the schema", "checked": True, "html": "create the schema"}
+    assert all("items" not in t for t in run_state(run)["tasks"]), "the items stay out of state.json"
+
+
+def test_plan_payload_takes_its_items_from_the_text_of_its_document(tmp_path):
+    gone = str(tmp_path / "gone.md")  # read again, it would raise
+    doc = {"title": "T", "html": "<p>x</p>", "toc": [], "source": gone}
+    payload = MT.artifact_payload(tmp_path, {}, {"id": "plan", "source": gone}, doc, "### Task 1: A\n- [x] one\n")
+    assert payload == {**doc, "items": {"1": [{"text": "one", "checked": True, "html": "one"}]}}
+    assert "items" not in doc, "the caller's document stays as it was"
+
+
+def test_artifact_plan_writes_the_plan_payload(mt, git_repo):
+    run = init_run(mt, git_repo)
+    plan = add_plan(git_repo)
+    assert mt("artifact", "plan", str(plan), cwd=git_repo).code == 0
+    assert payload_items(run) == FIXTURE_ITEMS
+
+
+def test_a_ticked_box_writes_the_plan_payload_again_with_items(mt, git_repo, run_state):
+    run = init_run(mt, git_repo)
+    plan = add_plan(git_repo)
+    assert mt("plan", PLAN_REL, cwd=git_repo).code == 0
+    (run / "artifacts" / "plan.js").unlink()
+    assert mt("refresh", cwd=git_repo).code == 0
+    first = artifact_data(run, "plan")
+    assert payload_items(run) == FIXTURE_ITEMS, "mt refresh writes a missing data script"
+
+    check_all(plan, "### Task 1:")
+    bump_mtime(plan)
+    assert mt("refresh", cwd=git_repo).code == 0
+    data = artifact_data(run, "plan")
+    assert sorted(data) == sorted(first) and data["updated"] > first["updated"]
+    assert payload_items(run)[1] == [(text, True) for text, _ in FIXTURE_ITEMS[1]]
+    assert data["items"]["2"] == first["items"]["2"]
+
+    # render_changed, which every command that renders goes through, keeps the plan's shape
+    check_all(plan, "### Task 2:")
+    bump_mtime(plan, 20)
+    state = run_state(run)
+    MT.render_changed(run, state)
+    data = artifact_data(run, "plan")
+    assert sorted(data) == sorted(first), "never the document-only shape"
+    assert payload_items(run)[2] == [(text, True) for text, _ in FIXTURE_ITEMS[2]]
+    assert next(a for a in state["artifacts"] if a["id"] == "plan")["mtime"] == plan.stat().st_mtime

@@ -39,7 +39,7 @@ project-level rules (`.claude/brainstorm-rules.md`) take precedence over user-le
 Check project context first, then ask questions one at a time:
 
 1. **Gather context** - check files, docs, recent commits relevant to the idea
-2. **Ask questions one at a time** - prefer multiple choice when possible. Every question goes to the orchestrator's question handling, never straight to AskUserQuestion. The orchestrator either decides it and records it as an assumption or asks it on make-task's question cards, one at a time
+2. **Ask questions one at a time** - prefer multiple choice when possible. Every question goes to the orchestrator's question handling, never straight to AskUserQuestion. The orchestrator either decides it and records it as an assumption or asks it as one of make-task's questions, one at a time
 3. **Focus on**: purpose, constraints, success criteria, integration points
 
 Do not overwhelm with multiple questions. One question per message. If a topic needs more exploration, break it into multiple questions.
