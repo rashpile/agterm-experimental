@@ -13,9 +13,10 @@
   but a <script src> beside the page loads, so it re-injects state.js (`window.mtState(<json>)`) and
   the current tab's artifacts/<id>.js (`window.mtArtifact("<id>", {...})`) every 1.5 s.
   A tab re-renders only when its payload's `updated` changed, or what else it shows did: the Plan tab
-  joins the payload's checklist items with the state's tasks, the Progress tab has its filter. Scroll
-  positions, expanded items and the filter live in this script (never read back from the DOM), so a
-  re-render keeps them.
+  joins the payload's checklist items with the state's tasks, the Progress tab has its filter, the
+  Review tab the round picked in its strip and whether the live round went quiet for 30 s. Scroll
+  positions, expanded items, the filter and the picked round live in this script (never read back from
+  the DOM), so a re-render keeps them.
   Document HTML is mt's markdown-it output with raw HTML off and goes in as HTML; every other string
   is escaped. Colors come only from the --agterm-* variables agterm injects (never declared here).
 -->
@@ -76,15 +77,23 @@
     font: 12px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere;
   }
 
-  /* status band, as in the dashboard */
+  /* status band, as in the dashboard: icon, text, then whatever the tab puts after it */
   .now {
     margin: 0 0 14px; padding: 10px 12px; border-radius: 8px;
     background: color-mix(in srgb, var(--run) 12%, transparent);
-    display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center;
+    display: grid; grid-auto-flow: column; grid-template-columns: auto 1fr; grid-auto-columns: auto; gap: 12px; align-items: center;
   }
-  .now .text { font-weight: 500; overflow-wrap: anywhere; }
-  .now .clock { color: var(--dim); font-size: 12.5px; }
+  .now .text { font-weight: 500; overflow-wrap: anywhere; min-width: 0; }
+  .now .sub { display: block; color: var(--dim); font-weight: 400; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .now .clock, .now .fresh { color: var(--dim); font-size: 12.5px; white-space: nowrap; }
+  .now .fresh.stale { color: var(--warn); }
   .now.done { background: color-mix(in srgb, var(--ok) 12%, transparent); }
+  .now.warn { background: color-mix(in srgb, var(--warn) 14%, transparent); }
+  .now.error { background: color-mix(in srgb, var(--bad) 14%, transparent); }
+  .warnline {
+    margin: 0 0 12px; padding-left: 10px; font-size: 12.5px; overflow-wrap: anywhere;
+    border-left: 2px solid color-mix(in srgb, var(--warn) 70%, transparent);
+  }
 
   /* section headings outside the rendered document */
   h2.sect { font-size: 13px; font-weight: 600; margin: 18px 0 8px; color: var(--dim); display: flex; gap: 10px; align-items: baseline; }
@@ -149,6 +158,72 @@
   .tl .rev .tag { color: var(--run); }
   .tl .kids { list-style: none; margin: 2px 0 0; padding: 0 0 0 12px; color: var(--dim); font-size: 12.5px; }
   .tl .kids li::before { content: "–"; margin-right: 6px; }
+
+  /* Review: the stage steps (the dashboard's rail laid horizontally), agents by stage, findings */
+  .stages { display: flex; margin: 4px 0 16px; }
+  .stage { flex: 1; min-width: 0; position: relative; padding: 0 8px 0 22px; }
+  .stage::after { content: ""; position: absolute; left: 18px; right: 4px; top: 6px; height: 2px; background: var(--faint); margin-left: 4px; }
+  .stage:last-child::after { display: none; }
+  .stage.done::after { background: color-mix(in srgb, var(--ok) 55%, transparent); }
+  .node { position: absolute; left: 0; top: 0; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--faint); background: var(--bg); z-index: 1; }
+  .done > .node { border-color: var(--ok); background: var(--ok); }
+  .run > .node { border-color: var(--run); background: var(--run); animation: pulse 1.8s ease-out infinite; }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--run) 60%, transparent); }
+    100% { box-shadow: 0 0 0 9px transparent; }
+  }
+  @media (prefers-reduced-motion: reduce) { .run > .node { animation: none; } }
+  .stage .sn { font-weight: 600; font-size: 13.5px; position: relative; z-index: 1; background: var(--bg); padding-right: 6px; }
+  .stage.pending .sn { color: var(--dim); font-weight: 500; }
+  .stage .sd { display: block; color: var(--dim); font-size: 12px; margin-top: 2px; overflow-wrap: anywhere; }
+  .stage.run .sd { color: var(--run); }
+
+  .cols { display: grid; grid-template-columns: 1.15fr 1fr; gap: 26px; }
+  .cols > div { min-width: 0; }
+  @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
+  .group { color: var(--dim); font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; margin: 10px 0 2px; }
+  .group:first-child { margin-top: 0; }
+  .row {
+    position: relative; padding: 5px 0 5px 18px; display: grid; grid-template-columns: minmax(0, 150px) 1fr auto 60px;
+    gap: 12px; align-items: baseline; border-bottom: 1px solid color-mix(in srgb, var(--fg) 6%, transparent);
+  }
+  .row .dot { position: absolute; left: 0; top: 11px; width: 8px; height: 8px; border-radius: 50%; border: 2px solid var(--faint); }
+  .row.done .dot { border-color: var(--ok); background: var(--ok); }
+  .row.run .dot { border-color: var(--run); background: var(--run); }
+  .row.warn .dot { border-color: var(--warn); background: var(--warn); }
+  .row .name { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhere; }
+  .row.run .name { font-weight: 600; }
+  .row .lens { color: var(--dim); font-size: 12px; min-width: 0; overflow-wrap: anywhere; }
+  .row .state { font-size: 12px; }
+  .row.run .state { color: var(--run); }
+  .row.warn .state { color: var(--warn); }
+  .row .act { grid-column: 2 / -1; color: var(--dim); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: -2px; }
+
+  .sev { padding: 0 6px; border-radius: 4px; font-size: 12px; white-space: nowrap; }
+  .sev.critical { background: color-mix(in srgb, var(--bad) 25%, transparent); }
+  .sev.major { background: color-mix(in srgb, var(--warn) 22%, transparent); }
+  .sev.minor { background: var(--wash); color: var(--dim); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
+  .finding { border-left: 2px solid var(--faint); padding: 6px 0 6px 12px; margin: 0 0 6px; }
+  .finding.critical { border-left-color: color-mix(in srgb, var(--bad) 75%, transparent); }
+  .finding.major { border-left-color: color-mix(in srgb, var(--warn) 70%, transparent); }
+  .finding summary { list-style: none; cursor: pointer; display: grid; grid-template-columns: auto 1fr auto; gap: 2px 10px; align-items: baseline; }
+  .finding summary::-webkit-details-marker { display: none; }
+  .finding summary .title { font-weight: 600; min-width: 0; overflow-wrap: anywhere; }
+  .finding.minor summary .title { font-weight: 500; }
+  .finding summary .meta { color: var(--dim); font-size: 12px; white-space: nowrap; }
+  .finding .loc, .finding .note { grid-column: 2 / -1; color: var(--dim); font-size: 12px; overflow-wrap: anywhere; }
+  .finding .loc code { color: var(--fg); }
+  .finding .note { color: var(--warn); }
+  .finding .body { margin: 8px 0 2px; color: color-mix(in srgb, var(--fg) 86%, transparent); max-width: 80ch; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .finding .fix { margin-top: 6px; padding: 6px 10px; border-radius: 6px; background: var(--wash); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .finding .fix b { color: var(--ok); font-weight: 600; margin-right: 6px; }
+
+  footer.paths {
+    margin-top: 18px; padding-top: 10px; border-top: 1px solid var(--faint);
+    display: flex; gap: 16px; flex-wrap: wrap; color: var(--dim); font-size: 11.5px; overflow-wrap: anywhere;
+  }
+  footer.paths .safe { margin-left: auto; color: var(--ok); }
 
   /* the document beside its table of contents */
   .docwrap { display: flex; gap: 28px; align-items: flex-start; }
@@ -372,17 +447,240 @@
     return `${meta}<div class="filters">${chips}</div>${rows ? `<ol class="tl">${rows}</ol>` : none}`;
   }
 
+  // Review: the rounds strip, then one round: the live one as its events.jsonl shows it (stages, agents,
+  // findings so far), a finished one with its verdict and final findings, or one that failed. The strip
+  // follows the live round, else the latest; a click on another round keeps that one shown until the
+  // user clicks the followed round again. Every finding, agent and activity string is escaped.
+  const SEVS = ['critical', 'major', 'minor'];
+  const GATING = ['critical', 'major'];
+  const FINISHED = ['done', 'degraded'];
+  const NOTES = ['agent_retried', 'agent_degraded', 'rate_limit'];
+  const KEPT = /^(\d+) of (\d+) kept\b/;
+  const STALE = 30;        // seconds without news from the live round before the tab warns
+  let pinned = null;       // the round the user picked in the strip; null follows the live or latest one
+
+  const obj = x => !!x && typeof x === 'object';
+  const plural = (n, one) => `${n} ${one}${n === 1 ? '' : 's'}`;
+  const upper = s => { s = String(s ?? ''); return s.charAt(0).toUpperCase() + s.slice(1); };
+  const roundList = p => list(p && p.rounds).filter(obj).sort((a, b) => num(a.round) - num(b.round));
+  // a round the payload calls running is not followed once the run has ended (mt's live_round)
+  const roundStatus = r => (r.state === 'done' ? 'done'
+    : r.state === 'running' && !(state && state.finished) ? 'running' : 'failed');
+  function followed(rs) { const live = rs.find(r => roundStatus(r) === 'running'); return (live || rs[rs.length - 1]).round; }
+  function pickRound(rs) {
+    const n = pinned != null && rs.some(r => r.round === pinned) ? pinned : followed(rs);
+    return rs.find(r => r.round === n);
+  }
+  // how much of the live round there is to show: live, starting (no event yet), truncated, format (unread)
+  function liveMode(r) {
+    const live = r.live;
+    if (!obj(live)) return 'starting';
+    if (live.truncated) return 'truncated';
+    if (live.format_ok === false) return 'format';
+    return num(live.events) ? 'live' : 'starting';
+  }
+  // the live round's latest news: its latest event, or its start before the first one
+  const newsAt = r => num(obj(r.live) && r.live.updated) || num(r.started);
+  const stale = r => roundStatus(r) === 'running' && ['live', 'starting'].includes(liveMode(r)) &&
+    newsAt(r) > 0 && nowSec() - newsAt(r) > STALE;
+  const ticking = t => `<span data-since="${num(t)}">${fmtDur(nowSec() - num(t))}</span>`;
+
+  function roundChip(r, here) {
+    const st = roundStatus(r), c = obj(r.counts) ? r.counts : {};
+    const text = st === 'done'
+      ? [...SEVS.filter(k => num(c[k])).map(k => `${num(c[k])} ${k}`), r.verdict || 'done'].join(' · ')
+      : [r.run, st === 'running' ? 'live' : 'failed'].filter(Boolean).join(' · ');
+    return `<button type="button" class="rchip${here ? ' cur' : ''}" data-round="${num(r.round)}" aria-pressed="${here}">` +
+      `<b>Round ${esc(r.round)}</b>${esc(text)}</button>`;
+  }
+
+  // the band's text is HTML its caller escaped
+  const band = (cls, icon, text, ...tail) =>
+    `<div class="now${cls ? ` ${cls}` : ''}"><span>${icon}</span><span class="text">${text}</span>${tail.join('')}</div>`;
+  const clock = t => (num(t) ? `<span class="clock" data-since="${num(t)}">${fmtDur(nowSec() - num(t))}</span>` : '');
+  function fresh(r) {
+    const t = newsAt(r);
+    return t ? `<span class="fresh${stale(r) ? ' stale' : ''}">updated ${ticking(t)} ago</span>` : '';
+  }
+  const staleLine = r => (stale(r)
+    ? `<p class="warnline">No update for ${ticking(newsAt(r))}: what follows may be out of date. The review goes on.</p>` : '');
+
+  function stageSteps(live) {
+    const agents = list(live.agents).filter(obj), stages = list(live.stages).filter(obj);
+    if (!stages.length) return '';
+    const steps = stages.map((s, i) => {
+      const mine = agents.filter(a => a.stage === s.name);
+      const doneN = mine.filter(a => FINISHED.includes(a.state)).length;
+      const over = s.finished != null || i < stages.length - 1;
+      const parts = [over || doneN === mine.length ? plural(mine.length, 'agent') : `${doneN} of ${mine.length} agents done`];
+      if (s.name === 'synthesis' && live.merged) {
+        parts.push(`${num(live.found)} → ${num(live.total)}`);
+        if (num(live.dropped_total)) parts.push(`${num(live.dropped_total)} dropped`);
+      } else if (mine.some(a => a.findings != null)) {
+        parts.push(plural(mine.reduce((n, a) => n + num(a.findings), 0), 'finding'));
+      }
+      const kept = mine.map(a => KEPT.exec(String(a.result || ''))).filter(Boolean);
+      if (kept.length) parts.push(`${kept.reduce((n, m) => n + Number(m[1]), 0)} of ${kept.reduce((n, m) => n + Number(m[2]), 0)} kept`);
+      const took = !num(s.started) ? '' : s.finished != null ? ` · ${fmtDur(num(s.finished) - num(s.started))}`
+        : over ? '' : ` · ${ticking(s.started)}`;
+      return `<div class="stage ${over ? 'done' : 'run'}"><span class="node"></span><span class="sn">${esc(upper(s.name) || 'Stage')}</span>` +
+        `<span class="sd">${esc(parts.join(' · '))}${took}</span></div>`;
+    });
+    // every stage over: revmux is writing its report, which `mt review result` records
+    const last = stages[stages.length - 1], waiting = last.finished != null;
+    steps.push(`<div class="stage ${waiting ? 'run' : 'pending'}"><span class="node"></span><span class="sn">Result</span>` +
+      `<span class="sd">${waiting ? 'waiting for the report' : 'verdict and final findings'}</span></div>`);
+    return `<div class="stages">${steps.join('')}</div>`;
+  }
+
+  function agentRow(a) {
+    const st = String(a.state || 'running'), retries = num(a.retries);
+    const warn = ['retrying', 'rate-limited', 'degraded'].includes(st) || retries > 0;
+    let what = st === 'done' ? (a.result || 'done') : st === 'rate-limited' ? 'rate limited' : st;
+    if (retries) what += ` · retried ${retries === 1 ? 'once' : `${retries} times`}`;
+    // a running agent shows what it does; one that was retried, rate limited or degraded, why
+    const note = list(a.recent).filter(x => obj(x) && NOTES.includes(x.kind)).pop();
+    const act = st === 'running' ? [a.progress, a.activity].filter(Boolean).join(' · ') : warn && note ? note.text : '';
+    const lens = [a.lenses, a.model].filter(Boolean).join(' · ');
+    return `<li class="row ${warn ? 'warn' : st === 'done' ? 'done' : 'run'}"><span class="dot"></span>` +
+      `<span class="name">${esc(a.name)}</span><span class="lens">${esc(lens)}</span><span class="state">${esc(what)}</span>` +
+      `${dur(a)}${act ? `<span class="act">${esc(act)}</span>` : ''}</li>`;
+  }
+
+  // agents under the stage they started in, the latest stage first
+  function agentList(live) {
+    const agents = list(live.agents).filter(obj);
+    if (!agents.length) return '<h2 class="sect">Agents</h2><p class="empty">No agent started yet.</p>';
+    const order = [...new Set([...list(live.stages).filter(obj).map(s => s.name).reverse(), ...agents.map(a => a.stage)])];
+    const busy = agents.filter(a => !FINISHED.includes(a.state)).length;
+    const rows = order.map(g => {
+      const mine = agents.filter(a => a.stage === g);
+      return mine.length ? `<li class="group">${esc(upper(g) || 'Before the first stage')}</li>${mine.map(agentRow).join('')}` : '';
+    }).join('');
+    return `<h2 class="sect">Agents <span class="count">${agents.length}</span>` +
+      `<span class="aside">${busy} running · ${agents.length - busy} done</span></h2><ul class="rows">${rows}</ul>`;
+  }
+
+  function where(f) {
+    let s = String(f.file || '');
+    if (s && num(f.line)) s += `:${num(f.line)}${num(f.end_line) && num(f.end_line) !== num(f.line) ? `-${num(f.end_line)}` : ''}`;
+    return s;
+  }
+
+  // one finding, its body and fix behind its summary; a critical one is open until the user closes it.
+  // kind: f (a finding), q (an open question), d (dropped); marks: id -> what the result says of it
+  function findingView(r, f, kind, marks = {}) {
+    const sev = String(f.severity || ''), cls = SEVS.includes(sev) ? sev : 'minor';
+    const who = list(f.sources).length ? list(f.sources).join(', ') : f.agent;
+    const meta = [num(f.confidence) ? `conf ${num(f.confidence)}` : '', f.verdict].filter(Boolean).join(' · ');
+    const loc = [where(f) ? `<code>${esc(where(f))}</code>` : '', esc(who), esc(f.id)].filter(Boolean).join(' · ');
+    const mark = marks[f.id];
+    const summary = `<span class="sev ${cls}">${esc(kind === 'q' ? 'question' : sev || 'finding')}</span>` +
+      `<span class="title">${esc(f.title || f.id || 'Untitled finding')}</span><span class="meta">${esc(meta)}</span>` +
+      `${loc ? `<span class="loc">${loc}</span>` : ''}${mark ? `<span class="note">${esc(mark)}</span>` : ''}`;
+    const inner = (f.body ? `<div class="body">${esc(f.body)}</div>` : '') +
+      (f.fix ? `<div class="fix"><b>fix</b>${esc(f.fix)}</div>` : '');
+    return fold(`r${num(r.round)}:${kind}:${f.id}`, summary, inner || '<div class="body empty">No detail.</div>',
+      { first: kind === 'f' && sev === 'critical', cls: `finding ${cls}` });
+  }
+
+  // critical and major findings in the open, the rest folded under one line
+  function findingList(r, items, marks = {}) {
+    const top = items.filter(f => GATING.includes(f.severity)), rest = items.filter(f => !GATING.includes(f.severity));
+    let out = top.map(f => findingView(r, f, 'f', marks)).join('');
+    if (rest.length) {
+      const label = plural(rest.length, rest.every(f => f.severity === 'minor') ? 'minor finding' : 'more finding');
+      out += fold(`r${num(r.round)}:f-rest`, esc(label), rest.map(f => findingView(r, f, 'f', marks)).join(''));
+    }
+    return out;
+  }
+
+  function sevChips(counts, extra = '') {
+    const c = obj(counts) ? counts : {};
+    const chips = SEVS.filter(k => num(c[k])).map(k => `<span class="sev ${k}">${num(c[k])} ${k}</span>`).join('') + extra;
+    return chips ? `<div class="chips">${chips}</div>` : '';
+  }
+
+  function droppedList(r, total) {
+    const items = list(r.dropped).filter(obj), n = Math.max(num(total), items.length);
+    return n ? fold(`r${num(r.round)}:dropped`, `${n} dropped by synthesis`, items.map(f => findingView(r, f, 'd')).join('')) : '';
+  }
+
+  function paths(r, live) {
+    const spans = [r.events, r.log].filter(Boolean).map(x => `<span><code>${esc(x)}</code></span>`);
+    if (live) spans.push('<span class="safe">Closing this view does not stop the review</span>');
+    return spans.length ? `<footer class="paths">${spans.join('')}</footer>` : '';
+  }
+
+  function runningView(r) {
+    const mode = liveMode(r), start = clock(r.started);
+    if (mode === 'truncated' || mode === 'format') {
+      const why = mode === 'truncated' ? 'is larger than 8 MB' : 'holds no event this view can read';
+      return band('', '▸', `Round ${esc(r.round)} · ${esc(r.milestone || 'running')}`, start) +
+        `<p class="warnline">Live detail unavailable: <code>events.jsonl</code> ${why}. ` +
+        'The round goes on; its result shows here once it is recorded.</p>' + paths(r, true);
+    }
+    if (mode === 'starting') {
+      return band('', '▸', 'Starting revmux…', fresh(r), start) + staleLine(r) +
+        '<p class="empty">Waiting for the first event of the round.</p>' + paths(r, true);
+    }
+    const live = r.live, agents = list(live.agents).filter(obj), stage = String(live.stage || '');
+    const mine = agents.filter(a => a.stage === stage), doneN = mine.filter(a => FINISHED.includes(a.state)).length;
+    let text = `${esc(upper(stage) || 'Review')} · ${mine.length ? `${doneN} of ${plural(mine.length, 'agent')} done` : 'starting'}`;
+    const act = obj(live.activity) ? live.activity : null;
+    if (act && act.text) text += `<span class="sub">${esc([act.agent, act.text].filter(Boolean).join(' · '))}</span>`;
+    const findings = list(live.findings).filter(obj), total = Math.max(num(live.total), findings.length);
+    const aside = [live.merged ? 'merged by synthesis · not verified yet' : 'as the finders report them',
+      total > findings.length ? `the first ${findings.length}` : ''].filter(Boolean).join(' · ');
+    const right = `<h2 class="sect">Findings <span class="count">${total}</span><span class="aside">${esc(aside)}</span></h2>` +
+      sevChips(live.counts) + (findings.length ? findingList(r, findings) : '<p class="empty">No findings yet.</p>') +
+      droppedList(r, live.dropped_total);
+    return band('', '▸', text, fresh(r), start) + staleLine(r) + stageSteps(live) +
+      `<div class="cols"><div>${agentList(live)}</div><div>${right}</div></div>` + paths(r, true);
+  }
+
+  function doneView(r) {
+    const verdict = String(r.verdict || 'done'), clean = verdict === 'clean';
+    const took = r.duration != null ? num(r.duration) : num(r.finished) && num(r.started) ? num(r.finished) - num(r.started) : null;
+    const findings = list(r.findings).filter(obj), questions = list(r.questions).filter(obj), degraded = list(r.degraded);
+    // as review.md marks them: not gating or deferred with the reason the run gave, else unresolved
+    const marks = {};
+    list(r.not_gating).filter(obj).forEach(x => { marks[x.id] = `not gating: ${x.reason || ''}`; });
+    list(r.deferred).filter(obj).forEach(x => { marks[x.id] = `deferred: ${x.reason || ''}`; });
+    findings.forEach(f => { if (GATING.includes(f.severity) && !marks[f.id]) marks[f.id] = 'unresolved'; });
+    const asked = questions.length ? `<span class="sev minor">${questions.length} open</span>` : '';
+    return band(clean ? 'done' : 'warn', clean ? '✓' : '!',
+      `Round ${esc(r.round)} · ${esc(verdict)}${r.confirming ? ' · confirming round' : ''}`,
+      took != null ? `<span class="clock">${fmtDur(took)}</span>` : '') +
+      (degraded.length ? `<p class="warnline">Degraded sources: ${esc(degraded.join(', '))}</p>` : '') +
+      `<h2 class="sect">Findings <span class="count">${findings.length}</span><span class="aside">the recorded result</span></h2>` +
+      sevChips(r.counts, asked) + (findings.length ? findingList(r, findings, marks) : '<p class="empty">No findings.</p>') +
+      (questions.length ? `<h2 class="sect">Open questions <span class="count">${questions.length}</span></h2>` +
+        questions.map(q => findingView(r, q, 'q')).join('') : '') +
+      droppedList(r, 0) + paths(r, false);
+  }
+
+  function failedView(r) {
+    const seen = r.milestone && r.milestone !== 'failed' ? ` · last seen at ${esc(r.milestone)}` : '';
+    return band('error', '✕', `Round ${esc(r.round)} · no result${seen}`) +
+      '<p class="empty">No result was recorded for this round: revmux ended without a report, a later round ' +
+      'replaced it, or the run ended.</p>' + droppedList(r, 0) + paths(r, false);
+  }
+
+  function reviewView(p) {
+    const rs = roundList(p);
+    if (!rs.length) return '<p class="empty">No review round yet.</p>';
+    const r = pickRound(rs), st = roundStatus(r);
+    return `<div class="rounds">${rs.map(x => roundChip(x, x === r)).join('')}</div>` +
+      (st === 'running' ? runningView(r) : st === 'done' ? doneView(r) : failedView(r));
+  }
+
   const RENDER = {
     design: docView,
     stats: docView,
     plan: planView,
     progress: progressView,
-    review: p => {
-      const rounds = list(p.rounds);
-      return rounds.length
-        ? `<div class="rounds">${rounds.map(r => `<span class="rchip"><b>Round ${esc(r.round)}</b>${esc(r.state)}</span>`).join('')}</div>`
-        : '<p class="empty">No review round yet.</p>';
-    },
+    review: reviewView,
   };
 
   function notYet() {
@@ -397,6 +695,11 @@
       return JSON.stringify([list(state && state.tasks), (a && (a.hint || a.source)) || null, (state && state.finished) || null]);
     },
     progress: () => filter,
+    // the round shown, whether the run ended, and whether the live round went quiet (time alone flips it)
+    review: () => {
+      const rs = roundList(payloads.review), r = rs.length ? pickRound(rs) : null;
+      return JSON.stringify(r ? [r.round, roundStatus(r), stale(r)] : []);
+    },
   };
 
   // rewrite the pane when what it shows changed, keeping the scroll position (or moving to `y`)
@@ -443,6 +746,13 @@
       if (FILTERS.some(([k]) => k === chip.dataset.filter)) { filter = chip.dataset.filter; renderPane(); }
       return;
     }
+    const pick = e.target.closest('[data-round]');
+    if (pick) {
+      // the followed round unpins, any other round stays shown until then
+      const rs = roundList(payloads.review), n = Number(pick.dataset.round);
+      if (rs.some(r => r.round === n)) { pinned = n === followed(rs) ? null : n; renderPane(); }
+      return;
+    }
     // in-page links (the table of contents, footnotes) scroll; the page never navigates
     const link = e.target.closest('a[href^="#"]');
     if (link) {
@@ -458,6 +768,7 @@
     const now = nowSec();
     document.querySelectorAll('[data-since]').forEach(el => { el.textContent = fmtDur(now - Number(el.dataset.since)); });
     document.querySelectorAll('[data-ago]').forEach(el => { el.textContent = ago(Number(el.dataset.ago)); });
+    if (cur === 'review') renderPane();  // the live round's stale warning comes with time, not with data
   }
 
   window.mtState = function (next) {

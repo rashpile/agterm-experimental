@@ -350,11 +350,25 @@
 - Modify: `skills/make-task/assets/viewer.html`
 - Modify: `skills/make-task/tests/test_viewer.py`
 
-- [ ] render the Review tab per the mockup: rounds strip, status band, stage steps, agents grouped by stage, findings by severity with expandable body and fix, dropped list, paths of `events.jsonl` and the round log, "Closing this view does not stop the review"
-- [ ] render a finished round's verdict and final findings, and the states "Starting revmux…", stale data after 30 s, failed round, `format_ok` false, truncated
-- [ ] escape every finding and activity string
-- [ ] write node-harness tests: live round, finished round, each state, and a finding title holding `<script>` shown as text
-- [ ] run tests - must pass before task 12
+- [x] render the Review tab per the mockup: rounds strip, status band, stage steps, agents grouped by stage, findings by severity with expandable body and fix, dropped list, paths of `events.jsonl` and the round log, "Closing this view does not stop the review"
+- [x] render a finished round's verdict and final findings, and the states "Starting revmux…", stale data after 30 s, failed round, `format_ok` false, truncated
+- [x] escape every finding and activity string
+- [x] write node-harness tests: live round, finished round, each state, and a finding title holding `<script>` shown as text
+- [x] run tests - must pass before task 12
+- ➕ as built: the strip's chips are `<button data-round>`; the tab follows the live round, else the latest, and a
+  click on another round keeps it shown until the user clicks the followed one. Live round: the band
+  (`<Stage> · X of N agents done`, the latest activity under it, `updated Ns ago`, the round's clock); stage
+  steps for the stages seen plus `Result` (`waiting for the report` once every stage is over); agents by
+  stage, latest stage first (lenses · model, state or result, retries, a running agent's progress · activity,
+  a retried, rate-limited or degraded one's note); critical and major findings in the open, the rest under
+  `N minor findings`, a critical one open until the user closes it (fold keys `r<n>:f:<id>`, `r<n>:f-rest`,
+  `r<n>:q:<id>`, `r<n>:d:<id>`, `r<n>:dropped`). Body and fix are escaped text, not markdown. A finished
+  round: the verdict band (`.now.done` when clean, else `.now.warn`), counts with `N open`, each gating
+  finding marked `unresolved`, `not gating: <reason>` or `deferred: <reason>` as `review.md` marks it, open
+  questions, degraded sources. Failed (also a `running` round once the run ended): `Round N · no result ·
+  last seen at <milestone>`. Stale: no event for 30 s, counted from the latest event (the round's start
+  before one); the 1 s tick re-renders the tab only when that flips. "Closing this view does not stop the
+  review" shows for the running round only. The node harness gained `{"now": t}` and `{"timers": true}` steps
 
 ### Task 12: Dashboard opens the viewer and shows the live round
 

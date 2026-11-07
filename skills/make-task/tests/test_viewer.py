@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import MT, TESTS, init, init_run
+from conftest import FIXTURES, MT, TESTS, init, init_run
 
 VIEWER = TESTS.parent / "assets" / "viewer.html"
 DOC = TESTS.parent / "assets" / "doc.html"
@@ -104,12 +104,18 @@ globalThis.document = {
   createElement: () => ({ remove() {} }),
   querySelectorAll: () => [],
 };
-globalThis.setInterval = () => 0;
+const timers = [];
+globalThis.setInterval = f => { timers.push(f); return timers.length; };
+let clock = null;
+const realNow = Date.now.bind(Date);
+Date.now = () => (clock == null ? realNow() : clock * 1000);
 (0, eval)(script);
 const snaps = [];
 for (const step of steps) {
   if ('eval' in step) (0, eval)(step.eval);
   else if ('scroll' in step) globalThis.scrollY = step.scroll;
+  else if ('now' in step) clock = step.now;
+  else if ('timers' in step) timers.forEach(f => f());
   else if ('fail' in step) [...appended].reverse().find(e => e.src.startsWith(step.fail + '?')).onerror();
   else if ('click' in step) {
     const match = { dataset: step.data || {}, getAttribute: k => (step.attrs || {})[k], closest: () => null };
@@ -129,7 +135,8 @@ SNAP: dict[str, Any] = {"snap": True}
 def run_viewer(tmp_path: Path, steps: list[dict[str, Any]], tab: str = "design") -> dict[str, Any]:
     """Run the viewer's script for the entry page of `tab`, then each step: {"eval": js} (a state.js or
     artifacts/<id>.js text), {"click": selector, "data": dataset, "attrs": attributes}, {"scroll": y},
-    {"fail": src} (the last injected script with that src fails to load) or {"snap": true}."""
+    {"fail": src} (the last injected script with that src fails to load), {"now": epoch seconds} (what
+    Date.now says from then on), {"timers": true} (every setInterval callback runs once) or {"snap": true}."""
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is not installed")
@@ -766,15 +773,510 @@ def test_progress_strings_are_text(tmp_path):
     assert '<span class="tag">&lt;script&gt;alert(1)&lt;/script&gt;</span>' in pane, "the review tag too"
 
 
-# ---------------------------------------------------------------- Review until it gets its own view
+# ---------------------------------------------------------------- Review
+
+ROUND_LINES = (FIXTURES / "events-round.jsonl").read_text(encoding="utf-8").splitlines(keepends=True)
+REPORT = json.loads((FIXTURES / "revmux-findings.json").read_text(encoding="utf-8"))
+EVIL = "<script>alert(1)</script>"
 
 
-def test_review_lists_rounds(tmp_path):
-    s = base_state(artifacts=[art("review")])
-    review = {"rounds": [{"round": 1, "state": "done"}, {"round": 2, "state": "<b>running</b>"}], "updated": 1.0}
-    rev = run_viewer(tmp_path, [state_step(s), artifact_step("review", review), SNAP], tab="review")["snaps"][0]
-    assert '<span class="rchip"><b>Round 1</b>done</span>' in rev["pane"]
-    assert "&lt;b&gt;running&lt;/b&gt;" in rev["pane"] and "<b>running" not in rev["pane"]
+def fmt_dur(s: float) -> str:
+    """The page's fmtDur."""
+    s = max(0, int(s))
+    h, m, x = s // 3600, s % 3600 // 60, s % 60
+    return f"{h}h {m}m" if h else f"{m}m {x:02d}s" if m else f"{x}s"
+
+
+def upto(kind: str, agent: str) -> list[str]:
+    """The fixture's lines up to and with the first `kind` event of `agent`."""
+    i = next(i for i, line in enumerate(ROUND_LINES) if json.loads(line).get("kind") == kind
+             and json.loads(line).get("agent") == agent)  # fmt: skip
+    return ROUND_LINES[: i + 1]
+
+
+def round_entry(n: int, status: str, **kw: Any) -> dict[str, Any]:
+    """One round of the review payload, as mt's round_payload builds it."""
+    r: dict[str, Any] = {
+        "round": n,
+        "run": f"0{n}-run",
+        "state": status,
+        "verdict": None,
+        "milestone": "",
+        "counts": {"critical": 0, "major": 0, "minor": 0},
+        "findings": [],
+        "questions": [],
+        "not_gating": [],
+        "deferred": [],
+        "dropped": [],
+        "degraded": [],
+        "confirming": False,
+        "started": 1000.0,
+        "finished": None,
+        "duration": None,
+        "events": f"/repo/.revmux/tasks/store/0{n}-run/events.jsonl",
+        "log": f"/state/run/revmux/round-{n}.log",
+        "live": None,
+    }
+    r.update(kw)
+    return r
+
+
+def live_entry(n: int, lines: list[str], **kw: Any) -> dict[str, Any]:
+    snap = MT.fold_events(lines)
+    events = [json.loads(line) for line in lines if line.endswith("\n")]
+    base = {"live": snap, "started": snap["started"] or 1000.0, "dropped": snap["dropped"], "milestone": MT.milestone(events)}
+    return round_entry(n, "running", **{**base, **kw})
+
+
+def done_entry(n: int, report: dict[str, Any] = REPORT, **kw: Any) -> dict[str, Any]:
+    findings = [MT.fold_finding(f, "") for f in report["findings"]]
+    questions = [MT.fold_finding(q, "") for q in report.get("open_questions") or []]
+    counts = {sev: sum(f["severity"] == sev for f in findings) for sev in MT.SEVERITIES}
+    base = {"verdict": "4 gating", "milestone": "done", "counts": counts, "findings": findings, "questions": questions,
+            "finished": 1361.673, "duration": 361.673}  # fmt: skip
+    return round_entry(n, "done", **{**base, **kw})
+
+
+def review_steps(rounds: list[dict[str, Any]], updated: float = 5000.0, **state_kw: Any) -> list[dict[str, Any]]:
+    s = base_state(artifacts=[art("review", hint="revmux review rounds")], **state_kw)
+    return [state_step(s), artifact_step("review", {"rounds": rounds, "updated": updated})]
+
+
+def review_pane(tmp_path: Path, rounds: list[dict[str, Any]], now: float | None = None, **state_kw: Any) -> str:
+    steps = ([{"now": now}] if now is not None else []) + review_steps(rounds, **state_kw) + [SNAP]
+    return run_viewer(tmp_path, steps, tab="review")["snaps"][0]["pane"]
+
+
+def strip(pane: str) -> list[tuple[str, str, str]]:
+    """(round, text, "cur" or "") of each chip in the rounds strip."""
+    chips = re.findall(r'<button type="button" class="rchip( cur)?" data-round="(\d+)" aria-pressed="\w+">'
+                       r"<b>Round \d+</b>([^<]*)</button>", pane)  # fmt: skip
+    return [(n, text, "cur" if cur else "") for cur, n, text in chips]
+
+
+def stage_steps(pane: str) -> list[tuple[str, str, str]]:
+    """(state, name, description) of each stage step, the description's ticking span kept as is."""
+    return re.findall(
+        r'<div class="stage (\w+)"><span class="node"></span><span class="sn">([^<]*)</span>'
+        r'<span class="sd">(.*?)</span></div>(?=<div class="stage |</div>)',
+        pane,
+    )
+
+
+def agent_rows(pane: str) -> dict[str, tuple[str, str, str, str]]:
+    """Agent name -> (row class, lens, state text, activity line)."""
+    rows = re.findall(
+        r'<li class="row (\w+)"><span class="dot"></span><span class="name">([^<]*)</span><span class="lens">([^<]*)'
+        r'</span><span class="state">([^<]*)</span><span class="dur[^"]*"[^>]*>[^<]*</span>'
+        r'(?:<span class="act">([^<]*)</span>)?</li>',
+        pane,
+    )
+    return {name: (cls, lens, st, act) for cls, name, lens, st, act in rows}
+
+
+def finding_fold(pane: str, key: str) -> str:
+    """"open" or "closed": the details whose summary folds `key`."""
+    m = re.search(rf'<details class="([^"]*)"( open)?><summary data-fold="{re.escape(key)}">', pane)
+    assert m, key
+    return "open" if m.group(2) else "closed"
+
+
+def test_review_live_round_shows_stages_agents_and_findings(tmp_path):
+    lines = upto("agent_done", "verify docs")
+    r2 = live_entry(2, lines, run="02-after-fix")
+    live = r2["live"]
+    now = live["updated"] + 5.5  # past the second: the stub clock divides by 1000
+    pane = review_pane(tmp_path, [done_entry(1), r2], now=now)
+
+    assert strip(pane) == [("1", "1 critical · 3 major · 2 minor · 4 gating", ""), ("2", "02-after-fix · live", "cur")]
+    activity = MT.html_escape(live["activity"]["text"]).replace("&#x27;", "&#39;")
+    assert (
+        '<div class="now"><span>▸</span><span class="text">Verify · 1 of 2 agents done'
+        f'<span class="sub">verify docs · {activity}</span></span>'
+        f'<span class="fresh">updated <span data-since="{live["updated"]}">5s</span> ago</span>'
+        f'<span class="clock" data-since="{r2["started"]}">{fmt_dur(now - r2["started"])}</span></div>' in pane
+    )
+    assert 'class="warnline"' not in pane, "fresh data: no warning"
+
+    find, synthesis, verify = live["stages"]
+    assert stage_steps(pane) == [
+        ("done", "Find", f"4 agents · 13 findings · {fmt_dur(find['finished'] - find['started'])}"),
+        ("done", "Synthesis", f"1 agent · 13 → 10 · {fmt_dur(synthesis['finished'] - synthesis['started'])}"),
+        ("run", "Verify", (f'1 of 2 agents done · 1 of 1 kept · <span data-since="{verify["started"]}">'
+                           f"{fmt_dur(now - verify['started'])}</span>")),
+        ("pending", "Result", "verdict and final findings"),
+    ]  # fmt: skip
+
+    assert re.findall(r'<li class="group">([^<]*)</li>', pane) == ["Verify", "Synthesis", "Find"], "latest stage first"
+    assert '<h2 class="sect">Agents <span class="count">7</span><span class="aside">1 running · 6 done</span></h2>' in pane
+    rows = agent_rows(pane)
+    assert list(rows) == ["verify docs", "verify go-ask", "synthesis", "bugs+impl", "arch+quality", "docs+tests",
+                          "adversarial"]  # fmt: skip
+    go = next(a for a in live["agents"] if a["name"] == "verify go-ask")
+    assert rows["verify go-ask"] == (
+        "run", "mcps/go-ask", "running", MT.html_escape(f"{go['progress']} · {go['activity']}").replace("&#x27;", "&#39;")
+    )  # fmt: skip
+    assert '<span class="dur live" data-since="' in pane, "a running agent's time ticks"
+    assert rows["verify docs"] == ("done", "mcps/go-ask/docs", "1 of 1 kept", "")
+    assert rows["adversarial"] == ("done", "adversarial · gpt-6.1-sol", "4 findings", ""), "lenses and model"
+    assert rows["synthesis"][2] == "10 findings"
+
+    assert (
+        '<h2 class="sect">Findings <span class="count">10</span><span class="aside">merged by synthesis · not verified yet'
+        '</span></h2><div class="chips"><span class="sev major">1 major</span><span class="sev minor">9 minor</span></div>'
+        in pane
+    )
+    assert finding_fold(pane, "r2:f:adversarial-1") == "closed", "only a critical finding opens by itself"
+    assert re.search(
+        r'<summary data-fold="r2:f:adversarial-1"><span class="sev major">major</span><span class="title">Message queued'
+        r'[^<]*</span><span class="meta">conf 99</span><span class="loc"><code>mcps/go-ask/answer\.go:117-118</code> · '
+        r"adversarial, bugs\+impl · adversarial-1</span></summary><div class=\"body\">",
+        pane,
+    ), "location, sources and id under the title; body and fix behind it"
+    assert '<div class="fix"><b>fix</b>In `matchedTurnState`' in pane, "body and fix are text, not markdown"
+    assert finding_fold(pane, "r2:f-rest") == "closed" and "9 minor findings</summary>" in pane
+    assert pane.index("9 minor findings") < pane.index('data-fold="r2:f:adversarial-2"'), "the minors are folded"
+    assert "dropped by synthesis" not in pane, "nothing dropped"
+    assert pane.endswith(
+        '<footer class="paths"><span><code>/repo/.revmux/tasks/store/02-run/events.jsonl</code></span>'
+        "<span><code>/state/run/revmux/round-2.log</code></span>"
+        '<span class="safe">Closing this view does not stop the review</span></footer>'
+    )
+
+
+def test_review_live_round_during_find_and_after_its_last_stage(tmp_path):
+    early = live_entry(1, upto("agent_done", "arch+quality"))
+    pane = review_pane(tmp_path, [early], now=early["live"]["updated"] + 2.5)
+    steps = stage_steps(pane)
+    assert [s[:2] for s in steps] == [("run", "Find"), ("pending", "Result")]
+    assert steps[0][2].startswith("1 of 4 agents done · 1 finding · <span data-since=")
+    assert "Find · 1 of 4 agents done" in pane
+    assert '<span class="aside">as the finders report them</span>' in pane
+    assert agent_rows(pane)["adversarial"][:3] == ("run", "adversarial · gpt-6.1-sol", "running")
+
+    whole = live_entry(1, ROUND_LINES)
+    pane = review_pane(tmp_path, [whole], now=whole["live"]["updated"] + 2.5)
+    steps = stage_steps(pane)
+    verify = whole["live"]["stages"][2]
+    assert steps[2] == ("done", "Verify", f"2 agents · 9 of 10 kept · {fmt_dur(verify['finished'] - verify['started'])}")
+    assert steps[3] == ("run", "Result", "waiting for the report"), "every stage over: the report comes next"
+    assert "Verify · 2 of 2 agents done" in pane and '<span class="aside">0 running · 7 done</span>' in pane
+
+
+def test_review_live_agents_retried_rate_limited_and_degraded(tmp_path):
+    def ev(kind: str, agent: str = "", text: str = "", **kw: Any) -> str:
+        return json.dumps({"kind": kind, "agent": agent, "text": text, "at": "2026-11-06T21:00:00+00:00", **kw}) + "\n"
+
+    lines = [
+        ev("stage", stage="find"),
+        *(ev("agent_started", a, "bugs") for a in ("a1", "a2", "a3", "a4")),
+        ev("agent_retried", "a1", "agent a1 stalled for 2m"),
+        ev("agent_progress", "a1", "Read x.go"),
+        ev("agent_retried", "a2", "stalled"),
+        ev("agent_retried", "a2", "stalled again"),
+        ev("agent_done", "a2", "3 findings"),
+        ev("rate_limit", "a3", "429, waiting 30s"),
+        ev("agent_degraded", "a4", "gave up after 3 tries"),
+    ]
+    entry = live_entry(1, lines)
+    rows = agent_rows(review_pane(tmp_path, [entry], now=entry["live"]["updated"] + 1))
+    assert rows["a1"] == ("warn", "bugs", "running · retried once", "Read x.go"), "running again: what it does"
+    assert rows["a2"] == ("warn", "bugs", "3 findings · retried 2 times", "retrying: stalled again")
+    assert rows["a3"] == ("warn", "bugs", "rate limited", "rate limited: 429, waiting 30s")
+    assert rows["a4"] == ("warn", "bugs", "degraded", "degraded: gave up after 3 tries")
+
+
+def test_review_finished_round_shows_its_verdict_and_final_findings(tmp_path):
+    dropped = [MT.fold_finding({"id": "docs-3", "severity": "minor", "title": "Same as bugs+impl-3"}, "synthesis")]
+    r1 = done_entry(
+        1,
+        verdict="2 gating",
+        not_gating=[{"id": "adversarial-2", "reason": "vendored"}],
+        deferred=[{"id": "adversarial-1", "severity": "major", "file": "README.md", "line": 0, "title": "t",
+                   "reason": "docs at the end", "round": 1}],
+        dropped=dropped,
+    )  # fmt: skip
+    pane = review_pane(tmp_path, [r1])
+    assert strip(pane) == [("1", "1 critical · 3 major · 2 minor · 2 gating", "cur")]
+    assert (
+        '<div class="now warn"><span>!</span><span class="text">Round 1 · 2 gating</span>'
+        '<span class="clock">6m 01s</span></div>' in pane
+    )
+    assert (
+        '<div class="chips"><span class="sev critical">1 critical</span><span class="sev major">3 major</span>'
+        '<span class="sev minor">2 minor</span><span class="sev minor">1 open</span></div>' in pane
+    )
+    assert '<h2 class="sect">Findings <span class="count">6</span><span class="aside">the recorded result</span></h2>' in pane
+    assert finding_fold(pane, "r1:f:bugs+impl-1") == "open", "a critical finding opens by itself"
+    assert (
+        '<summary data-fold="r1:f:bugs+impl-1"><span class="sev critical">critical</span><span class="title">'
+        'Session map written without the lock</span><span class="meta">conf 95 · confirmed</span><span class="loc">'
+        '<code>src/store.go:88</code> · bugs+impl, adversarial · bugs+impl-1</span><span class="note">unresolved</span>'
+        '</summary><div class="body">...</div><div class="fix"><b>fix</b>...</div></details>' in pane
+    )
+    assert '<code>src/login.go:12-20</code>' in pane and "<code>README.md</code> · adversarial · adversarial-1" in pane
+    assert '<span class="title">Logout keeps the cookie &lt;script&gt;alert(1)&lt;/script&gt;</span>' in pane
+    notes = dict(re.findall(r'data-fold="r1:f:([^"]+)">.*?(?:<span class="note">([^<]*)</span>)?</summary>', pane))
+    assert notes == {"bugs+impl-1": "unresolved", "bugs+impl-2": "unresolved", "adversarial-1": "deferred: docs at the end",
+                     "adversarial-2": "not gating: vendored", "bugs+impl-3": "", "bugs+impl-4": ""}  # fmt: skip
+    assert finding_fold(pane, "r1:f-rest") == "closed" and "2 minor findings</summary>" in pane
+    assert (
+        '<h2 class="sect">Open questions <span class="count">1</span></h2><details class="finding minor">'
+        '<summary data-fold="r1:q:q1"><span class="sev minor">question</span><span class="title">'
+        "Should sessions expire on restart?</span>" in pane
+    )
+    assert '<summary data-fold="r1:dropped">1 dropped by synthesis</summary>' in pane
+    assert '<summary data-fold="r1:d:docs-3">' in pane and "Same as bugs+impl-3" in pane
+    assert '<div class="body empty">No detail.</div>' in pane, "a dropped finding without body or fix"
+    assert "/state/run/revmux/round-1.log" in pane and "Closing this view" not in pane, "nothing runs"
+    assert 'class="stages"' not in pane and "warnline" not in pane
+
+
+def test_review_clean_and_degraded_rounds(tmp_path):
+    clean = done_entry(2, report={"findings": []}, verdict="clean", confirming=True, duration=None, finished=1090.0)
+    pane = review_pane(tmp_path, [clean])
+    assert (
+        '<div class="now done"><span>✓</span><span class="text">Round 2 · clean · confirming round</span>'
+        '<span class="clock">1m 30s</span></div>' in pane
+    ), "no duration from the report: the round's own times"
+    assert '<p class="empty">No findings.</p>' in pane and 'class="chips"' not in pane
+    assert strip(pane) == [("2", "clean", "cur")]
+
+    degraded = done_entry(1, report=json.loads((FIXTURES / "revmux-degraded.json").read_text()), verdict="degraded",
+                          degraded=["adversarial"])  # fmt: skip
+    pane = review_pane(tmp_path, [degraded])
+    assert '<div class="now warn"><span>!</span><span class="text">Round 1 · degraded</span>' in pane
+    assert '<p class="warnline">Degraded sources: adversarial</p>' in pane
+    assert strip(pane) == [("1", "1 minor · degraded", "cur")]
+
+
+@pytest.mark.parametrize(
+    "entry, run_finished, band, body",
+    [
+        (
+            round_entry(2, "failed", milestone="verify 1/2"),
+            None,
+            '<div class="now error"><span>✕</span><span class="text">Round 2 · no result · last seen at verify 1/2</span></div>',
+            "No result was recorded for this round",
+        ),
+        (
+            round_entry(2, "failed", milestone="failed"),
+            None,
+            '<div class="now error"><span>✕</span><span class="text">Round 2 · no result</span></div>',
+            "revmux ended without a report",
+        ),
+        (
+            round_entry(2, "running", milestone="find 2/4", live=MT.fold_events([])),
+            1900.0,
+            '<div class="now error"><span>✕</span><span class="text">Round 2 · no result · last seen at find 2/4</span></div>',
+            "or the run ended",
+        ),
+        (
+            round_entry(2, "running", milestone="starting", live=MT.fold_events(['{"kind":"agent_tokens"}\n'])),
+            None,
+            '<div class="now"><span>▸</span><span class="text">Round 2 · starting</span><span class="clock" data-since="1000">',
+            "Live detail unavailable: <code>events.jsonl</code> holds no event this view can read. The round goes on",
+        ),
+        (
+            round_entry(2, "running", milestone="find 2/4", live={"truncated": True}),
+            None,
+            '<div class="now"><span>▸</span><span class="text">Round 2 · find 2/4</span><span class="clock" data-since="1000">',
+            "Live detail unavailable: <code>events.jsonl</code> is larger than 8 MB.",
+        ),
+    ],
+    ids=["failed", "failed-at-once", "run-ended", "format-not-ok", "truncated"],
+)
+def test_review_round_states(tmp_path, entry, run_finished, band, body):
+    pane = review_pane(tmp_path, [entry], now=5000.0, finished=run_finished)
+    assert band in pane and body in pane
+    live = entry["state"] == "running" and run_finished is None
+    assert ("Closing this view does not stop the review" in pane) is live
+    assert strip(pane)[0][1] == ("02-run · live" if live else "02-run · failed")
+    assert "No update for" not in pane and 'class="fresh' not in pane, "no news to wait for"
+    assert 'class="stages"' not in pane and "Agents" not in pane
+
+
+def test_review_starting_round_and_its_stale_warning(tmp_path):
+    entry = round_entry(1, "running", milestone="starting", live=MT.fold_events([]))
+    pane = review_pane(tmp_path, [entry], now=1005.0)
+    assert (
+        '<div class="now"><span>▸</span><span class="text">Starting revmux…</span><span class="fresh">updated '
+        '<span data-since="1000">5s</span> ago</span><span class="clock" data-since="1000">5s</span></div>'
+        '<p class="empty">Waiting for the first event of the round.</p>' in pane
+    )
+    pane = review_pane(tmp_path, [{**entry, "live": None}], now=1040.0)
+    assert (
+        '<span class="fresh stale">updated <span data-since="1000">40s</span> ago</span>' in pane
+        and '<p class="warnline">No update for <span data-since="1000">40s</span>: what follows may be out of date. '
+        "The review goes on.</p>" in pane
+    ), "no event 30 s after the start"
+    assert "Starting revmux…" in pane, "a round with no snapshot yet is starting too"
+
+
+def test_review_stale_warning_comes_with_time_alone(tmp_path):
+    entry = live_entry(1, upto("agent_done", "arch+quality"))
+    t = entry["live"]["updated"]
+    steps = [{"now": t + 10}, *review_steps([entry]), SNAP, {"now": t + 29}, {"timers": True}, SNAP,
+             {"now": t + 31.5}, {"timers": True}, SNAP, {"timers": True}, SNAP]  # fmt: skip
+    fresh, quiet, stale, again = run_viewer(tmp_path, steps, tab="review")["snaps"]
+    assert "warnline" not in fresh["pane"] and quiet["paneWrites"] == fresh["paneWrites"], "within 30 s: nothing"
+    assert stale["paneWrites"] == fresh["paneWrites"] + 1, "no new payload: the clock re-renders the tab"
+    assert f'<p class="warnline">No update for <span data-since="{t}">31s</span>' in stale["pane"]
+    assert '<span class="fresh stale">' in stale["pane"] and "Find · 1 of 4 agents done" in stale["pane"]
+    assert again["paneWrites"] == stale["paneWrites"]
+
+
+def test_review_without_rounds(tmp_path):
+    assert review_pane(tmp_path, []) == '<p class="empty">No review round yet.</p>'
+
+
+def test_review_strip_follows_the_live_round_until_the_user_picks_another(tmp_path):
+    lines = upto("agent_done", "arch+quality")
+    r1, r2, r3 = done_entry(1), live_entry(2, lines), live_entry(3, lines)
+    t = r2["live"]["updated"]
+
+    def payload(rounds: list[dict[str, Any]], updated: float) -> dict[str, Any]:
+        return artifact_step("review", {"rounds": rounds, "updated": updated})
+
+    def pick(n: int) -> dict[str, Any]:
+        return {"click": "[data-round]", "data": {"round": str(n)}}
+
+    steps = [
+        {"now": t + 1},
+        *review_steps([r1, r2]),
+        SNAP,
+        pick(1),
+        SNAP,
+        payload([r1, done_entry(2, verdict="clean"), r3], 5001.0),
+        SNAP,
+        pick(9),
+        SNAP,
+        pick(3),
+        SNAP,
+        payload([r1, done_entry(2, verdict="clean"), done_entry(3, verdict="clean"), live_entry(4, lines)], 5002.0),
+        SNAP,
+    ]
+    live2, picked1, still1, unknown, followed3, followed4 = run_viewer(tmp_path, steps, tab="review")["snaps"]
+
+    def cur(snap: dict[str, Any]) -> list[str]:
+        return [n for n, _, c in strip(snap["pane"]) if c]
+
+    assert cur(live2) == ["2"] and "Find · 1 of 4 agents done" in live2["pane"]
+    assert cur(picked1) == ["1"] and "Round 1 · 4 gating" in picked1["pane"]
+    assert picked1["paneWrites"] == live2["paneWrites"] + 1
+    assert cur(still1) == ["1"] and "Round 1 · 4 gating" in still1["pane"], "a picked round stays shown"
+    assert strip(still1["pane"])[2] == ("3", "03-run · live", "")
+    assert unknown["paneWrites"] == still1["paneWrites"], "a round not in the payload changes nothing"
+    assert cur(followed3) == ["3"] and "Find · 1 of 4 agents done" in followed3["pane"]
+    assert cur(followed4) == ["4"], "clicking the followed round follows again"
+
+
+def test_review_rerender_keeps_expanded_and_closed_findings(tmp_path):
+    first = live_entry(2, upto("agent_done", "synthesis"))
+    later = live_entry(2, upto("agent_done", "verify docs"))
+    crit = done_entry(1)
+    steps = [
+        {"now": later["live"]["updated"] + 1},
+        *review_steps([crit, first]),
+        SNAP,
+        fold_click("r2:f:adversarial-1"),
+        fold_click("r2:f-rest"),
+        SNAP,
+        artifact_step("review", {"rounds": [crit, later], "updated": 5001.0}),
+        SNAP,
+        {"click": "[data-round]", "data": {"round": "1"}},
+        fold_click("r1:f:bugs+impl-1"),
+        artifact_step("review", {"rounds": [crit, later], "updated": 5002.0}),
+        SNAP,
+    ]
+    out = run_viewer(tmp_path, steps, tab="review")
+    before, toggled, rerendered, closed = out["snaps"]
+    assert out["prevented"] == 3
+    assert finding_fold(before["pane"], "r2:f:adversarial-1") == "closed"
+    assert toggled["paneWrites"] == before["paneWrites"], "a click toggles the details in place"
+    assert "Verify · 1 of 2 agents done" in rerendered["pane"]
+    assert rerendered["paneWrites"] == toggled["paneWrites"] + 1
+    assert finding_fold(rerendered["pane"], "r2:f:adversarial-1") == "open"
+    assert finding_fold(rerendered["pane"], "r2:f-rest") == "open"
+    assert finding_fold(rerendered["pane"], "r2:f:adversarial-2") == "closed"
+    assert finding_fold(closed["pane"], "r1:f:bugs+impl-1") == "closed", "the user closed the critical finding"
+
+
+def test_review_strings_are_text(tmp_path):
+    def ev(kind: str, **kw: Any) -> str:
+        return json.dumps({"kind": kind, "agent": EVIL, "text": EVIL, "at": "2026-11-06T21:00:00+00:00", **kw}) + "\n"
+
+    found = {"id": EVIL, "file": EVIL, "line": 3, "severity": "critical", "title": EVIL, "body": EVIL, "fix": EVIL,
+             "sources": [EVIL], "verdict": EVIL}  # fmt: skip
+    lines = [
+        ev("stage", stage=EVIL),
+        ev("agent_started"),
+        ev("agent_state", text=f"model: {EVIL}"),
+        ev("agent_retried"),
+        ev("agent_progress"),
+        ev("agent_activity"),
+        ev("findings", findings=[found]),
+        ev("dropped", findings=[found]),
+    ]
+    live = live_entry(3, lines, run=EVIL, milestone=EVIL, events=EVIL, log=EVIL)
+    done = done_entry(1, report={"findings": [found], "open_questions": [found]}, run=EVIL, verdict=EVIL,
+                      not_gating=[{"id": EVIL, "reason": EVIL}], degraded=[EVIL], dropped=[found], events=EVIL,
+                      log=EVIL)  # fmt: skip
+    failed = round_entry(2, "failed", run=EVIL, milestone=EVIL, dropped=[found], events=EVIL, log=EVIL)
+    steps = [
+        {"now": MT.event_time("2026-11-06T21:00:05+00:00")},
+        *review_steps([done, failed, live]),
+        SNAP,
+        {"click": "[data-round]", "data": {"round": "1"}},
+        SNAP,
+        {"click": "[data-round]", "data": {"round": "2"}},
+        SNAP,
+    ]
+    shown = run_viewer(tmp_path, steps, tab="review")["snaps"]
+    for snap in shown:
+        assert "<script" not in snap["pane"], snap["pane"]
+    esc = "&lt;script&gt;alert(1)&lt;/script&gt;"
+    live_pane, done_pane, failed_pane = (s["pane"] for s in shown)
+    for part in (f'<span class="title">{esc}</span>', f'<div class="body">{esc}</div>', f"<b>fix</b>{esc}</div>",
+                 f'<span class="name">{esc}</span>', f'<span class="lens">{esc} · {esc}</span>',
+                 f'<span class="act">{esc} · {esc}</span>', f'<span class="sub">{esc} · {esc}</span>',
+                 f'<span class="sn">{esc}</span>', f"<code>{esc}:3</code>", f'data-fold="r3:f:{esc}"'):  # fmt: skip
+        assert part in live_pane, part
+    assert f"<b>Round 3</b>{esc} · live</button>" in live_pane
+    for part in (f'<span class="text">Round 1 · {esc}</span>', f'<span class="note">not gating: {esc}</span>',
+                 f"Degraded sources: {esc}</p>", f'<span class="meta">{esc}</span>',
+                 f"<span><code>{esc}</code></span>"):  # fmt: skip
+        assert part in done_pane, part
+    assert f"last seen at {esc}</span>" in failed_pane
+
+
+def test_viewer_renders_the_review_mt_writes(mt, git_repo, tmp_path, monkeypatch):
+    run = init_run(mt, git_repo)
+    assert mt("set", "revmux_task=store").code == 0
+    round_dir = tmp_path / "tasks" / "store" / "01-initial"
+    round_dir.mkdir(parents=True)
+    r = mt("review", "start", "--round", "1", "--run", "01-initial", "--round-dir", str(round_dir))
+    assert r.code == 0, r.err
+    monkeypatch.setattr(MT, "process_alive", lambda task, name: True)
+
+    def snap(*scripts: str) -> str:
+        steps = [{"eval": (run / s).read_text()} for s in scripts]
+        return run_viewer(tmp_path, [*steps, SNAP], tab="review")["snaps"][0]
+
+    started = snap("state.js", "artifacts/review.js")
+    assert "Starting revmux…" in started["pane"] and '<span class="live">live</span>' in started["head"]
+
+    (round_dir / "events.jsonl").write_text("".join(upto("agent_done", "verify docs")))
+    assert mt("review", "wait", "--round", "1", "--deadline", "0").out == "running\n"
+    pane = snap("state.js", "artifacts/review.js")["pane"]
+    assert "Verify · 1 of 2 agents done" in pane and strip(pane) == [("1", "01-initial · live", "cur")]
+    assert [s[1] for s in stage_steps(pane)] == ["Find", "Synthesis", "Verify", "Result"]
+    assert f"<code>{round_dir / 'events.jsonl'}</code>" in pane and f"<code>{run / 'revmux' / 'round-1.log'}</code>" in pane
+
+    assert mt("review", "result", str(FIXTURES / "revmux-findings.json"), "--round", "1").code == 0
+    result = snap("state.js", "artifacts/review.js")
+    assert "Round 1 · 4 gating" in result["pane"] and 'class="live"' not in result["head"]
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in result["pane"] and "<script" not in result["pane"]
 
 
 # ---------------------------------------------------------------- with mt's own files
