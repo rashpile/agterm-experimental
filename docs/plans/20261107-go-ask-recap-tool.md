@@ -288,12 +288,16 @@
 - [x] run tests - must pass before task 6
 
 ### Task 6: Verify acceptance criteria
-- [ ] verify all requirements from Overview are implemented (four sections, Russian, ≤ 250 words
+- [x] verify all requirements from Overview are implemented (four sections, Russian, ≤ 250 words
       prompt, default model and `RECAP_MODEL`, target resolution as `ask`, Claude only)
-- [ ] verify edge cases are handled (no live claude, Ollama down, unknown model, empty transcript,
+- [x] verify edge cases are handled (no live claude, Ollama down, unknown model, empty transcript,
       split pane, own pane)
-- [ ] run full test suite: `cd mcps/go-ask && go test ./... && go vet ./... && gofmt -l .`
-- [ ] verify test coverage of the new files (`go test -cover ./...`; new code paths covered)
+- [x] run full test suite: `cd mcps/go-ask && go test ./... && go vet ./... && gofmt -l .`
+- [x] verify test coverage of the new files (`go test -cover ./...`; new code paths covered)
+      ➕ three tests added for paths found uncovered: a session record gone between listing and
+      reading, a malformed `OLLAMA_HOST`, an Ollama answer cut mid-body. Left uncovered (defensive
+      only): `os.UserHomeDir` failing, `/bin/ps` exiting other than 0/1 with empty stderr,
+      `json.Marshal` of the fixed request struct. Total 90.6%; `recap.go`, `recap_digest.go` 100%
 
 ### Task 7: [Final] Update documentation
 - [ ] `mcps/go-ask/docs/api.md`: a `recap` section (input schema, output fields, how the pane's

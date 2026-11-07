@@ -193,7 +193,11 @@ func TestTranscriptForSkipsBadRecords(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(f.loc.sessionsDir, "109.json"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range []int{101, 102, 103, 104, 105, 106, 107, 108, 109} {
+	// listed but gone when read: a claude that exited between the listing and the read
+	if err := os.Symlink(filepath.Join(f.loc.sessionsDir, "gone"), filepath.Join(f.loc.sessionsDir, "111.json")); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []int{101, 102, 103, 104, 105, 106, 107, 108, 109, 111} {
 		f.env[p] = paneEnv("PANE-1")
 	}
 

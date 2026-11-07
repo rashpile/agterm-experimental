@@ -154,6 +154,26 @@ func TestOllamaChatUnreachable(t *testing.T) {
 	}
 }
 
+func TestOllamaChatBadHost(t *testing.T) {
+	c := ollamaClient{host: ollamaHost("bad host:11434"), http: &http.Client{}, ceiling: ollamaCeiling}
+	_, _, _, err := c.chat(context.Background(), "m", "d")
+	if want := `ollama host "http://bad host:11434": `; err == nil || !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("error = %v, want prefix %q", err, want)
+	}
+}
+
+func TestOllamaChatCutAnswer(t *testing.T) {
+	c := fakeOllama(t, func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Length", "100")
+		io.WriteString(w, `{"message":`) // the server closes the connection 89 bytes short
+	})
+	_, _, _, err := c.chat(context.Background(), "m", "d")
+	if want := "read the ollama answer: unexpected EOF"; err == nil || err.Error() != want {
+		t.Errorf("error = %v, want %q", err, want)
+	}
+}
+
 func TestOllamaChatCancelled(t *testing.T) {
 	t.Run("before the call", func(t *testing.T) {
 		var called atomic.Bool
