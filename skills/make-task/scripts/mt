@@ -70,6 +70,9 @@ prints within 60 s (else local git steps). The check warnings (a review `require
 on PATH among them) and one for a review phase that is `skip` join init's warnings. `status` warns
 on a run whose state has none of these keys (started before profiles).
 
+Viewer: init writes viewer-<tab>.html into the run dir for each tab (design, plan, progress,
+review, stats): assets/viewer.html with <body data-tab="<tab>">, the tab the page opens on.
+
 Dashboard: init copies assets/dashboard.html into the run dir. In agterm it shows the
 split when none is shown (created_split records a split mt made), opens the page with
 `--cwd <run> --js --chromeless` over the pane the agent does not run in, and hands the
@@ -283,6 +286,9 @@ ID = r"[A-Za-z0-9][A-Za-z0-9._-]*"
 ID_RULE = "letters, digits, '.', '_' and '-', starting with a letter or digit"
 
 ARTIFACT_IDS = ("design", "plan", "progress", "review", "stats", "changes")
+# the viewer's tabs, in order: every artifact but changes, which stays revdiff
+VIEWER_TABS = ("design", "plan", "progress", "review", "stats")
+VIEWER_BODY = re.compile(r'<body data-tab="[^"]*">')
 ARTIFACT_LABELS = {
     "design": "Design",
     "plan": "Plan",
@@ -677,6 +683,14 @@ def open_dashboard(run: Path, state: dict[str, Any]) -> None:
             warn(f"agtermctl session focus {mine}: {f.why()}")
 
 
+def write_viewer_pages(run: Path) -> None:
+    """Write <run>/viewer-<tab>.html for each viewer tab: assets/viewer.html with the tab in its
+    <body data-tab>, the tab the page shows first. Raises OSError."""
+    template = (ASSETS / "viewer.html").read_text(encoding="utf-8")
+    for tab in VIEWER_TABS:
+        atomic_write(run / f"viewer-{tab}.html", VIEWER_BODY.sub(f'<body data-tab="{tab}">', template, count=1))
+
+
 # ---------------------------------------------------------------- commands
 
 
@@ -771,10 +785,18 @@ def cmd_init(args: argparse.Namespace) -> int:
         atomic_write(pointer_path(), str(run) + "\n")
     except OSError as e:
         raise MtError(f"cannot write run pointer {pointer_path()}: {e}") from e
+    pages_failed = False
     try:
         shutil.copyfile(ASSETS / "dashboard.html", run / "dashboard.html")
     except OSError as e:
         state["warnings"].append(f"cannot copy dashboard.html: {e}")
+        pages_failed = True
+    try:
+        write_viewer_pages(run)
+    except OSError as e:
+        state["warnings"].append(f"cannot write the viewer pages: {e}")
+        pages_failed = True
+    if pages_failed:
         save(run, state)
     if agterm_session() is not None:
         open_dashboard(run, state)

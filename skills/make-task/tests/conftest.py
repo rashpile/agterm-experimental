@@ -46,6 +46,8 @@ MT = _load_mt()
 # (never write them) use these
 SHIPPED_TEMPLATES = MT.ASSETS / "profiles"
 SHIPPED = SHIPPED_TEMPLATES / MT.DEFAULT_TEMPLATE
+# what `mt init` leaves in a new run dir: the state, the dashboard and one viewer entry page per tab
+RUN_FILES = sorted(["dashboard.html", "state.js", "state.json", *(f"viewer-{t}.html" for t in MT.VIEWER_TABS)])
 
 # the profile dir the `init` helper passes; the autouse isolate fixture sets it for each test
 _RUN_PROFILE: dict[str, Path] = {}

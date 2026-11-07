@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 import pytest
-from conftest import MT, git, init, init_args, profile_config, write_run_profile
+from conftest import MT, RUN_FILES, git, init, init_args, profile_config, write_run_profile
 from test_agterm import PANE_ID, SID, tree
 
 
@@ -595,7 +595,7 @@ def test_writes_leave_no_tmp_files(mt, git_repo):
     run = Path(init(mt, git_repo)["state_dir"])
     mt("event", "one")
     mt("assume", "x", "--why", "y")
-    assert sorted(p.name for p in run.iterdir()) == ["dashboard.html", "state.js", "state.json"]
+    assert sorted(p.name for p in run.iterdir()) == RUN_FILES
 
 
 def test_command_loads_fresh_state(mt, git_repo, run_state):

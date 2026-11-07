@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>make-task</title>
+<!--
+  make-task viewer: the run's artifacts in tabs Design · Plan · Progress · Review · Stats.
+  mt init writes one copy per tab into the run directory, viewer-<tab>.html, differing only in
+  <body data-tab>, the tab shown first. The dashboard opens one with
+  {html, cwd: <run>, javascript: true, sizePercent: 85, follow: true}.
+  The page reads what mt writes and changes nothing. A javascript page cannot fetch() file:// URLs,
+  but a <script src> beside the page loads, so it re-injects state.js (`window.mtState(<json>)`) and
+  the current tab's artifacts/<id>.js (`window.mtArtifact("<id>", {...})`) every 1.5 s.
+  A tab re-renders only when its payload's `updated` changed. Scroll positions and expanded items
+  live in this script (never read back from the DOM), so a re-render keeps them.
+  Document HTML is mt's markdown-it output with raw HTML off and goes in as HTML; every other string
+  is escaped. Colors come only from the --agterm-* variables agterm injects (never declared here).
+-->
+<style>
+  .page {
+    --bg: var(--agterm-background, #1d2021);
+    --fg: var(--agterm-foreground, #ebdbb2);
+    --dim: color-mix(in srgb, var(--fg) 58%, transparent);
+    --faint: color-mix(in srgb, var(--fg) 14%, transparent);
+    --wash: color-mix(in srgb, var(--fg) 5%, transparent);
+    --run: var(--agterm-color-4, #83a598);
+    --ok: var(--agterm-color-2, #b8bb26);
+    --warn: var(--agterm-color-3, #fabd2f);
+    --bad: var(--agterm-color-1, #fb4934);
+    --you: var(--agterm-color-5, #d3869b);
+    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--agterm-background, #1d2021);
+    color: var(--agterm-foreground, #ebdbb2);
+    font: 14px/1.45 -apple-system, "SF Pro Text", system-ui, sans-serif;
+    font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page { padding: 22px 28px 18px; max-width: 1080px; margin: 0 auto; }
+  code { font-family: var(--mono); font-size: 12px; }
+  .empty { color: var(--dim); font-size: 12.5px; }
+
+  /* header, as in the dashboard */
+  header h1 {
+    font: 600 21px/1.2 -apple-system, "SF Pro Display", system-ui, sans-serif;
+    letter-spacing: -0.01em; margin: 0 0 6px; overflow-wrap: anywhere;
+  }
+  .where { color: var(--dim); font-size: 12.5px; display: flex; gap: 14px; flex-wrap: wrap; }
+  .where code { color: var(--fg); }
+  .where .tree { color: var(--run); }
+
+  /* tabs: the dashboard's file buttons, the current one framed */
+  .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 14px 0 0; padding-bottom: 12px; border-bottom: 1px solid var(--faint); }
+  .file {
+    font: inherit; font-size: 12.5px; color: var(--fg); background: var(--wash); cursor: pointer;
+    border: 1px solid var(--faint); border-radius: 6px; padding: 3px 11px;
+  }
+  .file:hover { border-color: var(--run); }
+  .file:focus-visible, a:focus-visible, summary:focus-visible { outline: 2px solid var(--run); outline-offset: 2px; }
+  .file .ago { color: var(--dim); font-size: 11.5px; margin-left: 6px; }
+  .file .live { color: var(--run); font-size: 11.5px; margin-left: 6px; }
+  .file .live::before { content: "●"; margin-right: 3px; }
+  .file.none { color: var(--dim); border-style: dashed; background: none; }
+  .file.cur { border-color: var(--run); background: color-mix(in srgb, var(--run) 16%, transparent); font-weight: 600; color: var(--fg); border-style: solid; }
+
+  .pane { padding-top: 16px; }
+  details.more > summary { color: var(--dim); font-size: 12.5px; cursor: pointer; margin: 8px 0; }
+  pre.raw {
+    margin: 0; padding: 10px 12px; border: 1px solid var(--faint); border-radius: 6px; background: var(--wash);
+    font: 12px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+
+  /* rounds strip */
+  .rounds { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 12px; }
+  .rchip { font-size: 12px; border: 1px solid var(--faint); border-radius: 6px; padding: 2px 9px; color: var(--dim); background: none; }
+  .rchip b { color: var(--fg); font-weight: 600; margin-right: 6px; }
+
+  /* the document beside its table of contents */
+  .docwrap { display: flex; gap: 28px; align-items: flex-start; }
+  .doc { flex: 1; min-width: 0; max-width: 78ch; overflow-wrap: anywhere; }
+  .toc { flex: none; width: 190px; position: sticky; top: 12px; font-size: 12.5px; }
+  .toc a { display: block; color: var(--dim); text-decoration: none; padding: 2px 0; }
+  .toc a.l3 { padding-left: 12px; }
+  .toc a:hover { color: var(--fg); }
+  @media (max-width: 760px) { .toc { display: none; } }
+
+  /* rendered markdown in the theme, as in doc.html */
+  .doc h1 { font: 600 20px/1.25 -apple-system, "SF Pro Display", system-ui, sans-serif; margin: 4px 0 12px; }
+  .doc h2 { font-size: 16px; font-weight: 600; margin: 22px 0 8px; padding-bottom: 4px; border-bottom: 1px solid var(--faint); }
+  .doc h3 { font-size: 14px; font-weight: 600; margin: 16px 0 6px; }
+  .doc h4, .doc h5, .doc h6 { font-size: 13.5px; font-weight: 600; margin: 14px 0 6px; color: var(--dim); }
+  .doc [id] { scroll-margin-top: 12px; }
+  .doc p, .doc ul, .doc ol { margin: 0 0 10px; }
+  .doc li { margin: 2px 0; }
+  .doc li > ul, .doc li > ol { margin: 2px 0 0; }
+  .doc a { color: var(--run); text-decoration: underline; text-decoration-color: var(--faint); text-underline-offset: 3px; }
+  .doc a:hover { text-decoration-color: var(--run); }
+  .doc code { background: var(--wash); padding: 1px 5px; border-radius: 4px; }
+  .doc pre { background: var(--wash); border: 1px solid var(--faint); border-radius: 6px; padding: 10px 12px; overflow-x: auto; margin: 0 0 12px; }
+  .doc pre code { background: none; padding: 0; font-size: 12.5px; line-height: 1.5; overflow-wrap: normal; }
+  .doc table { border-collapse: collapse; margin: 0 0 12px; font-size: 13px; display: block; overflow-x: auto; }
+  .doc th, .doc td { border: 1px solid var(--faint); padding: 4px 10px; text-align: left; vertical-align: top; }
+  .doc th { background: var(--wash); font-weight: 600; }
+  .doc blockquote { margin: 0 0 10px; padding: 2px 12px; border-left: 3px solid var(--faint); color: var(--dim); }
+  .doc hr { border: 0; border-top: 1px solid var(--faint); margin: 18px 0; }
+  .doc img { max-width: 100%; }
+  .doc s { color: var(--dim); }
+  .doc .contains-task-list { list-style: none; padding-left: 4px; }
+  .doc .contains-task-list .contains-task-list { padding-left: 22px; }
+  .doc .task-list-item-checkbox { margin: 0 8px 0 0; vertical-align: -1px; accent-color: var(--ok); }
+  .doc .footnote-ref a { text-decoration: none; font-size: 11px; }
+  .doc .footnotes-sep { margin: 22px 0 10px; }
+  .doc .footnotes { color: var(--dim); font-size: 13px; }
+  .doc .footnotes-list { padding-left: 22px; }
+  .doc .footnote-backref { text-decoration: none; }
+</style>
+</head>
+<body data-tab="design">
+<main class="page" id="app">
+  <header id="head"><p class="empty">Loading run state…</p></header>
+  <section class="pane" id="pane"></section>
+</main>
+<script>
+(function () {
+  const TABS = [['design', 'Design'], ['plan', 'Plan'], ['progress', 'Progress log'], ['review', 'Review'], ['stats', 'Stats']];
+  const LABEL = Object.fromEntries(TABS);
+  const app = document.getElementById('app'), head = document.getElementById('head'), pane = document.getElementById('pane');
+  let cur = LABEL[document.body.dataset.tab] ? document.body.dataset.tab : 'design';
+  let state = null, stateText = null, stateNote = 'Loading run state…';
+  const payloads = {};      // id -> the last payload loaded
+  const missing = new Set(); // ids whose script did not load and that have no payload yet
+  const scrolls = {};       // tab -> its scroll position when it was left
+  const open = new Set();   // expanded items, "<tab>:<key>"
+  let shown = null;         // what the pane shows, "<tab>|<what>": it is rewritten only when this changes
+
+  const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const num = x => { const n = Number(x); return Number.isFinite(n) ? n : 0; };
+  const list = x => Array.isArray(x) ? x : [];
+  const nowSec = () => Date.now() / 1000;
+  const ago = t => { if (!t) return ''; const d = nowSec() - num(t); return d < 60 ? 'now' : d < 3600 ? `${Math.floor(d / 60)}m` : `${Math.floor(d / 3600)}h`; };
+  // after the run, "Nm ago" keeps growing and says nothing; show when the artifact was last updated instead
+  const pad2 = n => String(n).padStart(2, '0');
+  const stamp = t => { if (!t) return ''; const d = new Date(num(t) * 1000), hm = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+    return d.toDateString() === new Date().toDateString() ? hm : `${d.getDate()} ${d.toLocaleString('en', { month: 'short' })} ${hm}`; };
+
+  const artifact = id => list(state && state.artifacts).find(x => x.id === id);
+
+  // the round the Review tab follows live, as mt's live_round: the highest-numbered one, when it has
+  // started, has no result, its milestone is not `failed`, and the run is not finished
+  function liveRound(s) {
+    const rounds = list(s && s.review);
+    if (!rounds.length || s.finished) return null;
+    const last = rounds.reduce((a, b) => (num(b.round) > num(a.round) ? b : a));
+    return last.started && !last.finished && last.milestone !== 'failed' ? last.round : null;
+  }
+
+  function badge(id) {
+    const tasks = list(state.tasks);
+    if (id === 'review' && liveRound(state) != null) return '<span class="live">live</span>';
+    if (id === 'plan' && tasks.length) return `<span class="ago">${tasks.filter(t => t.status === 'done').length} / ${tasks.length}</span>`;
+    const a = artifact(id);
+    if (!a || !num(a.updated)) return '<span class="ago">—</span>';
+    return state.finished ? `<span class="ago">${esc(stamp(a.updated))}</span>`
+                          : `<span class="ago" data-ago="${num(a.updated)}">${ago(a.updated)}</span>`;
+  }
+
+  function tabButton([id, label]) {
+    const a = artifact(id), here = id === cur;
+    const cls = `file${here ? ' cur' : ''}${a ? '' : ' none'}`;
+    return `<button type="button" class="${cls}" data-show="${id}"${here ? ' aria-current="page"' : ''}` +
+      ` title="${esc(a ? (a.hint || a.source || '') : 'not yet')}">${esc(label)}${badge(id)}</button>`;
+  }
+
+  function renderHead() {
+    if (!state) { head.innerHTML = `<p class="empty">${esc(stateNote)}</p>`; return; }
+    const s = state;
+    const profileSpans = (s.profile_name ? `<span>profile <code>${esc(s.profile_name)}</code></span>` : '') +
+      (s.autonomy ? `<span>autonomy <code>${esc(s.autonomy)}</code></span>` : '');
+    head.innerHTML = `<h1>${esc(s.title)}</h1>
+      <div class="where"><span><code>${esc(s.repo)}</code></span><span>branch <code>${esc(s.branch || '—')}</code></span>
+        ${s.worktree ? '<span class="tree">worktree</span>' : '<span>in place</span>'}${profileSpans}</div>
+      <nav class="tabs">${TABS.map(tabButton).join('')}</nav>`;
+  }
+
+  // an item the user can expand: its open state is kept in `open`, so a re-render keeps it
+  function fold(key, summary, inner) {
+    return `<details class="more"${open.has(`${cur}:${key}`) ? ' open' : ''}>` +
+      `<summary data-fold="${esc(key)}">${summary}</summary>${inner}</details>`;
+  }
+
+  function docView(p) {
+    const toc = list(p.toc);
+    const nav = toc.length
+      ? `<nav class="toc">${toc.map(t => `<a class="l${num(t.level)}" href="#${esc(t.id)}">${esc(t.text)}</a>`).join('')}</nav>` : '';
+    return `<div class="docwrap"><article class="doc">${String(p.html || '')}</article>${nav}</div>`;
+  }
+
+  const RENDER = {
+    design: docView,
+    stats: docView,
+    plan: p => fold('doc', 'Show the plan document', docView(p)),
+    progress: p => `<pre class="raw">${esc(p.raw)}</pre>`,
+    review: p => {
+      const rounds = list(p.rounds);
+      return rounds.length
+        ? `<div class="rounds">${rounds.map(r => `<span class="rchip"><b>Round ${esc(r.round)}</b>${esc(r.state)}</span>`).join('')}</div>`
+        : '<p class="empty">No review round yet.</p>';
+    },
+  };
+
+  function notYet() {
+    const a = artifact(cur);
+    return `<p class="empty">${esc(LABEL[cur])}: not yet${a && a.hint ? ` · <code>${esc(a.hint)}</code>` : ''}</p>`;
+  }
+
+  // rewrite the pane when what it shows changed, keeping the scroll position (or moving to `y`)
+  function renderPane(y) {
+    const p = payloads[cur];
+    const what = p ? `u${p.updated}` : missing.has(cur) || (state && !artifact(cur)) ? 'none' : 'wait';
+    if (`${cur}|${what}` === shown) return;
+    const keep = y != null ? y : window.scrollY;
+    shown = `${cur}|${what}`;
+    pane.innerHTML = p ? RENDER[cur](p) : what === 'none' ? notYet() : '<p class="empty">Loading…</p>';
+    window.scrollTo(0, keep);
+  }
+
+  function setTitle() {
+    document.title = `make-task · ${LABEL[cur]}` + (state && state.title ? ` · ${state.title}` : '');
+  }
+
+  function show(id) {
+    if (!LABEL[id] || id === cur) return;
+    scrolls[cur] = window.scrollY;
+    cur = id;
+    renderHead();
+    renderPane(scrolls[id] || 0);
+    setTitle();
+    loadArtifact(id);
+  }
+
+  app.addEventListener('click', e => {
+    const tab = e.target.closest('[data-show]');
+    if (tab) { show(tab.dataset.show); return; }
+    const f = e.target.closest('[data-fold]');
+    if (f) {
+      // toggled here, not by the browser, so the state is ours and a re-render renders it
+      e.preventDefault();
+      const key = `${cur}:${f.dataset.fold}`;
+      if (open.has(key)) open.delete(key); else open.add(key);
+      const d = f.closest('details');
+      if (d) d.open = open.has(key);
+      return;
+    }
+    // in-page links (the table of contents, footnotes) scroll; the page never navigates
+    const link = e.target.closest('a[href^="#"]');
+    if (link) {
+      e.preventDefault();
+      let id = link.getAttribute('href').slice(1);
+      try { id = decodeURIComponent(id); } catch (err) { /* keep it as written */ }
+      const el = id && document.getElementById(id);
+      if (el) el.scrollIntoView({ block: 'start' });
+    }
+  });
+
+  function tick() {
+    document.querySelectorAll('[data-ago]').forEach(el => { el.textContent = ago(Number(el.dataset.ago)); });
+  }
+
+  window.mtState = function (next) {
+    const txt = JSON.stringify(next);
+    if (txt === stateText) return;
+    stateText = txt;
+    state = next;
+    renderHead();
+    renderPane();
+    setTitle();
+  };
+  window.mtArtifact = function (id, payload) {
+    if (!LABEL[id] || !payload || typeof payload !== 'object') return;
+    missing.delete(id);
+    const old = payloads[id];
+    if (old && old.updated === payload.updated) return;
+    payloads[id] = payload;
+    if (id === cur) renderPane();
+  };
+
+  function load(src, failed) {
+    const el = document.createElement('script');
+    el.src = `${src}?${Date.now()}`;
+    el.onload = () => el.remove();
+    el.onerror = () => { el.remove(); failed(); };
+    document.head.appendChild(el);
+  }
+  function loadArtifact(id) {
+    load(`artifacts/${id}.js`, () => {
+      if (payloads[id] || missing.has(id)) return;
+      missing.add(id);
+      if (id === cur) renderPane();
+    });
+  }
+  function poll() {
+    load('state.js', () => {
+      if (state || stateNote === 'state.js not loading') return;
+      stateNote = 'state.js not loading';
+      renderHead();
+    });
+    loadArtifact(cur);
+  }
+
+  renderHead(); renderPane(); setTitle();
+  poll(); setInterval(poll, 1500); setInterval(tick, 1000);
+})();
+</script>
+</body>
+</html>

@@ -306,14 +306,21 @@
 - Create: `skills/make-task/assets/viewer.html`
 - Modify: `skills/make-task/scripts/mt`
 - Create: `skills/make-task/tests/test_viewer.py`
+- ➕ Modify: `skills/make-task/tests/conftest.py` (`RUN_FILES`), `skills/make-task/tests/test_state.py` and
+  `skills/make-task/tests/test_checkpoint.py` (the run dir listing after `mt init` holds the entry pages)
 
-- [ ] create `assets/viewer.html` per the design and the mockup: header, tabs Design · Plan · Progress · Review · Stats as file buttons with their age and badges, the current one framed; no Changes tab
-- [ ] load `state.js` and the current tab's `artifacts/<id>.js` every 1.5 s; re-render only on a changed `updated`; keep scroll and expanded items in JS state
-- [ ] render the Design and Stats tabs: the document with its table of contents; a tab whose payload is missing shows "not yet"
-- [ ] `mt init` writes `viewer-<tab>.html` for each tab from `assets/viewer.html` (only `<body data-tab>` differs); no plain `viewer.html` in the run dir
-- [ ] write node-harness tests: Design and Stats render from sample payloads, tab switch, missing payload, a re-render keeps the scroll and an expanded item
-- [ ] write pytest: the entry files exist after `mt init` and differ only in `data-tab`; the static checks on `viewer.html` and `doc.html`
-- [ ] run tests - must pass before task 10
+- [x] create `assets/viewer.html` per the design and the mockup: header, tabs Design · Plan · Progress · Review · Stats as file buttons with their age and badges, the current one framed; no Changes tab
+- [x] load `state.js` and the current tab's `artifacts/<id>.js` every 1.5 s; re-render only on a changed `updated`; keep scroll and expanded items in JS state
+- [x] render the Design and Stats tabs: the document with its table of contents; a tab whose payload is missing shows "not yet"
+- [x] `mt init` writes `viewer-<tab>.html` for each tab from `assets/viewer.html` (only `<body data-tab>` differs); no plain `viewer.html` in the run dir
+- [x] write node-harness tests: Design and Stats render from sample payloads, tab switch, missing payload, a re-render keeps the scroll and an expanded item
+- [x] write pytest: the entry files exist after `mt init` and differ only in `data-tab`; the static checks on `viewer.html` and `doc.html`
+- [x] run tests - must pass before task 10
+- ➕ as built: tabs are `<button data-show="<tab>">` (`data-tab` is the body's); a tab with no artifact entry is
+  dimmed but stays clickable and shows "<Label>: not yet"; expandable items are `<details>` whose
+  `<summary data-fold="<key>">` click the page handles itself (the `open` Set, keyed `<tab>:<key>`); in-page
+  `#` links scroll with `scrollIntoView` and never navigate. Until Tasks 10 and 11 give them their own view, Plan
+  shows its document behind "Show the plan document", Progress its raw text (escaped) and Review the rounds strip
 
 ### Task 10: Viewer Plan and Progress tabs
 
