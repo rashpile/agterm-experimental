@@ -1873,6 +1873,30 @@ def cmd_review_start(args: argparse.Namespace) -> int:
     return 0
 
 
+# JSON text that may decode to a surrogate (a \uD800-\uDFFF escape, or the code point itself); a surrogate in a str
+SURROGATE_IN_JSON = re.compile(r"\\u[dD][89a-fA-F]|[\ud800-\udfff]")
+LONE_SURROGATE = re.compile(r"[\ud800-\udfff]")
+
+
+def without_surrogates(value: Any) -> Any:
+    """value with every unpaired surrogate in its strings, keys included, replaced by U+FFFD."""
+    if isinstance(value, str):
+        return LONE_SURROGATE.sub("\ufffd", value)
+    if isinstance(value, list):
+        return [without_surrogates(v) for v in value]
+    if isinstance(value, dict):
+        return {without_surrogates(k): without_surrogates(v) for k, v in value.items()}
+    return value
+
+
+def revmux_json(text: str) -> Any:
+    """json.loads for JSON revmux wrote (an events.jsonl line, a report). An unpaired surrogate escape such as
+    `\\ud800` becomes U+FFFD: json.loads keeps it as a lone surrogate, which the strict UTF-8 writes of
+    state.json, state.js and review.md cannot encode. Raises ValueError like json.loads."""
+    value = json.loads(text)
+    return without_surrogates(value) if SURROGATE_IN_JSON.search(text) else value
+
+
 def read_events(path: Path) -> list[dict[str, Any]]:
     """Complete, parseable lines of a revmux events.jsonl (a line still being written is skipped)."""
     try:
@@ -1882,7 +1906,7 @@ def read_events(path: Path) -> list[dict[str, Any]]:
     events = []
     for line in text.split("\n")[:-1]:
         try:
-            ev = json.loads(line)
+            ev = revmux_json(line)
         except ValueError:
             continue
         if isinstance(ev, dict):
@@ -2000,7 +2024,8 @@ def fold_events(lines: Iterable[str]) -> dict[str, Any]:
     lines are the file's lines, each with its "\\n"; one without (the line revmux is still writing) is
     skipped, and so is a blank one. A line that is not JSON, or not an object, is skipped and counted in
     `skipped`; one of a kind outside EVENT_KINDS in `unknown`. A missing or mistyped field reads blank
-    (`at` None). `format_ok` is false when there are complete lines but none of a known kind.
+    (`at` None), an unpaired surrogate as U+FFFD (revmux_json). `format_ok` is false when there are complete
+    lines but none of a known kind.
 
     The snapshot: `stages` [{name, started, finished}] (finished when the next stage starts, the last one
     when all its agents finished) and `stage`, the latest's name; `agents` [{name, stage, lenses, model,
@@ -2034,7 +2059,7 @@ def fold_events(lines: Iterable[str]) -> dict[str, Any]:
             continue
         complete += 1
         try:
-            ev = json.loads(line)
+            ev = revmux_json(line)
         except ValueError:
             skipped += 1
             continue
@@ -2170,7 +2195,7 @@ def process_alive(task: str, name: str) -> bool:
 def load_report(path: Path) -> dict[str, Any]:
     """A revmux JSON report; MtError when it is missing, empty or not a report."""
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = revmux_json(path.read_text(encoding="utf-8"))
     except OSError as e:
         raise MtError(f"cannot read revmux report {path}: {e.strerror or e}") from e
     except ValueError as e:

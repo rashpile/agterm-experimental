@@ -288,7 +288,10 @@
   const VIEWER = ['design', 'plan', 'progress', 'review', 'stats'];
   const artifact = id => list(state && state.artifacts).find(x => x.id === id);
   const isLive = id => id === 'review' && liveRound(state) != null;
-  const openable = (id, a) => (VIEWER.includes(id) ? !!((a && a.html) || isLive(id)) : !!(a && a.command));
+  // Review opens from its first round on (mt review start writes the tab's data): live, failed or done,
+  // with or without the review.md page that only `mt review result` renders
+  const hasRound = id => id === 'review' && list(state && state.review).length > 0;
+  const openable = (id, a) => (VIEWER.includes(id) ? !!((a && a.html) || hasRound(id)) : !!(a && a.command));
   function openArgs(id, a) {
     if (!VIEWER.includes(id)) return { command: a.command, cwd: a.cwd, sizePercent: 90, follow: true };
     const run = String((state && state.state_dir) || '').replace(/\/+$/, '');
@@ -305,6 +308,7 @@
       return `<button type="button" class="file" disabled title="${esc(a ? hint : 'not yet')}">${esc(label)}</button>`;
     }
     const when = isLive(id) ? '<span class="live">live</span>'
+      : !a || !num(a.updated) ? ''  // Review before review.md has a page
       : state && state.finished ? `<span class="ago">${esc(stamp(a.updated))}</span>`
       : `<span class="ago" data-ago="${num(a.updated)}">${ago(a.updated)}</span>`;
     return `<button type="button" class="file" data-open="${esc(id)}" title="${esc(refused[id] || hint)}">` +

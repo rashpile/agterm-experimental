@@ -812,6 +812,38 @@ def test_fold_missing_and_mistyped_fields_read_blank():
     assert snap["started"] is None and snap["updated"] is None
 
 
+@pytest.mark.parametrize(
+    "text, want",
+    [
+        (r'"\ud800"', "\ufffd"),  # a lone high surrogate
+        (r'"a\udfffb"', "a\ufffdb"),  # a lone low one
+        (r'"\uDBFF"', "\ufffd"),  # upper-case hex
+        (r'"\udc00\ud800"', "\ufffd\ufffd"),  # low before high: no pair
+        (r'"\ud83d\ude00"', "\U0001f600"),  # a pair is one character and stays
+        (r'"\\ud800"', "\\ud800"),  # an escaped backslash, then text: no escape
+        ('"x\ud800"', "x\ufffd"),  # the code point itself
+        (r'{"\ud800k": [1, {"v": "\udc00"}]}', {"\ufffdk": [1, {"v": "\ufffd"}]}),  # keys and nesting
+        (r'{"n": 1.5, "b": true, "z": null}', {"n": 1.5, "b": True, "z": None}),
+    ],
+)
+def test_revmux_json_replaces_unpaired_surrogates(text, want):
+    got = MT.revmux_json(text)
+    assert got == want
+    json.dumps(got, ensure_ascii=False).encode("utf-8")  # strict UTF-8 can write it
+
+
+def test_fold_unpaired_surrogates_read_as_replacement_characters():
+    snap = fold(
+        r'{"kind":"stage","stage":"find\ud800"}',
+        r'{"kind":"agent_started","agent":"a\udc00","text":"bugs"}',
+        r'{"kind":"agent_activity","agent":"a\udc00","text":"\ud800 read"}',
+        r'{"kind":"findings","agent":"a\udc00","findings":[{"id":"x","severity":"minor","title":"t\udfff"}]}',
+    )
+    assert snap["stage"] == "find\ufffd" and snap["agents"][0]["name"] == "a\ufffd"
+    assert snap["activity"]["text"] == "\ufffd read" and snap["findings"][0]["title"] == "t\ufffd"
+    json.dumps(snap, ensure_ascii=False).encode("utf-8")
+
+
 def test_fold_agent_stays_under_the_stage_of_its_start():
     snap = fold(
         {"kind": "stage", "stage": "find", "at": at(1)},
@@ -1120,6 +1152,34 @@ def test_wait_failed_rewrites_the_round_failed(mt, review_run, alive, run_state)
     r1 = data_round(run, 1)
     assert (r1["state"], r1["milestone"], r1["live"], r1["findings"]) == ("failed", "failed", None, [])
     assert rnd(run_state(run), 1)["live"] == summary, "the last summary stays; the dashboard reads the milestone"
+
+
+def test_wait_and_result_save_unpaired_surrogates_as_replacement_characters(mt, review_run, alive, run_state):
+    """A lone `\\ud800` escape in revmux's events or report never stops a strict UTF-8 state write."""
+    run, round_dir = review_run
+    write_events(
+        round_dir,
+        [
+            r'{"kind":"stage","stage":"find\ud800"}' + "\n",
+            r'{"kind":"agent_started","agent":"a","text":"bugs"}' + "\n",
+            r'{"kind":"agent_activity","agent":"a","text":"read \udc00"}' + "\n",
+        ],
+    )
+    assert wait(mt) == "running"
+    r1 = rnd(run_state(run), 1)
+    assert r1["live"]["activity"]["text"] == "read \ufffd" and r1["live"]["stages"] == ["find\ufffd"]
+    assert r1["milestone"] == "find\ufffd 0/1"
+    assert wait(mt) == "running", "a retry over the same log works too"
+
+    report = json.loads(FINDINGS.read_text(encoding="utf-8"))
+    report["findings"][0]["title"] = "\ud800 lock"
+    path = round_dir / "report.json"
+    path.write_text(json.dumps(report), encoding="ascii")  # json.dumps escapes the surrogate as \ud800
+    assert "\\ud800 lock" in path.read_text(encoding="ascii")
+    r = mt("review", "result", str(path), "--round", "1")
+    assert r.code == 0, r.err
+    assert rnd(run_state(run), 1)["findings"][0]["title"] == "\ufffd lock"
+    assert "\ufffd lock" in (run / "review.md").read_text(encoding="utf-8")
 
 
 def test_wait_done_keeps_the_round_running_until_its_result(mt, review_run, alive):

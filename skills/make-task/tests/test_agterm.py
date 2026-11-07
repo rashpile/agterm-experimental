@@ -727,7 +727,7 @@ def test_page_artifact_clicks(tmp_path):
     ]
     out = run_page(tmp_path, js(base_state()), clicks)
     assert out["requests"] == [viewer_open("plan"), REVDIFF_OPEN], (
-        "design has no html yet and no review round runs, so their clicks do nothing"
+        "design has no html yet and no review round exists, so their clicks do nothing"
     )
 
 
@@ -822,13 +822,14 @@ def test_page_review_is_live_during_round_one_before_any_result(tmp_path):
 
 
 def test_page_review_live_off_for_a_failed_or_older_round(tmp_path):
-    # round 1's wait failed: no result, not live, and no page to open
-    html = run_page(tmp_path, js(review_state(running_round(1, milestone="failed"))))["html"]
-    assert (
-        review_button(html)
-        == '<button type="button" class="file" disabled title="revmux review rounds">Review</button>'
-    )
-    assert "live-box" not in html and 'class="live"' not in html
+    enabled = '<button type="button" class="file" data-open="review" title="revmux review rounds">Review</button>'
+
+    # round 1's wait failed: no result and no review.md page, not live, but the tab shows the failed round
+    s = review_state(running_round(1, milestone="failed"))
+    out = run_page(tmp_path, js(s), [["[data-open]", {"open": "review"}]])
+    assert review_button(out["html"]) == enabled, "openable, no live badge and no age without a page"
+    assert out["requests"] == [viewer_open("review")]
+    assert "live-box" not in out["html"] and 'class="live"' not in out["html"]
 
     # an older round left without a result while the latest has one: the page opens, nothing is live
     s = review_state(running_round(1), finished_round(2), review_html="/state/run/artifacts/review.html")
@@ -837,11 +838,31 @@ def test_page_review_live_off_for_a_failed_or_older_round(tmp_path):
     assert 'data-open="review"' in button and 'data-ago="2600"' in button, "its page's age, not live"
     assert "live-box" not in html and 'class="live"' not in html
 
-    # the run ended with the round running: not live either
+    # the run ended with the round running: not live either, still openable
     s = review_state(running_round(1), finished=5000.0, now_kind="done", final_status="stopped")
     html = run_page(tmp_path, js(s))["html"]
-    assert 'disabled title="revmux review rounds">Review</button>' in html
+    assert review_button(html) == enabled
     assert "live-box" not in html
+
+    # with a page after the run: its time, not live
+    s = review_state(finished_round(1), running_round(2), review_html="/state/run/artifacts/review.html",
+                     finished=5000.0, now_kind="done", final_status="stopped")  # fmt: skip
+    button = review_button(run_page(tmp_path, js(s))["html"])
+    assert 'data-open="review"' in button and '<span class="ago">' in button and 'class="live"' not in button
+
+
+def test_page_review_disabled_before_its_first_round(tmp_path):
+    s = review_state()  # the artifact without a round: nothing for the tab to show
+    out = run_page(tmp_path, js(s), [["[data-open]", {"open": "review"}]])
+    assert (
+        review_button(out["html"])
+        == '<button type="button" class="file" disabled title="revmux review rounds">Review</button>'
+    )
+    assert out["requests"] == []
+    s["artifacts"] = [a for a in s["artifacts"] if a["id"] != "review"]
+    s["review"] = [running_round(1, milestone="failed")]  # a round, but no artifact entry: openable, no crash
+    button = review_button(run_page(tmp_path, js(s))["html"])
+    assert button == '<button type="button" class="file" data-open="review" title="">Review</button>'
 
 
 def live_box(html: str) -> str:

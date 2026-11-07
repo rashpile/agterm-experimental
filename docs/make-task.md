@@ -193,7 +193,9 @@ state and latest activity, and the findings so far by severity, each one opening
 `mt review wait` keeps the tab current from `events.jsonl`, the event log revmux writes for the round.
 After 30 s without an event the tab marks its data stale. Once the round has a result, the tab shows its
 verdict and the final findings, each gating one marked unresolved, not gating or deferred as the round
-recorded it. A round that ended without a result says so, with the last stage it reached.
+recorded it. A round that ended without a result says so. If a later round or the end of the run cut it
+off, the tab also shows the last stage it reached. A round whose revmux process ended without a report
+shows no stage.
 
 ---
 
