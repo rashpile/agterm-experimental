@@ -108,6 +108,12 @@
   - `progress`: `{source, header, entries: [{at, task, title, lines: [{at, kind, text, children}]}], raw}`,
     `kind` one of `item`, `decision`, `deviation`, `review`, `text`; a line that matches nothing is kept as
     `text`, never dropped;
+    ➕ as built in Task 6: `header` is `{plan, branch, started}` (lowercased keys); `at` is the stamp string
+    `YYYY-MM-DD HH:MM:SS` or null; `task` is N for a task entry and null for `fixer: …`/`finalize: …` entries
+    (title = the line) and for lines before the first entry (title `""`); a review line opens an entry
+    titled `Review` (task null) unless one is open, so the fixer's lines after it are not filed under the
+    last task; `children` are the nested `  - ` items, one level; a decision's text keeps its `task N: ` or
+    `fixer: ` prefix;
   - `review`: `{rounds: [{round, run, state, verdict, counts, findings, dropped, started, finished, live}]}`,
     rebuilt each time from three sources: the state's round entries; each finished round's report JSON at
     `entry["report"]` (full findings, body capped at 4000 and fix at 2000 characters); `fold_events` over each
@@ -239,11 +245,11 @@
 - Create: `skills/make-task/tests/fixtures/progress.txt`
 - Modify: `skills/make-task/tests/test_artifacts.py`
 
-- [ ] add `parse_progress(text)` for the grammar in Context: an optional `[timestamp] ` prefix on any line; `task N: title`, `fixer: …` and `finalize: …` start entries; nested `  - ` items stay with their parent; unmatched lines are kept as `text`
-- [ ] `artifact_payload` builds the `progress` payload (entries plus `raw`)
-- [ ] add a fixture trimmed from a real progress file, home paths scrubbed
-- [ ] write tests: header, task entries, items and nested items, decisions and deviations with and without the timestamp, fixer and finalize lines, review round lines with suffixes, `completed`, unknown lines, empty file
-- [ ] run tests - must pass before task 7
+- [x] add `parse_progress(text)` for the grammar in Context: an optional `[timestamp] ` prefix on any line; `task N: title`, `fixer: …` and `finalize: …` start entries; nested `  - ` items stay with their parent; unmatched lines are kept as `text`
+- [x] `artifact_payload` builds the `progress` payload (entries plus `raw`)
+- [x] add a fixture trimmed from a real progress file, home paths scrubbed
+- [x] write tests: header, task entries, items and nested items, decisions and deviations with and without the timestamp, fixer and finalize lines, review round lines with suffixes, `completed`, unknown lines, empty file
+- [x] run tests - must pass before task 7
 
 ### Task 7: Fold revmux events into a round snapshot
 

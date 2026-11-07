@@ -82,10 +82,12 @@ changed (on `artifact`, `plan` and `refresh`): mt renders the markdown itself
 (markdown-it, raw HTML off, with tables, strikethrough, task lists, footnotes and
 `doc-` heading ids) into assets/doc.html; a source that is not markdown renders as
 a code block. Rendering is best-effort: a source mt cannot read prints a warning
-and keeps the previous html. design and stats also get <run>/artifacts/<id>.js,
-`window.mtArtifact("<id>", {title, html, toc, source, updated})` in ASCII-escaped JSON
-(title: the first `#` heading, else the artifact's label), rewritten with a new `updated`
-only when the rest of it changed.
+and keeps the previous html. design, stats, plan and progress also get
+<run>/artifacts/<id>.js, `window.mtArtifact("<id>", {...})` in ASCII-escaped JSON,
+rewritten with a new `updated` only when the rest of it changed: design and stats hold
+{title, html, toc, source, updated} (title: the first `#` heading, else the artifact's
+label), plan adds each task's checkbox `items`, progress holds {source, header, entries,
+raw, updated}, the log parsed into entries (parse_progress) and its whole text.
 
 Review rounds: `review start` (note: its --run is the revmux run name; the global
 --run DIR goes before the command) records the round's `head` (HEAD of cwd's toplevel: what the
@@ -1361,8 +1363,11 @@ def first_heading(html: str) -> str | None:
 
 
 def read_source(src: Path) -> str:
-    """An artifact source's text, undecodable bytes replaced. Raises OSError."""
-    return src.read_text(encoding="utf-8", errors="replace")
+    """An artifact source's text as it is on disk, undecodable bytes replaced. Line ends are not translated:
+    a lone \\r inside a progress log line stays in that line (markdown-it normalizes them itself). Raises
+    OSError."""
+    with open(src, encoding="utf-8", errors="replace", newline="") as f:
+        return f.read()
 
 
 def source_markdown(src: Path, text: str) -> str:
@@ -1390,10 +1395,91 @@ def plan_items(text: str) -> dict[str, list[dict[str, Any]]]:
     return items
 
 
+# the progress log (the exec scripts' format): append-progress.sh stamps a one-line message, not piped lines
+PROGRESS_STAMP = re.compile(r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\] ?")
+PROGRESS_FIELD = re.compile(r"([A-Za-z][\w -]*):\s*(.*)")
+PROGRESS_TASK = re.compile(r"task (\d+):\s*(.*)", re.IGNORECASE)
+PROGRESS_ENTRY = re.compile(r"(?:fixer|finalize):(?:\s|$)")
+PROGRESS_MARK = re.compile(r"\[(decision|deviation)\]\s*(.*)")
+PROGRESS_REVIEW = re.compile(r"review (?:round|fix round|leftovers)\b")
+PROGRESS_ITEM = re.compile(r"(\s*)- (.*)")
+
+
+def progress_header(lines: list[str]) -> tuple[dict[str, str], int]:
+    """(fields, n): the header init-progress.sh writes, `# progress`, `Key: value` lines, `---`, as
+    {lowercased key: value}, and the number of lines it takes. A block with any other line is no header."""
+    end = next((i for i, line in enumerate(lines) if line.strip() == "---"), None)
+    if not lines or not lines[0].startswith("# ") or end is None:
+        return {}, 0
+    fields = {}
+    for line in lines[1:end]:
+        m = PROGRESS_FIELD.fullmatch(line.strip())
+        if not m or PROGRESS_TASK.match(line) or PROGRESS_STAMP.match(line):
+            return {}, 0
+        fields[m.group(1).strip().lower()] = m.group(2).strip()
+    return fields, end + 1
+
+
+def parse_progress(text: str) -> dict[str, Any]:
+    """The progress log as {header, entries}: entries [{at, task, title, lines}], lines [{at, kind, text,
+    children}] with kind item, decision, deviation, review or text.
+
+    Any line may start with a `[YYYY-MM-DD HH:MM:SS] ` stamp, its `at` (else None). `task N: title` starts
+    an entry with task N; `fixer: …` and `finalize: …` start one with task None and the line as its title.
+    A review line (`review round N…`, and older runs' `review fix round …` and `review leftovers …`) opens a
+    "Review" entry unless one is open, so the fixer lines that follow it are not filed under the last task.
+    `- x` is an item, an indented `- x` a child of the line before it; `[decision] x` and `[deviation] x`
+    keep x as their text. Any other line is kept as text, never dropped; blank lines are. Lines before the
+    first entry go to an entry with task None and an empty title.
+    """
+    lines = text.split("\n")  # not splitlines: a lone \r (or \f, \u2028) inside a logged line is not a break
+    header, start = progress_header(lines)
+    entries: list[dict[str, Any]] = []
+    cur: dict[str, Any] | None = None
+    in_review = False
+
+    def open_entry(at: str | None, task: int | None, title: str) -> dict[str, Any]:
+        entry = {"at": at, "task": task, "title": title, "lines": []}
+        entries.append(entry)
+        return entry
+
+    for line in lines[start:]:
+        line = line.rstrip()
+        s = PROGRESS_STAMP.match(line)
+        at, body = (s.group(1), line[s.end() :]) if s else (None, line)
+        if not body.strip():
+            continue
+        t = PROGRESS_TASK.match(body)
+        if t or PROGRESS_ENTRY.match(body):
+            cur = open_entry(at, int(t.group(1)), t.group(2).strip()) if t else open_entry(at, None, body)
+            in_review = False
+            continue
+        nested = False
+        m = PROGRESS_MARK.match(body)
+        if m:
+            kind, content = m.group(1), m.group(2)
+        elif PROGRESS_REVIEW.match(body):
+            kind, content = "review", body
+            if not in_review:
+                cur, in_review = open_entry(at, None, "Review"), True
+        elif item := PROGRESS_ITEM.match(body):
+            kind, content, nested = "item", item.group(2), bool(item.group(1))
+        else:
+            kind, content = "text", body
+        if cur is None:
+            cur = open_entry(None, None, "")
+        row = {"at": at, "kind": kind, "text": content.strip(), "children": []}
+        if nested and cur["lines"]:
+            cur["lines"][-1]["children"].append(row)
+        else:
+            cur["lines"].append(row)
+    return {"header": header, "entries": entries}
+
+
 # the ids whose payload is the document alone
 DOCUMENT_IDS = ("design", "stats")
 # the ids artifact_payload builds a payload for: render_artifact keeps their artifacts/<id>.js too
-PAYLOAD_IDS = (*DOCUMENT_IDS, "plan")
+PAYLOAD_IDS = (*DOCUMENT_IDS, "plan", "progress")
 
 
 def artifact_payload(
@@ -1408,18 +1494,21 @@ def artifact_payload(
     The one builder per id: every writer of artifacts/<id>.js goes through it, so a later write never
     replaces a payload with another shape. doc is art's document_payload and text its source's content when
     the caller has them already; the plan's items then come from the text its document was rendered from.
-    The plan's payload is its document plus `items` (plan_items). Raises OSError.
+    The plan's payload is its document plus `items` (plan_items); the progress log's is {source, header,
+    entries, raw} (parse_progress, raw the whole text), without the document. Raises OSError.
     """
     aid = art["id"]
     if aid in DOCUMENT_IDS:
         return dict(doc) if doc is not None else document_payload(art, text)
+    if aid not in ("plan", "progress"):
+        return None
+    if text is None:
+        text = read_source(Path(art["source"]))
     if aid == "plan":
-        if text is None:
-            text = read_source(Path(art["source"]))
         payload = dict(doc) if doc is not None else document_payload(art, text)
         payload["items"] = plan_items(text)
         return payload
-    return None
+    return {"source": str(Path(art["source"])), **parse_progress(text), "raw": text}
 
 
 ARTIFACT_JS = re.compile(r'\Awindow\.mtArtifact\("[^"]*", (.*)\);\n\Z', re.DOTALL)

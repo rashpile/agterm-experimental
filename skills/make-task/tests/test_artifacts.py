@@ -9,7 +9,7 @@ import shlex
 from pathlib import Path
 
 import pytest
-from conftest import MT, git, init_run, write_exec
+from conftest import FIXTURES, MT, git, init_run, write_exec
 
 
 @pytest.fixture
@@ -212,7 +212,7 @@ def test_text_source_wrapped_in_fence(mt, git_repo, run_state, renders, tmp_path
     assert (
         '<pre><code class="language-text"># progress\n[decision] keep &lt;it&gt;\n```\nnot a fence end\n```\n' in page
     )
-    assert sorted(p.name for p in (run / "artifacts").iterdir()) == ["progress.html"]
+    assert sorted(p.name for p in (run / "artifacts").iterdir()) == ["progress.html", "progress.js"]
 
 
 def test_text_as_markdown_plain():
@@ -396,9 +396,13 @@ def test_deleted_data_script_is_written_again(mt, git_repo, run_state, renders, 
     (run / "artifacts" / "design.js").unlink()
 
     assert mt("refresh", cwd=git_repo).code == 0
-    assert len(renders) == 3, "design renders again; progress has no data script to miss"
+    assert len(renders) == 3, "design renders again; progress still has its data script"
     assert artifact_data(run, "design")["title"] == "D"
-    assert not (run / "artifacts" / "progress.js").exists()
+
+    (run / "artifacts" / "progress.js").unlink()
+    assert mt("refresh", cwd=git_repo).code == 0
+    assert len(renders) == 4
+    assert artifact_data(run, "progress")["entries"][0]["title"] == "a"
 
 
 def test_write_artifact_data(tmp_path, monkeypatch):
@@ -465,6 +469,296 @@ def test_data_script_write_failure_keeps_the_entry(mt, git_repo, run_state, monk
     full[0] = False
     assert mt("refresh", cwd=git_repo).code == 0
     assert artifact_data(run, "design")["title"] == "D"
+
+
+# ---------------------------------------------------------------- the progress log
+
+
+def line(kind: str, text: str, at: str | None = None, children: list | None = None) -> dict:
+    return {"at": at, "kind": kind, "text": text, "children": children or []}
+
+
+def entry(task: int | None, title: str, lines: list, at: str | None = None) -> dict:
+    return {"at": at, "task": task, "title": title, "lines": lines}
+
+
+def kinds(e: dict) -> list[str]:
+    return [x["kind"] for x in e["lines"]]
+
+
+def test_parse_progress_fixture():
+    text = (FIXTURES / "progress.txt").read_text()
+    parsed = MT.parse_progress(text)
+    assert parsed["header"] == {
+        "plan": "docs/plans/20261106-go-ask-answer-tool.md",
+        "branch": "go-ask-answer-tool",
+        "started": "2026-11-06 20:46:02",
+    }
+    entries = parsed["entries"]
+    assert [(e["at"], e["task"], e["title"]) for e in entries] == [
+        ("2026-11-06 20:50:16", 1, "State dir, normalization and turn journal"),
+        ("2026-11-06 21:13:39", 6, "Verify acceptance criteria"),
+        ("2026-11-06 21:20:01", 7, "[Final] Update documentation"),
+        (None, None, "Review"),
+        ("2026-11-06 23:14:36", None, "finalize: completed"),
+    ]
+    task1, task6, task7, review, final = entries
+
+    assert kinds(task1) == ["item"] * 4 + ["decision"] * 3
+    assert task1["lines"][0] == line(
+        "item",
+        "modified: mcps/go-ask/turns.go (new), mcps/go-ask/turns_test.go (new), "
+        "docs/plans/20261106-go-ask-answer-tool.md",
+    )
+    assert task1["lines"][4]["text"].startswith("task 1: stateDir falls back to os.TempDir()")
+    assert task1["lines"][4]["at"] is None, "piped decisions carry no stamp"
+
+    # nested items stay with their parent
+    assert kinds(task6) == ["item"] * 5 + ["deviation", "decision", "decision"]
+    e2e = task6["lines"][4]
+    assert e2e["text"].startswith("live e2e (Claude Code 2.1.319")
+    assert [c["kind"] for c in e2e["children"]] == ["item"] * 7
+    assert e2e["children"][0]["text"].startswith("AGTERM_PANE_ID in the hook env: yes")
+    assert e2e["children"][1] == line(
+        "item", "(a) short message: answer right after ask = pending; after the turn = done 'ALPHA'"
+    )
+    assert all(c["children"] == [] for c in e2e["children"])
+    assert task6["lines"][5]["text"].startswith("task 6: the plan's assumption")
+
+    assert kinds(task7) == ["item"] * 4 + ["decision"] * 3 + ["deviation"]
+    assert "~/.local/bin/go-ask" in task7["lines"][5]["text"], "home paths are scrubbed in the fixture"
+
+    # the review rounds and the fixers' lines after them, not under task 7
+    reviews = [x for x in review["lines"] if x["kind"] == "review"]
+    prefixes = [
+        "review round 1: 3 major",
+        "review round 2: 1 major",
+        "review round 3 (final): 3 major",
+        "review round 3 fix (commit 1579e77), the user's rule",
+        "review round 4 (confirming, final): 0 gating",
+    ]
+    assert len(reviews) == len(prefixes)
+    assert all(x["text"].startswith(p) for x, p in zip(reviews, prefixes, strict=True))
+    assert all(x["at"] is None for x in reviews)
+    fixer = [x for x in review["lines"] if x["kind"] in ("decision", "deviation")]
+    assert len(fixer) == 15 and all(x["text"].startswith("fixer: ") for x in fixer)
+    assert fixer[0]["at"] == "2026-11-06 21:49:33" and fixer[0]["kind"] == "decision"
+    assert fixer[5]["at"] == "2026-11-06 21:49:33" and fixer[5]["kind"] == "deviation"
+    assert fixer[10]["at"] is None, "with and without the stamp"
+    assert review["lines"][1] == line(
+        "item",
+        "confirmed: adversarial-1 (queued prompt read as a turn boundary; queued message got the host turn's reply, "
+        "stored final), adversarial-2 and …",
+    )
+
+    assert kinds(final) == ["item"] * 4 + ["decision", "text"]
+    assert final["lines"][4]["text"].startswith("finalize: squashed the three review-fix rounds")
+    assert final["lines"][-1] == line("text", "completed", "2026-11-06 23:17:52")
+
+
+def test_parse_progress_keeps_every_line():
+    """Every non-blank line after the header is an entry's start, a line or a child: nothing is dropped."""
+    text = (FIXTURES / "progress.txt").read_text()
+    entries = MT.parse_progress(text)["entries"]
+    starts = sum(e["title"] != "Review" for e in entries)
+    rows = sum(1 + len(x["children"]) for e in entries for x in e["lines"])
+    body = [x for x in text.split("\n")[5:] if x.strip()]
+    assert starts + rows == len(body)
+
+
+def test_parse_progress_entries_and_lines():
+    text = "\n".join(
+        [
+            "# progress",
+            "Plan: p.md",
+            "---",
+            "[2026-01-02 03:04:05] task 1: First <b>",
+            "- modified: a.py",
+            "  - nested one",
+            "    - deeper",
+            "[decision] task 1: plain",
+            "[2026-01-02 03:04:06] [deviation] task 1: stamped",
+            "[2026-01-02 03:04:07] - stamped item",
+            "Task 2: Capital",
+            "[known-limitation] review round 1 minor: kept as text",
+            "--- review phase 1: findings ---",
+            "   indented prose",
+            "",
+            "review round 1: 0 critical, 1 major; 1 gating",
+            "- confirmed: x",
+            "[decision] fixer: why",
+            "review round 1 fixes (commit ea36651)",
+            "review fix round 2 (commit d190256)",
+            "review leftovers (2 minor): fixer",
+            "review round 3 (confirming, final): 0 findings clean",
+            "fixer: leftovers",
+            "- fixes: y",
+            "review round 4: clean",
+            "[2026-01-02 05:00:00] finalize: completed",
+            "- rebase: success",
+            "[decision] finalize: no squash",
+            "[2026-01-02 05:01:00] completed",
+        ]
+    )
+    parsed = MT.parse_progress(text)
+    assert parsed["header"] == {"plan": "p.md"}
+    assert parsed["entries"] == [
+        entry(
+            1,
+            "First <b>",
+            [
+                line("item", "modified: a.py", children=[line("item", "nested one"), line("item", "deeper")]),
+                line("decision", "task 1: plain"),
+                line("deviation", "task 1: stamped", "2026-01-02 03:04:06"),
+                line("item", "stamped item", "2026-01-02 03:04:07"),
+            ],
+            "2026-01-02 03:04:05",
+        ),
+        entry(
+            2,
+            "Capital",
+            [
+                line("text", "[known-limitation] review round 1 minor: kept as text"),
+                line("text", "--- review phase 1: findings ---"),
+                line("text", "indented prose"),
+            ],
+        ),
+        entry(
+            None,
+            "Review",
+            [
+                line("review", "review round 1: 0 critical, 1 major; 1 gating"),
+                line("item", "confirmed: x"),
+                line("decision", "fixer: why"),
+                line("review", "review round 1 fixes (commit ea36651)"),
+                line("review", "review fix round 2 (commit d190256)"),
+                line("review", "review leftovers (2 minor): fixer"),
+                line("review", "review round 3 (confirming, final): 0 findings clean"),
+            ],
+        ),
+        entry(None, "fixer: leftovers", [line("item", "fixes: y")]),
+        entry(None, "Review", [line("review", "review round 4: clean")]),
+        entry(
+            None,
+            "finalize: completed",
+            [
+                line("item", "rebase: success"),
+                line("decision", "finalize: no squash"),
+                line("text", "completed", "2026-01-02 05:01:00"),
+            ],
+            "2026-01-02 05:00:00",
+        ),
+    ]
+
+
+def test_parse_progress_lines_before_the_first_entry():
+    text = "- orphan item\n  - nested orphan\n[decision] early\nprose\ntask 1: A\n"
+    assert MT.parse_progress(text) == {
+        "header": {},
+        "entries": [
+            entry(
+                None,
+                "",
+                [
+                    line("item", "orphan item", children=[line("item", "nested orphan")]),
+                    line("decision", "early"),
+                    line("text", "prose"),
+                ],
+            ),
+            entry(1, "A", []),
+        ],
+    }
+    # a nested item with no line before it in its entry is a line of its own
+    assert MT.parse_progress("task 1: A\n  - first\n")["entries"][0]["lines"] == [line("item", "first")]
+
+
+@pytest.mark.parametrize(
+    ("text", "header", "first"),
+    [
+        ("# progress\nPlan: a.md\nBranch: b\nStarted: 2026-01-02 03:04:05\n---\ntask 1: A\n", None, "task"),
+        ("# progress\n---\ntask 1: A\n", {}, "task"),
+        ("Plan: a.md\n---\ntask 1: A\n", {}, "text"),  # no `# ` title: no header
+        ("# progress\nPlan: a.md\ntask 1: A\n", {}, "text"),  # no `---`
+        ("# progress\nPlan: a.md\nsome prose\n---\ntask 1: A\n", {}, "text"),  # a line that is no field
+        ("# progress\ntask 1: A\n---\n", {}, "text"),  # an entry inside the block
+    ],
+)
+def test_parse_progress_header(text, header, first):
+    parsed = MT.parse_progress(text)
+    if header is None:
+        header = {"plan": "a.md", "branch": "b", "started": "2026-01-02 03:04:05"}
+    assert parsed["header"] == header
+    head = parsed["entries"][0]
+    if first == "task":
+        assert head["task"] == 1 and len(parsed["entries"]) == 1
+    else:
+        assert head["task"] is None and head["lines"][0] == line("text", text.split("\n")[0])
+
+
+@pytest.mark.parametrize("text", ["", "\n", "  \n\n", "# progress\nPlan: a\n---\n"])
+def test_parse_progress_empty(text):
+    parsed = MT.parse_progress(text)
+    assert parsed["entries"] == []
+    assert parsed["header"] == ({"plan": "a"} if "Plan" in text else {})
+
+
+def test_parse_progress_line_ends():
+    # a lone \r inside a logged line stays in it; CRLF line ends are dropped
+    parsed = MT.parse_progress("task 1: A\r\n- drop \r, unwrap\r\n[decision] task 1: d\r\n")
+    assert parsed["entries"] == [entry(1, "A", [line("item", "drop \r, unwrap"), line("decision", "task 1: d")])]
+
+
+def test_progress_payload(mt, git_repo, run_state, tmp_path):
+    run = init_run(mt, git_repo)
+    log = tmp_path / "progress-x.txt"
+    log.write_bytes(b"# progress\nPlan: p.md\n---\n[2026-01-02 03:04:05] task 1: A <script>\n- drop \r, unwrap\n")
+    assert mt("artifact", "progress", str(log), cwd=git_repo).code == 0
+    data = artifact_data(run, "progress")
+    assert sorted(data) == ["entries", "header", "raw", "source", "updated"]
+    assert data["source"] == str(log)
+    assert data["raw"] == log.read_bytes().decode(), "the whole file, its \\r kept"
+    assert data["header"] == {"plan": "p.md"}
+    assert data["entries"] == [
+        entry(1, "A <script>", [line("item", "drop \r, unwrap")], "2026-01-02 03:04:05"),
+    ]
+    raw = (run / "artifacts" / "progress.js").read_bytes()
+    assert raw.isascii() and b"<script>" not in raw
+    # the static page is the log as a code block, as before
+    page = Path(artifact(run_state(run), "progress")["html"]).read_text()
+    assert '<pre><code class="language-text"># progress' in page and "A &lt;script&gt;" in page
+
+
+def test_progress_payload_follows_the_log(mt, git_repo, run_state, tmp_path):
+    run = init_run(mt, git_repo)
+    plan = git_repo / "docs" / "plans" / "p.md"
+    plan.parent.mkdir(parents=True)
+    plan.write_text("### Task 1: A\n- [ ] one\n")
+    log = tmp_path / "progress.txt"
+    assert mt("plan", str(plan), "--progress", str(log), cwd=git_repo).code == 0
+    assert not (run / "artifacts" / "progress.js").exists(), "no log yet, no payload"
+
+    log.write_text("# progress\n---\n[2026-01-02 03:04:05] task 1: A\n- modified: a\n")
+    assert mt("refresh", cwd=git_repo).code == 0
+    first = artifact_data(run, "progress")
+    assert [e["title"] for e in first["entries"]] == ["A"]
+
+    with log.open("a") as f:
+        f.write("review round 1: clean\n")
+    bump_mtime(log)
+    assert mt("refresh", cwd=git_repo).code == 0
+    data = artifact_data(run, "progress")
+    assert [e["title"] for e in data["entries"]] == ["A", "Review"]
+    assert data["updated"] > first["updated"] and data["raw"].endswith("review round 1: clean\n")
+
+
+def test_artifact_payload_progress_reads_the_source(tmp_path):
+    log = tmp_path / "progress.txt"
+    log.write_text("task 3: C\n")
+    art = {"id": "progress", "source": str(log)}
+    payload = MT.artifact_payload(tmp_path, {}, art)
+    assert payload == {"source": str(log), "header": {}, "entries": [entry(3, "C", [])], "raw": "task 3: C\n"}
+    # the caller's text wins over the file: the page and the payload come from one read
+    assert MT.artifact_payload(tmp_path, {}, art, text="task 4: D\n")["entries"] == [entry(4, "D", [])]
 
 
 # ---------------------------------------------------------------- changes
