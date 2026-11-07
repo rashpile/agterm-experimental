@@ -198,32 +198,35 @@
 - Create: `mcps/go-ask/recap_locate.go`
 - Create: `mcps/go-ask/recap_locate_test.go`
 
-- [ ] create `claudeLocator{sessionsDir, projectsDir string; ps func(ctx, pids []int) (map[int]string, error)}`
+- [x] create `claudeLocator{sessionsDir, projectsDir string; ps func(ctx, pids []int) (map[int]string, error)}`
       with `newClaudeLocator()` (dirs under `os.UserHomeDir()/.claude`) and the real runner
       `runPS`: `/bin/ps -E -o pid=,command= -p <comma-separated pids>`, output parsed by
       `parsePS(out []byte) map[int]string` (pids are left-padded with spaces). ps rules measured on
       this Mac: a dead pid among live ones → exit 0; only dead pids → exit 1 with empty stdout and
       stderr, which means "no live pids", not an error; an error only when stderr has text or the
       exit code is other than 0/1; never called with an empty pid list
-- [ ] `transcriptFor(ctx, paneID) (sessionID, path string, err)`: read `<sessionsDir>/<digits>.json`
+- [x] `transcriptFor(ctx, paneID) (sessionID, path string, err)`: read `<sessionsDir>/<digits>.json`
       (skip other names, unparsable files and records with an empty `sessionId`); no records →
       `errNoClaude` without calling ps; one ps call over all pids; keep pids whose env has the whole
       token `AGTERM_PANE_ID=<paneID>` and not the whole token `CLAUDECODE=1` (whole token: preceded
       by start or space, followed by space or end); newest `updatedAt` wins; then
       `filepath.Glob(projectsDir/*/<sessionId>.jsonl)`, first hit sorted
-- [ ] errors the handler maps to messages: no matching live claude (`errNoClaude`), record found but
+- [x] errors the handler maps to messages: no matching live claude (`errNoClaude`), record found but
       no transcript on disk (session id named), empty pane id
-- [ ] write tests with temp dirs and a fake ps: match on the right pane only (left/right panes of one
+- [x] write tests with temp dirs and a fake ps: match on the right pane only (left/right panes of one
       session with different pane ids), whole-token match (`…ID=ABC` vs `…ID=ABCD`,
       `X_AGTERM_PANE_ID`), a parent record plus a newer child record whose env has `CLAUDECODE=1`
       resolves to the parent, dead pid absent from ps output, two live records → newest
       `updatedAt`, empty `sessionId` skipped, non-numeric and broken files ignored, no records (ps
       not called), transcript missing, ps failing
-- [ ] write `parsePS` table tests on canned output (padded pids, a line without env, blank lines)
+- [x] write `parsePS` table tests on canned output (padded pids, a line without env, blank lines)
       and one test of the real `runPS`: start `sleep 30` with `cmd.Env = []string{"AGTERM_PANE_ID=TEST"}`,
       call `runPS` with its pid plus a dead pid (a finished child's), expect only the live pid with
       the token; and `runPS` with only the dead pid → empty map, no error
-- [ ] run tests - must pass before task 4
+      ⚠️ ps -E shows no environment for Apple platform binaries (`/bin/sleep`, `/bin/zsh`), so the
+      live process is the test binary itself re-run as a helper (`TestPSHelperProcess`,
+      `GO_ASK_PS_HELPER=1`); claude is not a platform binary and shows its env
+- [x] run tests - must pass before task 4
 
 ### Task 4: recap tool handler and registration
 
