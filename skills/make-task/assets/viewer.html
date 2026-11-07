@@ -391,12 +391,17 @@
         `<span class="clock">${checked} of ${boxes} checks</span></div>`;
     }
     const a = artifact('plan'), src = (a && (a.hint || a.source)) || p.source;
+    // before Exec (the plan gate) the state has no tasks yet while the plan already has its sections:
+    // say so, and open the document, which is what the user is asked to judge
+    const sections = Object.keys(items).length;
     const rows = tasks.length
       ? `<ul class="rows">${tasks.map(t => taskRow(t, list(items[String(t.n)]))).join('')}</ul>`
-      : '<p class="empty">No task sections in the plan yet.</p>';
+      : sections
+        ? `<p class="empty">${sections} task section${sections === 1 ? '' : 's'} in the plan; the task list starts with Exec.</p>`
+        : '<p class="empty">No task sections in the plan yet.</p>';
     return `${band}<h2 class="sect">Tasks <span class="count">${tasks.length}</span>` +
       `${src ? `<span class="aside"><code>${esc(src)}</code></span>` : ''}</h2>${rows}` +
-      fold('doc', 'Show the plan document', docView(p));
+      fold('doc', 'Show the plan document', docView(p), { first: !tasks.length });
   }
 
   // Progress: the log's entries newest first, each one's lines in file order; every string is escaped
