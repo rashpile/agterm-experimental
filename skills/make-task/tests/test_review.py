@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import stat
 import subprocess
@@ -953,6 +954,318 @@ def test_fold_caps():
 def test_fold_is_pure():
     lines = round_lines()
     assert MT.fold_events(iter(lines)) == MT.fold_events(lines)
+
+
+# ---------------------------------------------------------------- review data (artifacts/review.js)
+
+
+def review_data(run: Path) -> dict:
+    """The payload in <run>/artifacts/review.js, read without mt's own parser."""
+    text = (run / "artifacts" / "review.js").read_text(encoding="utf-8")
+    head, tail = 'window.mtArtifact("review", ', ");\n"
+    assert text.startswith(head) and text.endswith(tail), text[:80]
+    return json.loads(text[len(head) : -len(tail)])
+
+
+def data_round(run: Path, n: int) -> dict:
+    return next(r for r in review_data(run)["rounds"] if r["round"] == n)
+
+
+@pytest.fixture
+def alive(monkeypatch) -> dict:
+    """Every revmux process counts as running until alive["now"] is set False."""
+    flag = {"now": True}
+    monkeypatch.setattr(MT, "process_alive", lambda task, name: flag["now"])
+    return flag
+
+
+def wait(mt, n: int = 1) -> str:
+    r = mt("review", "wait", "--round", str(n), "--deadline", "0")
+    assert r.code == 0, r.err
+    return r.out.strip()
+
+
+def write_events(round_dir: Path, lines: list[str]) -> None:
+    (round_dir / "events.jsonl").write_text("".join(lines), encoding="utf-8")
+
+
+def snapshot_files(run: Path) -> tuple:
+    """review.js and state.json, bytes and mtime: equal before and after a call that writes neither."""
+    js, st = run / "artifacts" / "review.js", run / "state.json"
+    return js.read_bytes(), js.stat().st_mtime_ns, st.read_bytes(), st.stat().st_mtime_ns
+
+
+DROPPED = json.dumps({"kind": "dropped", "agent": "synthesis", "findings": [finding("docs+tests-3", body="dup")]})
+
+
+def test_start_registers_review_and_writes_the_round_running(mt, review_run, run_state):
+    run, round_dir = review_run
+    state = run_state(run)
+    art = next(a for a in state["artifacts"] if a["id"] == "review")
+    assert (art["source"], art["hint"], art["html"]) == (str(run / "review.md"), "revmux review rounds", None)
+    data = review_data(run)
+    assert data["updated"] > 0 and [r["round"] for r in data["rounds"]] == [1]
+    r1 = data["rounds"][0]
+    assert (r1["run"], r1["state"], r1["milestone"], r1["verdict"]) == ("01-initial", "running", "starting", None)
+    assert r1["findings"] == r1["questions"] == r1["dropped"] == []
+    assert r1["counts"] == {"critical": 0, "major": 0, "minor": 0}
+    assert r1["started"] == rnd(state, 1)["started"] and r1["finished"] is None
+    assert r1["events"] == str(round_dir / "events.jsonl")
+    assert r1["log"] == str(run / "revmux" / "round-1.log")
+    live = r1["live"]
+    assert live["format_ok"] is True and (live["events"], live["agents"], live["stage"]) == (0, [], "")
+    assert rnd(state, 1)["live"] is None
+    # render_changed skips the artifact until `review result` writes review.md
+    assert mt("refresh").code == 0
+    art = next(a for a in run_state(run)["artifacts"] if a["id"] == "review")
+    assert art["html"] is None and not (run / "artifacts" / "review.html").exists()
+    assert review_data(run) == data
+
+
+def test_wait_follows_a_growing_events_file(mt, review_run, alive, run_state):
+    run, round_dir = review_run
+    lines = round_lines()
+    find = upto(lines, "agent_done", "arch+quality")
+    write_events(round_dir, find)
+    assert wait(mt) == "running"
+    data = review_data(run)
+    r1 = data["rounds"][0]
+    assert (r1["state"], r1["milestone"]) == ("running", "find 1/4")
+    assert r1["live"]["stage"] == "find" and r1["live"]["events"] == len(find)
+    assert [f["id"] for f in r1["live"]["findings"]] == ["arch+quality-1"]
+    state = run_state(run)
+    assert rnd(state, 1)["live"] == {
+        "format_ok": True,
+        "stage": "find",
+        "stages": ["find"],
+        "agents_done": 1,
+        "agents": 4,
+        "counts": {"critical": 0, "major": 0, "minor": 1},
+        "activity": r1["live"]["activity"],
+        "updated": r1["live"]["updated"],
+    }
+    assert rnd(state, 1)["live"]["activity"]["agent"] == "arch+quality"
+    assert state["activity"] == "Review round 1 · find 1/4"
+
+    # more lines, the last one still being written: the data follows the complete ones
+    synthesis = upto(lines, "agent_done", "synthesis")
+    write_events(round_dir, [*synthesis, '{"kind":"stage","sta'])
+    assert wait(mt) == "running"
+    later = review_data(run)
+    r1 = later["rounds"][0]
+    assert later["updated"] > data["updated"]
+    assert r1["milestone"] == "synthesis 1/1" and r1["live"]["events"] == len(synthesis)
+    assert r1["live"]["merged"] is True and (r1["live"]["found"], r1["live"]["total"]) == (13, 10)
+    summary = rnd(run_state(run), 1)["live"]
+    assert summary["stages"] == ["find", "synthesis"] and summary["stage"] == "synthesis"
+    assert (summary["agents_done"], summary["agents"]) == (5, 5)
+    assert summary["counts"] == r1["live"]["counts"]
+
+    # the whole round, polled several times within one wait
+    write_events(round_dir, lines)
+    assert mt("review", "wait", "--round", "1", "--deadline", "0.2").out == "running\n"
+    r1 = data_round(run, 1)
+    assert r1["milestone"] == "verify 2/2" and r1["live"]["verify"] == {"kept": 9, "total": 10, "agents": 2}
+    assert rnd(run_state(run), 1)["live"]["agents_done"] == 7
+
+
+def test_wait_with_unchanged_events_writes_nothing(mt, review_run, alive, run_state):
+    run, round_dir = review_run
+    write_events(round_dir, upto(round_lines(), "agent_done", "docs+tests"))
+    assert wait(mt) == "running"
+    before = snapshot_files(run)
+    assert wait(mt) == "running"
+    assert mt("review", "wait", "--round", "1", "--deadline", "0.2").out == "running\n"
+    assert snapshot_files(run) == before
+    # a line that changes the data but not the round's summary: review.js is rewritten, the state is not
+    summary = rnd(run_state(run), 1)["live"]
+    with open(round_dir / "events.jsonl", "a", encoding="utf-8") as f:
+        f.write('{"kind":"agent_tokens","agent":"bugs+impl","text":"12k"}\n')
+    assert wait(mt) == "running"
+    after = snapshot_files(run)
+    assert after[0] != before[0] and after[2:] == before[2:]
+    assert data_round(run, 1)["live"]["unknown"] == 1 and rnd(run_state(run), 1)["live"] == summary
+
+
+def test_wait_failed_rewrites_the_round_failed(mt, review_run, alive, run_state):
+    run, round_dir = review_run
+    write_events(round_dir, upto(round_lines(), "agent_done", "arch+quality"))
+    assert wait(mt) == "running"
+    summary = rnd(run_state(run), 1)["live"]
+    alive["now"] = False
+    assert wait(mt) == "failed"
+    r1 = data_round(run, 1)
+    assert (r1["state"], r1["milestone"], r1["live"], r1["findings"]) == ("failed", "failed", None, [])
+    assert rnd(run_state(run), 1)["live"] == summary, "the last summary stays; the dashboard reads the milestone"
+
+
+def test_wait_done_keeps_the_round_running_until_its_result(mt, review_run, alive):
+    run, round_dir = review_run
+    write_events(round_dir, round_lines())
+    shutil.copy(FINDINGS, run / "revmux" / "round-1.json")
+    alive["now"] = False
+    assert wait(mt) == "done"
+    r1 = data_round(run, 1)
+    assert (r1["state"], r1["milestone"]) == ("running", "report ready") and r1["live"]["events"] == 48
+
+
+def test_result_writes_the_round_done_with_its_reports_findings(mt, review_run, alive, run_state):
+    run, round_dir = review_run
+    write_events(round_dir, [*round_lines(), DROPPED + "\n"])
+    assert wait(mt) == "running"
+    report = json.loads(FINDINGS.read_text())
+    report["findings"][0].update(body="b" * 5000, fix="f" * 3000)
+    path = run / "revmux" / "round-1.json"
+    path.write_text(json.dumps(report))
+    alive["now"] = False
+    assert wait(mt) == "done"
+    r = mt("review", "result", str(path), "--round", "1", "--not-gating", "adversarial-2=vendored")
+    assert r.code == 0, r.err
+    r1 = data_round(run, 1)
+    assert (r1["state"], r1["verdict"], r1["live"]) == ("done", "3 gating", None)
+    assert r1["counts"] == {"critical": 1, "major": 3, "minor": 2}
+    assert [f["id"] for f in r1["findings"]] == [f["id"] for f in report["findings"]], "the report's order"
+    first = r1["findings"][0]
+    assert len(first["body"]) == MT.FOLD_BODY and len(first["fix"]) == MT.FOLD_FIX
+    assert (first["file"], first["line"], first["confidence"]) == ("src/store.go", 88, 95)
+    assert first["sources"] == ["bugs+impl", "adversarial"] and first["verdict"] == "confirmed"
+    assert r1["findings"][1]["title"] == "Logout keeps the cookie <script>alert(1)</script>"
+    assert [q["id"] for q in r1["questions"]] == ["q1"]
+    assert r1["not_gating"] == [{"id": "adversarial-2", "reason": "vendored"}] and r1["deferred"] == []
+    assert [f["id"] for f in r1["dropped"]] == ["docs+tests-3"], "dropped comes from the events, for every round"
+    assert r1["finished"] == rnd(run_state(run), 1)["finished"] and r1["duration"] == pytest.approx(361.673)
+    art = next(a for a in run_state(run)["artifacts"] if a["id"] == "review")
+    assert art["html"] == str(run / "artifacts" / "review.html")
+
+
+def test_a_rerecord_rewrites_the_round(mt, review_run, run_state):
+    run, _ = review_run
+    assert mt("review", "result", str(FINDINGS), "--round", "1").code == 0
+    first = review_data(run)
+    assert first["rounds"][0]["verdict"] == "4 gating"
+    gate = ["--deferred", "adversarial-1=gate: docs at the end"]
+    assert mt("review", "result", str(FINDINGS), "--round", "1", *gate).code == 0
+    data = review_data(run)
+    r1 = data["rounds"][0]
+    assert data["updated"] > first["updated"] and r1["verdict"] == "3 gating"
+    assert [(d["id"], d["reason"]) for d in r1["deferred"]] == [("adversarial-1", "gate: docs at the end")]
+    # recorded from another report: the round's report is that file, and the tab shows its findings
+    assert mt("review", "result", str(DEGRADED), "--round", "1").code == 0
+    assert rnd(run_state(run), 1)["report"] == str(DEGRADED)
+    r1 = data_round(run, 1)
+    assert r1["verdict"] == "degraded" and [f["severity"] for f in r1["findings"]] == ["minor"]
+    assert r1["degraded"] == ["adversarial"]
+
+
+def test_a_second_round_keeps_the_first_rounds_findings(mt, review_run, alive, tmp_path, run_state):
+    run, round_dir = review_run
+    write_events(round_dir, [*round_lines(), DROPPED + "\n"])
+    assert mt("review", "result", str(FINDINGS), "--round", "1").code == 0
+    rd2 = tmp_path / "rd2"
+    rd2.mkdir()
+    start(mt, 2, "02-after-fix", rd2)
+    r1, r2 = review_data(run)["rounds"]
+    assert r1["state"] == "done" and len(r1["findings"]) == 6 and r1["findings"][0]["body"] == "..."
+    assert [f["id"] for f in r1["dropped"]] == ["docs+tests-3"] and r1["live"] is None
+    assert (r2["round"], r2["state"], r2["live"]["events"]) == (2, "running", 0)
+    write_events(rd2, round_lines()[:5])
+    assert wait(mt, 2) == "running"
+    again, r2 = review_data(run)["rounds"]
+    assert again == r1 and r2["live"]["events"] == 5
+
+
+def test_render_changed_writes_the_review_payload_not_a_document(mt, review_run, run_state):
+    run, _ = review_run
+    assert mt("review", "result", str(FINDINGS), "--round", "1").code == 0
+    before = review_data(run)
+    md, js = run / "review.md", run / "artifacts" / "review.js"
+    md.write_text(md.read_text() + "\nEdited by hand.\n")
+    st = md.stat()
+    os.utime(md, ns=(st.st_atime_ns, st.st_mtime_ns + 2_000_000_000))
+    js.unlink()
+    assert mt("refresh").code == 0
+    assert "Edited by hand." in (run / "artifacts" / "review.html").read_text(), "the static page follows review.md"
+    data = review_data(run)
+    assert "html" not in data and "toc" not in data
+    assert {k: v for k, v in data.items() if k != "updated"} == {k: v for k, v in before.items() if k != "updated"}
+
+
+def test_bodies_and_fixes_stay_out_of_the_state(mt, review_run, alive, tmp_path, run_state):
+    run, round_dir = review_run
+    marked = finding("bugs+impl-9", "major", body="BODY-MARK", fix="FIX-MARK")
+    write_events(round_dir, [json.dumps({"kind": "findings", "agent": "bugs+impl", "findings": [marked]}) + "\n"])
+    assert wait(mt) == "running"
+    assert "BODY-MARK" in data_round(run, 1)["live"]["findings"][0]["body"]
+    report = json.loads(FINDINGS.read_text())
+    report["findings"][0].update(body="REPORT-BODY", fix="REPORT-FIX")
+    path = tmp_path / "round-1.json"
+    path.write_text(json.dumps(report))
+    assert mt("review", "result", str(path), "--round", "1").code == 0
+    assert data_round(run, 1)["findings"][0]["body"] == "REPORT-BODY"
+    for name in ("state.json", "state.js"):
+        text = (run / name).read_text()
+        assert not any(m in text for m in ("BODY-MARK", "FIX-MARK", "REPORT-BODY", "REPORT-FIX")), name
+
+
+def test_a_report_that_is_gone_falls_back_to_the_state_summaries(mt, review_run, tmp_path, run_state):
+    run, _ = review_run
+    path = tmp_path / "r.json"
+    shutil.copy(FINDINGS, path)
+    assert mt("review", "result", str(path), "--round", "1").code == 0
+    path.unlink()
+    r1 = MT.review_payload(run, run_state(run))["rounds"][0]
+    ids = [f["id"] for f in json.loads(FINDINGS.read_text())["findings"]]
+    assert [f["id"] for f in r1["findings"]] == ids and len(ids) == 6
+    assert r1["findings"][0]["title"] == "Session map written without the lock" and r1["findings"][0]["line"] == 88
+    assert all(f["body"] == f["fix"] == "" for f in r1["findings"])
+    assert [q["title"] for q in r1["questions"]] == ["Should sessions expire on restart?"]
+
+
+def test_a_large_events_file_is_not_read(mt, review_run, alive, monkeypatch, run_state):
+    run, round_dir = review_run
+    lines = upto(round_lines(), "agent_done", "arch+quality")
+    write_events(round_dir, lines)
+    monkeypatch.setattr(MT, "EVENTS_CAP", len("".join(lines).encode()) - 1)
+    assert wait(mt) == "running"
+    r1 = data_round(run, 1)
+    assert r1["live"] == {"truncated": True} and r1["dropped"] == []
+    assert r1["milestone"] == "find 1/4", "the milestone still reads the file"
+    assert rnd(run_state(run), 1)["live"] == {"truncated": True}
+
+
+def test_round_snapshot_cap_and_missing_file(tmp_path, monkeypatch):
+    assert MT.EVENTS_CAP == 8 * 1024 * 1024
+    assert MT.round_snapshot(None) == MT.fold_events([]) == MT.round_snapshot(tmp_path / "none.jsonl")
+    path = tmp_path / "events.jsonl"
+    path.write_bytes(b'{"kind":"stage","stage":"find"}\r\n{"kind":"stage","stage":"ver\xff')
+    snap = MT.round_snapshot(path)
+    assert snap["stage"] == "find" and snap["events"] == 1, "a CRLF line is complete, the partial one waits"
+    monkeypatch.setattr(MT, "EVENTS_CAP", path.stat().st_size)
+    assert MT.round_snapshot(path)["stage"] == "find", "a file of exactly the cap is read"
+    monkeypatch.setattr(MT, "EVENTS_CAP", path.stat().st_size - 1)
+    assert MT.round_snapshot(path) == {"truncated": True}
+
+
+def test_live_round_is_only_the_latest_unfinished_round():
+    def r(n: int, **kw: object) -> dict:
+        return {"round": n, "started": 1.0, "finished": None, "milestone": "find 1/2", **kw}
+
+    assert MT.live_round({}) is None and MT.live_round({"review": []}) is None
+    assert MT.live_round({"review": [r(1)]}) == 1
+    assert MT.live_round({"review": [r(2), r(1, finished=3.0)]}) == 2, "the highest number, not the list order"
+    assert MT.live_round({"review": [r(1), r(2, finished=5.0)]}) is None, "an older round never is"
+    assert MT.live_round({"review": [r(1, milestone="failed")]}) is None
+    assert MT.live_round({"review": [r(1, milestone="report ready")]}) == 1
+    assert MT.live_round({"review": [r(1)], "finished": 9.0}) is None, "a finished run follows nothing"
+    assert MT.live_round({"review": [r(1, started=None)]}) is None
+
+
+def test_a_finished_run_shows_its_unfinished_round_failed(mt, review_run, alive):
+    run, _ = review_run
+    assert mt("done", "--status", "stopped").code == 0
+    assert wait(mt) == "running"
+    r1 = data_round(run, 1)
+    assert (r1["state"], r1["live"]) == ("failed", None)
 
 
 # ---------------------------------------------------------------- verify-final

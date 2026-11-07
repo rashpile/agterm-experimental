@@ -82,21 +82,25 @@ changed (on `artifact`, `plan` and `refresh`): mt renders the markdown itself
 (markdown-it, raw HTML off, with tables, strikethrough, task lists, footnotes and
 `doc-` heading ids) into assets/doc.html; a source that is not markdown renders as
 a code block. Rendering is best-effort: a source mt cannot read prints a warning
-and keeps the previous html. design, stats, plan and progress also get
+and keeps the previous html. design, stats, plan, progress and review also get
 <run>/artifacts/<id>.js, `window.mtArtifact("<id>", {...})` in ASCII-escaped JSON,
 rewritten with a new `updated` only when the rest of it changed: design and stats hold
 {title, html, toc, source, updated} (title: the first `#` heading, else the artifact's
 label), plan adds each task's checkbox `items`, progress holds {source, header, entries,
-raw, updated}, the log parsed into entries (parse_progress) and its whole text.
+raw, updated}, the log parsed into entries (parse_progress) and its whole text, review
+holds {rounds, updated} (review_payload), written by `review start`, `wait` and `result`.
 
 Review rounds: `review start` (note: its --run is the revmux run name; the global
 --run DIR goes before the command) records the round's `head` (HEAD of cwd's toplevel: what the
 round reviews) and prints the round's report path,
-<run>/revmux/round-<n>.json, where the launch writes revmux's stdout. `review wait`
-prints `done`, `failed` or `running` (deadline reached). `review result` records a
-round; state `unresolved` and `not_gating` are the latest round's, `deferred` collects
-every round's deferred findings since the last `--confirming` round (the leftovers fix
-round settles them). `review verify-final` prints `unchanged` or `changed`, sets
+<run>/revmux/round-<n>.json, where the launch writes revmux's stdout, and registers the
+review artifact (source <run>/review.md). `review wait` prints `done`, `failed` or
+`running` (deadline reached); on each poll where the round's events.jsonl changed (size or
+mtime) it rewrites artifacts/review.js (events.jsonl folded, read whole up to 8 MB) and
+saves the round's summary `live` when it changed. `review result` records a round (its
+`report` becomes the file it read); state `unresolved` and `not_gating` are the latest
+round's, `deferred` collects every round's deferred findings since the last `--confirming`
+round (the leftovers fix round settles them). `review verify-final` prints `unchanged` or `changed`, sets
 review_stale and stamps verified_sha: HEAD's tree must equal reviewed_sha's tree
 replayed onto HEAD's merge-base with origin/<default> (or <default>); a conflicting
 replay is `changed`, and with no rebase target the trees are compared as they are.
@@ -1480,7 +1484,7 @@ def parse_progress(text: str) -> dict[str, Any]:
 # the ids whose payload is the document alone
 DOCUMENT_IDS = ("design", "stats")
 # the ids artifact_payload builds a payload for: render_artifact keeps their artifacts/<id>.js too
-PAYLOAD_IDS = (*DOCUMENT_IDS, "plan", "progress")
+PAYLOAD_IDS = (*DOCUMENT_IDS, "plan", "progress", "review")
 
 
 def artifact_payload(
@@ -1496,11 +1500,15 @@ def artifact_payload(
     replaces a payload with another shape. doc is art's document_payload and text its source's content when
     the caller has them already; the plan's items then come from the text its document was rendered from.
     The plan's payload is its document plus `items` (plan_items); the progress log's is {source, header,
-    entries, raw} (parse_progress, raw the whole text), without the document. Raises OSError.
+    entries, raw} (parse_progress, raw the whole text), without the document. The review's is
+    review_payload's {rounds}, built from the state, the rounds' reports and events.jsonl files, never from
+    review.md (its doc and text are not used). Raises OSError.
     """
     aid = art["id"]
     if aid in DOCUMENT_IDS:
         return dict(doc) if doc is not None else document_payload(art, text)
+    if aid == "review":
+        return review_payload(run, state)
     if aid not in ("plan", "progress"):
         return None
     if text is None:
@@ -1815,6 +1823,7 @@ def cmd_review_start(args: argparse.Namespace) -> int:
             degraded=[],
             verdict=None,
             milestone="starting",
+            live=None,
             started=t,
             finished=None,
             duration=None,
@@ -1824,6 +1833,7 @@ def cmd_review_start(args: argparse.Namespace) -> int:
         entry.update(round_dir=round_dir, report=str(report))
     state["activity"] = f"Review round {n} · starting"
     state["now_kind"] = ""
+    write_review_data(run, state)  # the Review tab follows the round from here
     save(run, state)
     print(json.dumps({"round": n, "run": name, "round_dir": round_dir, "report": str(report)}))
     return 0
@@ -2139,6 +2149,148 @@ def load_report(path: Path) -> dict[str, Any]:
     return data
 
 
+# ---------------------------------------------------------------- review data (artifacts/review.js)
+
+# events.jsonl is read whole up to this many bytes; past it the round's snapshot is {"truncated": true}
+EVENTS_CAP = 8 << 20
+REVIEW_HINT = "revmux review rounds"
+
+
+def events_path(entry: dict[str, Any]) -> Path | None:
+    rd = entry.get("round_dir")
+    return Path(rd) / "events.jsonl" if rd else None
+
+
+def events_signature(path: Path | None) -> tuple[int, int] | None:
+    """(size, mtime_ns) of a round's events.jsonl, or None while there is none."""
+    try:
+        st = path.stat() if path is not None else None
+    except OSError:
+        return None
+    return (st.st_size, st.st_mtime_ns) if st else None
+
+
+def round_snapshot(path: Path | None) -> dict[str, Any]:
+    """fold_events over a round's events.jsonl, read whole when it holds at most EVENTS_CAP bytes, else
+    {"truncated": True}. A file that is not there (yet) or cannot be read folds as an empty one."""
+    data = b""
+    if path is not None:
+        try:
+            with open(path, "rb") as f:
+                data = f.read(EVENTS_CAP + 1)
+        except OSError:
+            data = b""
+    if len(data) > EVENTS_CAP:
+        return {"truncated": True}
+    parts = data.decode("utf-8", errors="replace").split("\n")
+    return fold_events([p + "\n" for p in parts[:-1]] + parts[-1:])
+
+
+def live_round(state: dict[str, Any]) -> int | None:
+    """The round the Review tab follows live: the highest-numbered one, when it has started, has no result,
+    its milestone is not `failed`, and the run is not finished."""
+    rounds = state.get("review") or []
+    if state.get("finished") or not rounds:
+        return None
+    last = max(rounds, key=lambda r: r.get("round", 0))
+    if last.get("started") and not last.get("finished") and last.get("milestone") != "failed":
+        return last.get("round")
+    return None
+
+
+def report_findings(entry: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """(findings, open questions) of a finished round: the full objects of its report at entry["report"], body
+    and fix capped (fold_finding); the state's summaries, without body or fix, when the report cannot be read."""
+    try:
+        report = load_report(Path(entry["report"]))
+        found, questions = report["findings"], report.get("open_questions")
+    except (MtError, KeyError, TypeError):
+        found, questions = entry.get("findings"), entry.get("questions")
+
+    def full(items: Any) -> list[dict[str, Any]]:
+        raw = [f for f in items if isinstance(f, dict)] if isinstance(items, list) else []
+        return [fold_finding({**f, "id": str(f.get("id") or "")}, "") for f in raw]
+
+    return full(found), full(questions)
+
+
+def round_payload(run: Path, entry: dict[str, Any], live: bool) -> dict[str, Any]:
+    """One round of the review payload. state: done (it has a result), running (the live round) or failed
+    (no result and no longer followed: its wait failed, a later round replaced it, or the run ended)."""
+    n = entry.get("round")
+    events = events_path(entry)
+    snap = round_snapshot(events)
+    findings: list[dict[str, Any]] = []
+    questions: list[dict[str, Any]] = []
+    if entry.get("finished"):
+        status = "done"
+        findings, questions = report_findings(entry)
+    else:
+        status = "running" if live else "failed"
+    return {
+        "round": n,
+        "run": entry.get("run") or "",
+        "state": status,
+        "verdict": entry.get("verdict"),
+        "milestone": entry.get("milestone") or "",
+        "counts": {sev: entry.get(sev) or 0 for sev in SEVERITIES},
+        "findings": findings,
+        "questions": questions,
+        "not_gating": entry.get("not_gating") or [],
+        "deferred": entry.get("deferred") or [],
+        "dropped": snap.get("dropped") or [],
+        "degraded": entry.get("degraded") or [],
+        "confirming": bool(entry.get("confirming")),
+        "started": entry.get("started"),
+        "finished": entry.get("finished"),
+        "duration": entry.get("duration"),
+        "events": str(events) if events else "",
+        "log": str(report_path(run, n).with_suffix(".log")) if isinstance(n, int) else "",
+        "live": snap if live else None,
+    }
+
+
+def review_payload(run: Path, state: dict[str, Any]) -> dict[str, Any]:
+    """artifacts/review.js's data, {rounds}, rebuilt from three sources each time: the state's round entries,
+    each finished round's report (report_findings) and each round's events.jsonl (round_snapshot): `dropped`
+    for every round, `live` the whole snapshot for the live round (live_round), None for the others. Bodies
+    and fixes come from the files only, never from state.json."""
+    live = live_round(state)
+    rounds = sorted(state.get("review") or [], key=lambda r: r.get("round", 0))
+    return {"rounds": [round_payload(run, r, live is not None and r.get("round") == live) for r in rounds]}
+
+
+def live_summary(snap: dict[str, Any]) -> dict[str, Any]:
+    """The live round's summary kept in its state entry as `live`, for the dashboard: stage, the stages seen,
+    agents done (or degraded) of all, counts by severity, the latest activity and the latest event time."""
+    if snap.get("truncated"):
+        return {"truncated": True}
+    agents = snap["agents"]
+    return {
+        "format_ok": snap["format_ok"],
+        "stage": snap["stage"],
+        "stages": [s["name"] for s in snap["stages"]],
+        "agents_done": sum(1 for a in agents if a["state"] in AGENT_FINISHED),
+        "agents": len(agents),
+        "counts": snap["counts"],
+        "activity": snap["activity"],
+        "updated": snap["updated"],
+    }
+
+
+def write_review_data(run: Path, state: dict[str, Any]) -> dict[str, Any]:
+    """Register the review artifact (source review.md, which render_changed skips until `review result`
+    writes it) and rewrite artifacts/review.js through artifact_payload; a write failure is a warning.
+    Returns the payload."""
+    art = register_artifact(state, "review", str(run / "review.md"), REVIEW_HINT)
+    payload = artifact_payload(run, state, art) or {"rounds": []}
+    try:
+        write_artifact_data(run, "review", payload)
+    except OSError as e:
+        warn(f"artifact review: cannot write {run / 'artifacts' / 'review.js'}: {e}")
+    return payload
+
+
 def review_poll() -> float:
     raw = os.environ.get("MT_REVIEW_POLL")
     if not raw:
@@ -2169,27 +2321,43 @@ def cmd_review_wait(args: argparse.Namespace) -> int:
     poll = review_poll()
     end = time.monotonic() + args.deadline
     last = entry.get("milestone")
+    seen: tuple[int, int] | None | Literal[False] = False  # events.jsonl's signature at the last fold
+    events_mark = last
     while True:
         alive = process_alive(task, name)
-        mark = milestone(read_events(events_file))
-        outcome = None
+        sig = events_signature(events_file)
+        fresh = sig != seen
+        if fresh:
+            events_mark, seen = milestone(read_events(events_file)), sig
+        mark, outcome = events_mark, None
         if not alive:
             try:
                 load_report(report)
                 outcome, mark = "done", "report ready"
             except MtError:
                 outcome, mark = "failed", "failed"
-        if mark != last:
+        if fresh or mark != last:
+            # the events (or the outcome) changed: the Review tab's data, and the round's milestone and
+            # summary in the state when they changed
             state = load(run)
             entry = review_round(state, n)
             if entry is None:
                 raise MtError(f"review wait: round {n} disappeared from the state")
-            entry["milestone"] = mark
-            state["activity"] = f"Review round {n} · {mark}"
-            state["now_kind"] = ""
-            if outcome == "failed":
-                add_event(state, f"Review round {n} failed · no report from {name}")
-            save(run, state)
+            changed = mark != last
+            if changed:
+                entry["milestone"] = mark
+                state["activity"] = f"Review round {n} · {mark}"
+                state["now_kind"] = ""
+                if outcome == "failed":
+                    add_event(state, f"Review round {n} failed · no report from {name}")
+            payload = write_review_data(run, state)
+            snap = next((r["live"] for r in payload["rounds"] if r["round"] == n and r["live"]), None)
+            summary = live_summary(snap) if snap is not None else None
+            if summary is not None and summary != entry.get("live"):
+                entry["live"] = summary
+                changed = True
+            if changed:
+                save(run, state)
             last = mark
         if outcome:
             print(outcome)
@@ -2320,7 +2488,8 @@ def cmd_review_result(args: argparse.Namespace) -> int:
     entry = review_round(state, n)
     if entry is None:
         raise MtError(f"review result: round {n} was never started (run `mt review start --round {n}` first)")
-    report = load_report(Path(os.path.abspath(args.file)))
+    report_file = Path(os.path.abspath(args.file))
+    report = load_report(report_file)
     findings = [finding_summary(f) for f in report["findings"]]
     ids = {f["id"] for f in findings}
     unknown = sorted((set(not_gating) | set(deferred)) - ids)
@@ -2358,6 +2527,7 @@ def cmd_review_result(args: argparse.Namespace) -> int:
     t = now()
     entry.update(
         **counts,
+        report=str(report_file),  # the Review tab reads the full findings from the report the result came from
         open_questions=len(questions),
         degraded=degraded,
         verdict=verdict,
@@ -2380,7 +2550,10 @@ def cmd_review_result(args: argparse.Namespace) -> int:
         atomic_write(md, review_markdown(state))
     except OSError as e:
         raise MtError(f"review result: cannot write {md}: {e}") from e
-    art = register_artifact(state, "review", str(md), "revmux review rounds")
+    art = register_artifact(state, "review", str(md), REVIEW_HINT)
+    # review.md was just rewritten, maybe within the clock tick of the last render: render the page and
+    # rewrite the data (the round now `done`, through artifact_payload) whatever its mtime says
+    art["mtime"] = 0
     warning = render_artifact(run, state, art)
     if warning:
         warn(warning)

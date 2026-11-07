@@ -119,6 +119,15 @@
     `entry["report"]` (full findings, body capped at 4000 and fix at 2000 characters); `fold_events` over each
     round's `events.jsonl` (`dropped` for every round, `live` for the running one). Bodies and fixes never
     enter `state.json`.
+    ➕ as built in Task 8: each round also carries `milestone`, `questions` (the report's open questions,
+    capped the same), `not_gating`, `deferred`, `degraded`, `confirming`, `duration`, `events` (the
+    `events.jsonl` path) and `log` (`<run>/revmux/round-<n>.log`); `counts` is `{critical, major, minor}`
+    from the state; `state` is `done` (a result), `running` (the live round) or `failed` (no result and not
+    live: its wait failed, a later round replaced it, or the run ended); `findings` is `[]` for a round
+    without a result (the running one's are in `live.findings`); report findings keep the report's order and
+    get `fold_finding`'s keys (`agent` blank); a report that cannot be read falls back to the state's
+    summaries (blank body and fix). `mt review result` sets the round's `report` to the file it read, so
+    the tab shows the findings the result was recorded from.
 - `write_artifact_data(run, aid, payload)`: compares the new payload with the written one without `updated`,
   and writes (with a new `updated`) only when the rest changed. ASCII-escaped JSON, `atomic_write`.
   `render_artifact` returns early when its `.html` exists and, for an id that has a payload builder, its `.js` too.
@@ -143,6 +152,10 @@
   `failed`, and the run is not finished.
 - Round state summary (state entry `live`): stage, agents done/total, counts by severity, latest activity,
   updated; saved only when it changed.
+  ➕ as built in Task 8: `{format_ok, stage, stages (names seen, in order), agents_done (done or degraded),
+  agents, counts, activity ({agent, text, at} or null), updated (latest event time)}`, `{"truncated": true}`
+  past 8 MB; `null` from `mt review start` until the first `wait` that folds the events; a failed round keeps
+  its last summary (the dashboard decides live-ness by the rule above).
 
 ## What Goes Where
 - **Implementation Steps** (`[ ]` checkboxes): code, tests and documentation in this repository
@@ -279,13 +292,13 @@
 - Modify: `skills/make-task/tests/test_review.py`
 - Modify: `skills/make-task/SKILL.md`
 
-- [ ] `artifact_payload` builds the `review` payload from its three sources (Technical Details), with the 8 MB read cap in the caller
-- [ ] `mt review start` registers the `review` artifact (source `review.md`; `render_changed` skips it until it exists) and writes the payload with the round `running`
-- [ ] `mt review wait` rewrites the payload on each poll where `events.jsonl`'s size or mtime changed, and saves the round's state summary `live` only when it changed; a `failed` outcome rewrites it with the round `failed`
-- [ ] `mt review result` (also a re-record for a gate) rewrites it with the round `done`; `render_artifact` for `review.md` writes the static page only and goes through the same builder for the `.js`
-- [ ] update `SKILL.md` Each round step 6: the `review` artifact is registered at `mt review start`
-- [ ] write tests: start, several waits with a growing events file, unchanged file writes nothing, result, a re-record rewrites the round, failed, a second round keeps the first's findings, the payload keeps `rounds` after `render_changed`, no body or fix in `state.json`
-- [ ] run tests - must pass before task 9
+- [x] `artifact_payload` builds the `review` payload from its three sources (Technical Details), with the 8 MB read cap in the caller
+- [x] `mt review start` registers the `review` artifact (source `review.md`; `render_changed` skips it until it exists) and writes the payload with the round `running`
+- [x] `mt review wait` rewrites the payload on each poll where `events.jsonl`'s size or mtime changed, and saves the round's state summary `live` only when it changed; a `failed` outcome rewrites it with the round `failed`
+- [x] `mt review result` (also a re-record for a gate) rewrites it with the round `done`; `render_artifact` for `review.md` writes the static page only and goes through the same builder for the `.js`
+- [x] update `SKILL.md` Each round step 6: the `review` artifact is registered at `mt review start`
+- [x] write tests: start, several waits with a growing events file, unchanged file writes nothing, result, a re-record rewrites the round, failed, a second round keeps the first's findings, the payload keeps `rounds` after `render_changed`, no body or fix in `state.json`
+- [x] run tests - must pass before task 9
 
 ### Task 9: Viewer shell with the Design and Stats tabs
 

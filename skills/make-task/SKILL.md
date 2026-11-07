@@ -292,7 +292,7 @@ where it is asked:
   so the dashboard opens it: `mt artifact design <state_dir>/design.md` before the `design` gate (and, under
   `interactive`, `mt artifact design <state_dir>/design-draft.md` with the design written so far before
   each design-section question), `mt artifact plan <absolute plan path>` before the `plan` gate, and the
-  Review view, which `mt review result` registers, for the `review-round` gate and the leftovers question.
+  Review view, which `mt review start` registers, for the `review-round` gate and the leftovers question.
 - **Options.** 2–4 options. An option's pro and con become its description. The recommended option comes
   first and its label ends in "(Recommended)". There is no delegate option: the user picks an option or
   types an answer in "Other".
@@ -756,8 +756,8 @@ drop them:
    still worth fixing, are `--deferred` and reach the leftovers question. Ids must be ids of `critical` or
    `major` findings in the report and appear in one list only. Deferred findings stay open across later
    rounds (even when a later round does not report them again) until the leftovers fix's confirming round.
-   This also rebuilds and registers the `review` artifact. Record a degraded round too (its computed
-   verdict is `degraded`), then go to the Errors row for a degraded round.
+   This also rebuilds the `review` artifact, registered at `mt review start`. Record a degraded round too
+   (its computed verdict is `degraded`), then go to the Errors row for a degraded round.
 7. Append a one-line round summary:
    `printf '%s\n' 'review round <n>: <counts> <verdict>' | bash <exec_scripts>/append-progress.sh <progress_path>`.
 8. Stop per loop.md "Stopping", recording the reason: zero gating → `mt set stop_reason=clean`; the code
