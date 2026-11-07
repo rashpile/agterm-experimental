@@ -212,12 +212,13 @@
 **Files:**
 - Modify: `skills/make-task/scripts/mt`
 - Modify: `skills/make-task/tests/test_artifacts.py`
+- ➕ Modify: `skills/make-task/tests/test_state.py` (`script_json` now escapes non-ASCII too)
 
-- [ ] add `write_artifact_data` and `artifact_payload` (Technical Details); in this task `artifact_payload` builds the document payload for `design` and `stats` and returns nothing for the other ids
-- [ ] `render_artifact` calls `artifact_payload` and `write_artifact_data`, and returns early when the `.html` exists and, for an id that has a payload builder, the `.js` too
-- [ ] write tests: document payload shape, title from the first `#` heading else the artifact label, ASCII escaping of `<`, `>`, `&` and non-ASCII
-- [ ] write tests for `updated`: unchanged content keeps the file and its `updated`, a changed source bumps it
-- [ ] run tests - must pass before task 5
+- [x] add `write_artifact_data` and `artifact_payload` (Technical Details); in this task `artifact_payload` builds the document payload for `design` and `stats` and returns nothing for the other ids
+- [x] `render_artifact` calls `artifact_payload` and `write_artifact_data`, and returns early when the `.html` exists and, for an id that has a payload builder, the `.js` too
+- [x] write tests: document payload shape, title from the first `#` heading else the artifact label, ASCII escaping of `<`, `>`, `&` and non-ASCII
+- [x] write tests for `updated`: unchanged content keeps the file and its `updated`, a changed source bumps it
+- [x] run tests - must pass before task 5
 
 ### Task 5: Plan payload with checkbox items
 

@@ -82,7 +82,10 @@ changed (on `artifact`, `plan` and `refresh`): mt renders the markdown itself
 (markdown-it, raw HTML off, with tables, strikethrough, task lists, footnotes and
 `doc-` heading ids) into assets/doc.html; a source that is not markdown renders as
 a code block. Rendering is best-effort: a source mt cannot read prints a warning
-and keeps the previous html.
+and keeps the previous html. design and stats also get <run>/artifacts/<id>.js,
+`window.mtArtifact("<id>", {title, html, toc, source, updated})` in ASCII-escaped JSON
+(title: the first `#` heading, else the artifact's label), rewritten with a new `updated`
+only when the rest of it changed.
 
 Review rounds: `review start` (note: its --run is the revmux run name; the global
 --run DIR goes before the command) records the round's `head` (HEAD of cwd's toplevel: what the
@@ -230,6 +233,7 @@ import tempfile
 import time
 from collections.abc import Iterator
 from html import escape as html_escape
+from html import unescape as html_unescape
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, overload
 
@@ -360,8 +364,9 @@ def state_js(state: dict[str, Any]) -> str:
 
 
 def script_json(data: Any) -> str:
-    """JSON safe inside a <script> element: every `<`, `>` and `&` as a \\u escape (covers `</` and `<!--`)."""
-    body = json.dumps(data, ensure_ascii=False)
+    """ASCII JSON safe inside a <script> element and in a script file read in any charset: every `<`, `>`, `&`
+    (covers `</` and `<!--`) and non-ASCII character as a \\u escape."""
+    body = json.dumps(data, ensure_ascii=True)
     return body.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
 
 
@@ -1341,28 +1346,116 @@ def doc_page(title: str, body: str, toc: list[dict[str, Any]]) -> str:
     return DOC_SLOTS.sub(lambda m: slots[m.group(1)], template)  # one pass: nothing inserted is read again
 
 
-def render_artifact(run: Path, art: dict[str, Any]) -> str | None:
-    """Render art's source to <run>/artifacts/<id>.html when its mtime changed; return a warning or None.
+H1 = re.compile(r"<h1[^>]*>(.*?)</h1>", re.DOTALL)
+TAG = re.compile(r"<[^>]*>")
 
-    A source that is not markdown renders as a code block (text_as_markdown). A failure leaves html and
-    mtime as they were, so the previous page stays and the next call retries.
+
+def first_heading(html: str) -> str | None:
+    """The text of the first `#` heading in render_markdown's html (raw HTML is off: every tag there is its own)."""
+    m = H1.search(html)
+    text = html_unescape(TAG.sub("", m.group(1))).strip() if m else ""
+    return text or None
+
+
+def source_markdown(src: Path) -> str:
+    """The source as markdown: a file that is not markdown as a code block (text_as_markdown). Raises OSError."""
+    text = src.read_text(encoding="utf-8", errors="replace")
+    if src.suffix.lower() not in MARKDOWN_SUFFIXES:
+        text = text_as_markdown(src.name, text)
+    return text
+
+
+def document_payload(art: dict[str, Any]) -> dict[str, Any]:
+    """{title, html, toc, source} of art's source; the title is its first `#` heading, else the artifact's label.
+    Raises OSError."""
+    src = Path(art["source"])
+    html, toc = render_markdown(source_markdown(src))
+    title = first_heading(html) or ARTIFACT_LABELS.get(art["id"], art["id"])
+    return {"title": title, "html": html, "toc": toc, "source": str(src)}
+
+
+# the ids whose payload is the document alone
+DOCUMENT_IDS = ("design", "stats")
+# the ids artifact_payload builds a payload for: render_artifact keeps their artifacts/<id>.js too
+PAYLOAD_IDS = DOCUMENT_IDS
+
+
+def artifact_payload(
+    run: Path, state: dict[str, Any], art: dict[str, Any], doc: dict[str, Any] | None = None
+) -> dict[str, Any] | None:
+    """The data artifacts/<id>.js holds for art (without `updated`), or None for an id outside PAYLOAD_IDS.
+
+    The one builder per id: every writer of artifacts/<id>.js goes through it, so a later write never
+    replaces a payload with another shape. doc is art's document_payload when the caller rendered it
+    already. Raises OSError.
+    """
+    if art["id"] in DOCUMENT_IDS:
+        return dict(doc) if doc is not None else document_payload(art)
+    return None
+
+
+ARTIFACT_JS = re.compile(r'\Awindow\.mtArtifact\("[^"]*", (.*)\);\n\Z', re.DOTALL)
+
+
+def read_artifact_data(path: Path) -> dict[str, Any] | None:
+    """The payload in an artifacts/<id>.js, or None when there is none or it cannot be read."""
+    try:
+        m = ARTIFACT_JS.match(path.read_text(encoding="utf-8"))
+        data = json.loads(m.group(1)) if m else None
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def write_artifact_data(run: Path, aid: str, payload: dict[str, Any]) -> bool:
+    """Write payload to <run>/artifacts/<aid>.js as `window.mtArtifact("<aid>", {...});`, ASCII-escaped JSON.
+
+    The file is written, with a new `updated`, only when the payload, `updated` aside, differs from the one
+    written; otherwise it and its `updated` stay. Returns whether it wrote. Raises OSError.
+    """
+    path = run / "artifacts" / f"{aid}.js"
+    data = {k: v for k, v in payload.items() if k != "updated"}
+    old = read_artifact_data(path)
+    if old is not None:
+        old.pop("updated", None)
+        if json.dumps(old, sort_keys=True) == json.dumps(data, sort_keys=True):
+            return False
+    path.parent.mkdir(exist_ok=True)
+    atomic_write(path, f"window.mtArtifact({json.dumps(aid)}, {script_json({**data, 'updated': now()})});\n")
+    return True
+
+
+def render_artifact(run: Path, state: dict[str, Any], art: dict[str, Any]) -> str | None:
+    """Render art's source to <run>/artifacts/<id>.html, and its payload to <id>.js, when its mtime changed;
+    return a warning or None.
+
+    The source is read and rendered once (document_payload): the page and the payload share it. It renders
+    again when the page is gone, or, for an id in PAYLOAD_IDS, the data script. A source that is not markdown
+    renders as a code block (text_as_markdown). A failure leaves html and mtime as they were, so the previous
+    page stays and the next call retries.
     """
     aid, src = art["id"], Path(art["source"])
     try:
         mtime = src.stat().st_mtime
     except OSError as e:
         return f"artifact {aid}: cannot stat {src}: {e.strerror or e}"
-    if art.get("mtime") == mtime and art.get("html") and Path(art["html"]).is_file():
+    js = run / "artifacts" / f"{aid}.js"
+    if (
+        art.get("mtime") == mtime
+        and art.get("html")
+        and Path(art["html"]).is_file()
+        and (aid not in PAYLOAD_IDS or js.is_file())
+    ):
         return None
     out = run / "artifacts" / f"{aid}.html"
     try:
-        text = src.read_text(encoding="utf-8", errors="replace")
-        if src.suffix.lower() not in MARKDOWN_SUFFIXES:
-            text = text_as_markdown(src.name, text)
-        body, toc = render_markdown(text)
-        page = doc_page(f"{ARTIFACT_LABELS.get(aid, aid)} · {src.name}", body, toc)
+        doc = document_payload(art)
+        page = doc_page(f"{ARTIFACT_LABELS.get(aid, aid)} · {src.name}", doc["html"], doc["toc"])
         out.parent.mkdir(exist_ok=True)
         atomic_write(out, page)
+        payload = artifact_payload(run, state, art, doc)
+        if payload is not None:
+            write_artifact_data(run, aid, payload)
     except OSError as e:
         return f"artifact {aid}: cannot render {src}: {e}"
     art.update(html=str(out), mtime=mtime, updated=now())
@@ -1376,7 +1469,7 @@ def render_changed(run: Path, state: dict[str, Any]) -> None:
             continue
         if not Path(art["source"]).exists():
             continue  # e.g. the progress log before the first task writes it
-        warning = render_artifact(run, art)
+        warning = render_artifact(run, state, art)
         if warning:
             warn(warning)
 
@@ -1523,7 +1616,7 @@ def cmd_artifact(args: argparse.Namespace) -> int:
         if not src.is_file():
             raise MtError(f"artifact {aid}: no such file {src}")
         art = register_artifact(state, aid, str(src), args.hint)
-        warning = render_artifact(run, art)
+        warning = render_artifact(run, state, art)
         if warning:
             warn(warning)
     save(run, state)
@@ -1927,7 +2020,7 @@ def cmd_review_result(args: argparse.Namespace) -> int:
     except OSError as e:
         raise MtError(f"review result: cannot write {md}: {e}") from e
     art = register_artifact(state, "review", str(md), "revmux review rounds")
-    warning = render_artifact(run, art)
+    warning = render_artifact(run, state, art)
     if warning:
         warn(warning)
     save(run, state)

@@ -581,7 +581,7 @@ def test_script_json_escapes_markup_and_round_trips():
     out = MT.script_json(data)
     assert "<" not in out and ">" not in out and "&" not in out, "no </script>, <!-- or entity can start"
     assert "\\u003c/script\\u003e" in out and "\\u003c!--" in out and "\\u0026" in out
-    assert "ü" in out, "non-ASCII is kept as it is"
+    assert out.isascii() and "\\u00fc" in out, "non-ASCII is escaped: the data script reads the same in any charset"
     assert json.loads(out) == data
 
 

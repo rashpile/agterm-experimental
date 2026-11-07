@@ -1,7 +1,9 @@
-"""`mt artifact`, rendering on mtime change, the markdown renderer, and `mt artifact changes`."""
+"""`mt artifact`, rendering on mtime change, the markdown renderer, the artifact data scripts, and
+`mt artifact changes`."""
 
 from __future__ import annotations
 
+import json
 import os
 import shlex
 from pathlib import Path
@@ -31,6 +33,14 @@ def artifact(state: dict, aid: str) -> dict:
 def bump_mtime(path: Path, delta: float = 10.0) -> None:
     st = path.stat()
     os.utime(path, (st.st_atime + delta, st.st_mtime + delta))
+
+
+def artifact_data(run: Path, aid: str) -> dict:
+    """The payload in <run>/artifacts/<aid>.js, read without mt's own parser."""
+    text = (run / "artifacts" / f"{aid}.js").read_text(encoding="utf-8")
+    head, tail = f'window.mtArtifact("{aid}", ', ");\n"
+    assert text.startswith(head) and text.endswith(tail), text[:80]
+    return json.loads(text[len(head) : -len(tail)])
 
 
 # ---------------------------------------------------------------- render_markdown and render_inline
@@ -148,9 +158,9 @@ def test_artifact_renders_markdown(mt, git_repo, run_state, renders):
     assert art["hint"] == "design.md" and art["source"] == str(design)
     assert art["mtime"] == design.stat().st_mtime and art["updated"] > 0
     assert art["command"] is None and art["cwd"] is None
-    assert renders == [design.read_text()]
-    # the page went through a temp file renamed into place: nothing else is left behind
-    assert sorted(p.name for p in (run / "artifacts").iterdir()) == ["design.html"]
+    assert renders == [design.read_text()], "the page and the data script share one render"
+    # page and data script went through temp files renamed into place: nothing else is left behind
+    assert sorted(p.name for p in (run / "artifacts").iterdir()) == ["design.html", "design.js"]
 
 
 def test_render_once_per_mtime(mt, git_repo, run_state, renders):
@@ -252,10 +262,209 @@ def test_plan_and_refresh_render_plan_and_progress(mt, git_repo, run_state, rend
 
 def test_render_artifact_missing_source_warns(tmp_path):
     art = {"id": "design", "source": str(tmp_path / "gone.md"), "html": None, "mtime": 0, "updated": 0}
-    warning = MT.render_artifact(tmp_path, art)
+    warning = MT.render_artifact(tmp_path, {}, art)
     assert warning == f"artifact design: cannot stat {tmp_path / 'gone.md'}: No such file or directory"
     assert art["html"] is None and art["mtime"] == 0
     assert not (tmp_path / "artifacts").exists()
+
+
+# ---------------------------------------------------------------- data scripts
+
+
+def test_design_payload(mt, git_repo, run_state):
+    run = init_run(mt, git_repo)
+    design = run / "design.md"
+    design.write_text("# Session store: `mt` & co\n\n## Goal\n\nbody\n")
+    assert mt("artifact", "design", str(design), cwd=git_repo).code == 0
+    data = artifact_data(run, "design")
+    assert sorted(data) == ["html", "source", "title", "toc", "updated"]
+    html, toc = MT.render_markdown(design.read_text())
+    assert data["title"] == "Session store: mt & co", "the first # heading as plain text"
+    assert data["html"] == html and data["toc"] == toc == [{"level": 2, "id": "doc-goal", "text": "Goal"}]
+    assert data["source"] == str(design)
+    assert isinstance(data["updated"], float) and data["updated"] > 0
+
+
+def test_stats_payload_title_falls_back_to_the_label(mt, git_repo, run_state, tmp_path):
+    run = init_run(mt, git_repo)
+    stats = tmp_path / "stats.md"
+    stats.write_text("## Totals\n\n- tasks: 3\n")
+    assert mt("artifact", "stats", str(stats), cwd=git_repo).code == 0
+    data = artifact_data(run, "stats")
+    assert data["title"] == "Stats" and "<h2" in data["html"]
+    assert sorted(p.name for p in (run / "artifacts").iterdir()) == ["stats.html", "stats.js"]
+
+
+@pytest.mark.parametrize(
+    ("html", "title"),
+    [
+        ("<h1>Plain</h1>", "Plain"),
+        (
+            '<p>x</p>\n<h2 id="doc-a">A</h2>\n<h1>Later <code>mt</code> &amp; <a href="x">link</a></h1>',
+            "Later mt & link",
+        ),
+        ("<h1>a &lt;b&gt;</h1><h1>second</h1>", "a <b>"),
+        ("<h1></h1>", None),
+        ('<h2 id="doc-x">X</h2>', None),
+        ("", None),
+    ],
+)
+def test_first_heading(html, title):
+    assert MT.first_heading(html) == title
+
+
+def test_document_payload_of_a_text_file(tmp_path):
+    log = tmp_path / "notes.txt"
+    log.write_text("# not a heading here\n")
+    doc = MT.document_payload({"id": "stats", "source": str(log)})
+    assert doc["title"] == "notes.txt", "a text file is titled by text_as_markdown's heading"
+    assert "<pre><code" in doc["html"] and doc["toc"] == [] and doc["source"] == str(log)
+
+
+def test_document_payload_setext_heading(tmp_path):
+    design = tmp_path / "d.md"
+    design.write_text("Big title\n=========\n\ntext\n")
+    assert MT.document_payload({"id": "design", "source": str(design)})["title"] == "Big title"
+
+
+def test_artifact_payload_only_for_payload_ids(tmp_path):
+    source = tmp_path / "x.md"
+    source.write_text("# X\n")
+    for aid in MT.ARTIFACT_IDS:
+        payload = MT.artifact_payload(tmp_path, {}, {"id": aid, "source": str(source)})
+        assert (payload is not None) == (aid in MT.PAYLOAD_IDS), aid
+    assert set(MT.PAYLOAD_IDS) >= {"design", "stats"}
+    assert "changes" not in MT.PAYLOAD_IDS
+
+
+def test_artifact_payload_reuses_a_rendered_document(tmp_path, renders):
+    doc = {"title": "T", "html": "<p>x</p>", "toc": [], "source": "/s.md"}
+    payload = MT.artifact_payload(tmp_path, {}, {"id": "design", "source": "/s.md"}, doc)
+    assert payload == doc and payload is not doc
+    assert renders == []
+
+
+def test_data_script_is_ascii_and_escapes_markup(mt, git_repo, run_state):
+    run = init_run(mt, git_repo)
+    design = run / "design.md"
+    design.write_text("# Été </script> & “quotes” 🚀\n\n<!-- x --> ü\n")
+    assert mt("artifact", "design", str(design), cwd=git_repo).code == 0
+    raw = (run / "artifacts" / "design.js").read_bytes()
+    assert raw.isascii(), "non-ASCII is \\u-escaped: the script reads the same in any charset"
+    text = raw.decode()
+    body = text.removeprefix('window.mtArtifact("design", ').removesuffix(");\n")
+    assert "<" not in body and ">" not in body and "&" not in body
+    assert "\\u003c/script\\u003e" in body and "\\u0026" in body and "\\u00e9" in body and "\\ud83d\\ude80" in body
+    data = artifact_data(run, "design")
+    assert data["title"] == "Été </script> & “quotes” 🚀", "the title is plain text, unescaped"
+    assert "&lt;!-- x --&gt; ü" in data["html"]
+
+
+def test_unchanged_content_keeps_the_data_script(mt, git_repo, run_state, renders):
+    run = init_run(mt, git_repo)
+    design = run / "design.md"
+    design.write_text("# D\n\nv1\n")
+    assert mt("artifact", "design", str(design), cwd=git_repo).code == 0
+    js = run / "artifacts" / "design.js"
+    first, first_ns = js.read_text(), js.stat().st_mtime_ns
+    updated = artifact_data(run, "design")["updated"]
+
+    # a new mtime, the same content: the source renders again, the data script stays as it was
+    bump_mtime(design)
+    assert mt("refresh", cwd=git_repo).code == 0
+    assert len(renders) == 2
+    assert js.read_text() == first and js.stat().st_mtime_ns == first_ns
+    assert artifact_data(run, "design")["updated"] == updated
+
+    # changed content: written again with a new `updated`
+    design.write_text("# D\n\nv2\n")
+    bump_mtime(design, 20)
+    assert mt("refresh", cwd=git_repo).code == 0
+    data = artifact_data(run, "design")
+    assert data["updated"] > updated and "<p>v2</p>" in data["html"]
+
+
+def test_deleted_data_script_is_written_again(mt, git_repo, run_state, renders, tmp_path):
+    run = init_run(mt, git_repo)
+    design = run / "design.md"
+    design.write_text("# D\n")
+    progress = tmp_path / "progress.txt"
+    progress.write_text("task 1: a\n")
+    assert mt("artifact", "design", str(design), cwd=git_repo).code == 0
+    assert mt("artifact", "progress", str(progress), cwd=git_repo).code == 0
+    assert len(renders) == 2
+    (run / "artifacts" / "design.js").unlink()
+
+    assert mt("refresh", cwd=git_repo).code == 0
+    assert len(renders) == 3, "design renders again; progress has no data script to miss"
+    assert artifact_data(run, "design")["title"] == "D"
+    assert not (run / "artifacts" / "progress.js").exists()
+
+
+def test_write_artifact_data(tmp_path, monkeypatch):
+    clock = iter([100.0, 200.0, 300.0])
+    monkeypatch.setattr(MT, "now", lambda: next(clock))
+    js = tmp_path / "artifacts" / "design.js"
+
+    assert MT.write_artifact_data(tmp_path, "design", {"title": "A", "toc": []}) is True
+    assert js.read_text() == 'window.mtArtifact("design", {"title": "A", "toc": [], "updated": 100.0});\n'
+
+    # the same rest, whatever `updated` the caller passes: nothing written
+    assert MT.write_artifact_data(tmp_path, "design", {"title": "A", "toc": [], "updated": 5}) is False
+    assert MT.write_artifact_data(tmp_path, "design", {"toc": (), "title": "A"}) is False, "key order, tuple"
+    assert MT.read_artifact_data(js) == {"title": "A", "toc": [], "updated": 100.0}
+
+    assert MT.write_artifact_data(tmp_path, "design", {"title": "B", "toc": []}) is True
+    assert MT.read_artifact_data(js) == {"title": "B", "toc": [], "updated": 200.0}
+
+    # a file mt cannot read back is replaced
+    js.write_text("garbage")
+    assert MT.write_artifact_data(tmp_path, "design", {"title": "B", "toc": []}) is True
+    assert MT.read_artifact_data(js) == {"title": "B", "toc": [], "updated": 300.0}
+    assert sorted(p.name for p in js.parent.iterdir()) == ["design.js"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "garbage",
+        'window.mtArtifact("design", [1]);\n',
+        'window.mtArtifact("design", {"a": );\n',
+        'window.mtArtifact("design", {"a": 1});',
+    ],
+)
+def test_read_artifact_data_refuses(tmp_path, text):
+    js = tmp_path / "x.js"
+    js.write_text(text)
+    assert MT.read_artifact_data(js) is None
+
+
+def test_read_artifact_data_missing(tmp_path):
+    assert MT.read_artifact_data(tmp_path / "none.js") is None
+
+
+def test_data_script_write_failure_keeps_the_entry(mt, git_repo, run_state, monkeypatch):
+    run = init_run(mt, git_repo)
+    design = run / "design.md"
+    design.write_text("# D\n")
+
+    real, full = MT.write_artifact_data, [True]
+
+    def write(*a, **kw):
+        if full[0]:
+            raise OSError("disk full")
+        return real(*a, **kw)
+
+    monkeypatch.setattr(MT, "write_artifact_data", write)
+    r = mt("artifact", "design", str(design), cwd=git_repo)
+    assert r.code == 0 and f"mt: warning: artifact design: cannot render {design}: disk full" in r.err
+    art = artifact(run_state(run), "design")
+    assert art["html"] is None and art["mtime"] == 0, "the next call retries"
+
+    full[0] = False
+    assert mt("refresh", cwd=git_repo).code == 0
+    assert artifact_data(run, "design")["title"] == "D"
 
 
 # ---------------------------------------------------------------- changes
@@ -382,7 +591,7 @@ def test_unreadable_source_keeps_previous_html(mt, git_repo, run_state, renders)
     assert after["html"] == before["html"] and after["mtime"] == before["mtime"]
     assert after["updated"] == before["updated"]
     assert Path(after["html"]).read_text() == html_before
-    assert sorted(p.name for p in (run / "artifacts").iterdir()) == ["design.html"]
+    assert sorted(p.name for p in (run / "artifacts").iterdir()) == ["design.html", "design.js"]
 
     # readable again: the next refresh retries and succeeds
     design.rmdir()
