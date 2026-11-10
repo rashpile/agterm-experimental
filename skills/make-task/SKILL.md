@@ -28,13 +28,17 @@ waits.
 It is the only thing that calls `agtermctl`. In this file **`mt` stands for**
 
 ```bash
-uv run -q --script <skill dir>/scripts/mt
+<skill dir>/scripts/mt
 ```
 
 with `<skill dir>` the absolute "Base directory for this skill" the harness announced: the path the
 resolution line above resolves `scripts/mt` against. Write the absolute path into every call: the calls
 run from the project's directory, and after an auto-compact the absolute paths in earlier calls are what
-still say where the skill lives.
+still say where the skill lives. The script runs itself through `uv` (its shebang).
+
+- The Bash tool runs zsh: never keep `mt` with arguments in a variable (`M="<skill dir>/scripts/mt --run
+  <state_dir>"; $M status` fails with `no such file or directory`). Write each call out, or define a
+  function in the same command: `mt() { <skill dir>/scripts/mt --run <state_dir> "$@"; }`.
 
 - **Global `--run DIR` goes before the command**: `mt --run <state_dir> status`. After `review start`
   the word `--run` means the revmux run name: `mt review start --round 1 --run 01-initial --round-dir D`.
@@ -236,8 +240,9 @@ starts a new attempt; `end` on an `ended` key is a harmless no-op. Keys match `[
    creating no run: stop as the Errors row "profile check fails" says. Its `warnings` carry the check's
    warnings, each prefixed `profile <name>: ` (a review `requires` command missing on PATH among them),
    and one for a review phase the profile skips (step 3 handles both). Inside agterm it opens the
-   dashboard over the other pane; when that fails it reports `agterm: false` and the run goes on without
-   it. Questions do not depend on agterm: every one is an `AskUserQuestion` in the terminal (Questions).
+   dashboard over the other pane, replacing an earlier run's dashboard left there; when that fails it
+   reports `agterm: false` and the run goes on without it. Questions do not depend on agterm: every one
+   is an `AskUserQuestion` in the terminal (Questions).
 3. **Review check.**
    - `review_entry` is null (the profile's `phases.review` is `skip`): the profile chose to run without
      review, so there is nothing to check and nothing to ask.

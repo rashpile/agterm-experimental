@@ -9,7 +9,7 @@ Paths below are relative to this skill's directory, the one containing `SKILL.md
 `references/` directory). Resolve them against it, not the current working directory or this file's
 directory.
 
-`mt` is the same command as in SKILL.md: `uv run -q --script <skill dir>/scripts/mt`. Every call in this
+`mt` is the same command as in SKILL.md: `<skill dir>/scripts/mt`. Every call in this
 file is an `mt profile` command. It runs before `mt init`, never takes `--run`, prints one JSON line and
 exits 1 with a message on failure; a failure is SKILL.md's Errors row "another `mt profile` command
 fails". `<name>` is the profile's name and `<profile_dir>` is the `dir` that `mt profile resolve` printed.

@@ -832,7 +832,7 @@ def test_profiles_md_is_where_skill_md_points_and_resolves_its_paths() -> None:
     # the bundled-file rule: no ${CLAUDE_SKILL_DIR} and no hardcoded install path
     assert "${CLAUDE_SKILL_DIR}" not in PROFILES_TEXT
     assert "~/.claude/skills/make-task" not in PROFILES_TEXT
-    assert "`uv run -q --script <skill dir>/scripts/mt`" in PROFILES_TEXT
+    assert "`<skill dir>/scripts/mt`" in PROFILES_TEXT
 
 
 def test_profiles_md_calls_only_mt_profile_commands() -> None:
@@ -1036,3 +1036,14 @@ def test_profiles_md_update_flow_raises_an_older_schema_after_the_companion_upda
 def test_profiles_md_copied_profile_is_explained() -> None:
     holds = flat(section(PROFILES_TEXT, "## What a profile holds", "## First use"))
     assert "`rewritten_for`" in holds and "never by copying a profile's directory" in holds
+
+
+def test_mt_is_the_script_path_run_quietly_by_its_shebang() -> None:
+    """`mt` is one word, the script's path: uv runs it from the shebang, quiet as `uv run -q` was."""
+    run = section(TEXT, "## How to run `mt`", "## Precedence")
+    assert "```bash\n<skill dir>/scripts/mt\n```" in run
+    assert "uv run" not in run
+    assert "never keep `mt` with arguments in a variable" in run
+    script = SKILL.parent / "scripts" / "mt"
+    assert script.read_text(encoding="utf-8").splitlines()[0] == "#!/usr/bin/env -S uv run -q --script"
+    assert script.stat().st_mode & 0o111, "SKILL.md runs the script by its path"

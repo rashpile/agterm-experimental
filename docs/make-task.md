@@ -255,6 +255,8 @@ word.
 Three review rounds and 1h 20m in total. The user answered three questions, and the run took six decisions
 on its own, each with its reason. After the run the artifact buttons show the time each artifact last
 changed, and Stats is filled in. The timeline ends with the `verify-final` check and the final status.
+The dashboard stays open until you close it. The next make-task run in the same session replaces it with
+its own.
 
 ---
 
@@ -327,7 +329,7 @@ Every run needs:
 |---|---|
 | Claude Code | runs the orchestrator and its subagents. The plan review uses the built-in `Plan` agent type; a Claude Code without it skips the plan review and records that |
 | git | the branch, the commits, the stash and the review range. Outside a git repo make-task stops before it starts |
-| [`uv`](https://docs.astral.sh/uv/) | runs `scripts/mt` (`uv run -q --script`) and installs its Python dependencies, `markdown-it-py`, `mdit-py-plugins` and `pyyaml` |
+| [`uv`](https://docs.astral.sh/uv/) | runs `scripts/mt` (`uv run -q --script` in its shebang) and installs its Python dependencies, `markdown-it-py`, `mdit-py-plugins` and `pyyaml` |
 
 The review needs:
 

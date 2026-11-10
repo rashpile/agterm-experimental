@@ -22,13 +22,17 @@ SID = "S-1111"
 PANE_ID = "P-left"
 
 
-def tree(split: bool = False, has_split: bool = False, own_kind: str = "left") -> dict[str, Any]:
+def tree(
+    split: bool = False, has_split: bool = False, own_kind: str = "left", pages: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
     session: dict[str, Any] = {
         "id": SID,
         "name": "agent",
         "split": split,
         "surfaces": [{"id": f"surface:{SID}:{own_kind}", "kind": own_kind, "paneID": PANE_ID}],
     }
+    if pages:
+        session["htmlOverlays"] = pages
     if has_split:
         session["hasSplit"] = True
         other = "right" if own_kind == "left" else "left"
@@ -106,6 +110,93 @@ def test_init_dashboard_over_left_when_agent_runs_in_right_pane(mt, git_repo, is
     run = Path(info["state_dir"])
     assert isolate.agterm_calls()[-1] == overlay_argv(run, pane="left")
     assert info["dashboard_pane"] == "left"
+
+
+def earlier_run(mt, git_repo, isolate, in_agterm) -> Path:
+    """A finished first run whose dashboard mt opened over the right pane in a split it made; the log is reset."""
+    run = Path(init(mt, git_repo, title="First run")["state_dir"])
+    assert mt("done", "--status", "stopped", cwd=git_repo).code == 0
+    isolate.agterm_log.unlink()
+    return run
+
+
+def page(run: Path, pane: str = "right") -> dict[str, Any]:
+    return {"id": "PAGE-1", "file": str(run / "dashboard.html"), "pane": pane, "state": "loaded"}
+
+
+def test_init_replaces_an_earlier_runs_dashboard(mt, git_repo, isolate, in_agterm, run_state):
+    first = earlier_run(mt, git_repo, isolate, in_agterm)
+    in_agterm(split=True, has_split=True, pages=[page(first)])
+    info = init(mt, git_repo, title="Second run")
+    run = Path(info["state_dir"])
+    assert isolate.agterm_calls() == [
+        ["tree", "--json"],
+        ["session", "overlay", "close", "--pane", "right", "--target", SID],
+        overlay_argv(run),
+    ]
+    assert info["agterm"] is True and info["warnings"] == []
+    assert info["created_split"] is True, "the first run made the split: the new Close takes it down"
+    assert any(e["text"] == f"Replaced the dashboard of run {first.name}" for e in run_state(run)["events"])
+
+
+def test_init_replaces_an_expanded_earlier_dashboard(mt, git_repo, isolate, in_agterm):
+    """Expand hides the split: the new run shows it again without claiming it a second time."""
+    first = earlier_run(mt, git_repo, isolate, in_agterm)
+    in_agterm(split=False, has_split=True, pages=[page(first)])
+    info = init(mt, git_repo, title="Second run")
+    run = Path(info["state_dir"])
+    assert isolate.agterm_calls() == [
+        ["tree", "--json"],
+        ["session", "overlay", "close", "--pane", "right", "--target", SID],
+        ["session", "split", "on", "--target", SID],
+        overlay_argv(run),
+        ["session", "focus", "left", "--target", SID],
+    ]
+    assert info["created_split"] is True
+
+
+def test_init_keeps_an_earlier_dashboard_of_a_user_split(mt, git_repo, isolate, in_agterm, run_state):
+    first = earlier_run(mt, git_repo, isolate, in_agterm)
+    old = run_state(first)
+    old["created_split"] = False
+    (first / "state.json").write_text(json.dumps(old))
+    in_agterm(split=True, has_split=True, pages=[page(first)])
+    info = init(mt, git_repo, title="Second run")
+    assert ["session", "overlay", "close", "--pane", "right", "--target", SID] in isolate.agterm_calls()
+    assert info["created_split"] is False, "Close must not destroy a split the user made"
+
+
+@pytest.mark.parametrize("case", ["other-file", "other-session", "other-pane", "outside-state-root", "no-state"])
+def test_init_leaves_a_page_that_is_not_an_earlier_dashboard(mt, git_repo, isolate, in_agterm, run_state, case):
+    first = earlier_run(mt, git_repo, isolate, in_agterm)
+    pages = [page(first)]
+    if case == "other-file":
+        pages[0]["file"] = str(first / "viewer-plan.html")
+    elif case == "other-session":
+        old = run_state(first)
+        old["agterm_session"] = "S-other"
+        (first / "state.json").write_text(json.dumps(old))
+    elif case == "other-pane":
+        pages = [page(first, pane="left")]
+    elif case == "outside-state-root":
+        elsewhere = isolate.tmp / "elsewhere" / first.name
+        shutil.copytree(first, elsewhere)
+        pages = [page(elsewhere)]
+    else:
+        (first / "state.json").unlink()
+    in_agterm(split=True, has_split=True, pages=pages)
+    info = init(mt, git_repo, title="Second run")
+    assert isolate.agterm_calls() == [["tree", "--json"], overlay_argv(Path(info["state_dir"]))]
+
+
+def test_init_failing_close_of_an_earlier_dashboard_sets_agterm_false(mt, git_repo, isolate, in_agterm, monkeypatch):
+    first = earlier_run(mt, git_repo, isolate, in_agterm)
+    in_agterm(split=True, has_split=True, pages=[page(first)])
+    monkeypatch.setenv("FAKE_AGTERMCTL_FAIL", "session overlay close")
+    info = init(mt, git_repo, title="Second run")
+    assert info["agterm"] is False
+    assert isolate.agterm_calls()[-1][:3] == ["session", "overlay", "close"], "nothing opens over the old page"
+    assert any("overlay close failed" in w for w in info["warnings"])
 
 
 def test_init_failing_agtermctl_sets_agterm_false(mt, git_repo, isolate, in_agterm, monkeypatch, run_state):

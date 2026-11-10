@@ -12,7 +12,7 @@ Run one development task end to end: brainstorm, plan, plan review, task-by-task
 The first run installs `default` and asks one question, the autonomy. `--update` checks the copies against their sources, shows the diffs, merges your own edits (listed under `## Changes` in the profile's `UPDATE.md`) and offers the workflow interview; `--update` without task text stops after that. `--profile=<name>` with a new name installs another profile from the template. Do not copy a profile directory: its copies hold absolute paths, and `mt profile check` refuses the copy.
 
 **Requires:**
-- `uv`: every `scripts/mt` call is `uv run -q --script …`
+- `uv`: `scripts/mt` runs through it (`uv run -q --script` in its shebang)
 - for the review: the `revmux` CLI on PATH, `jq`, and the model CLIs (`claude`, `codex`) its review profile names; the copy's `preflight.sh` checks them. Without them the review is skipped and the run ends `review skipped`, never `clean`
 - no umputun or revmux plugin: the profile's copies take their place
 - optional: agterm for the dashboard, the viewer and the sidebar status; `revdiff` for the Changes button (disabled without it); network access for a companion with a `git:` source (`--update` only); `gh` to file an issue proposal

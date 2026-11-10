@@ -1,4 +1,4 @@
-#!/usr/bin/env -S uv run --script
+#!/usr/bin/env -S uv run -q --script
 # /// script
 # requires-python = ">=3.11"
 # dependencies = ["markdown-it-py>=3", "mdit-py-plugins>=0.4", "pyyaml>=6"]
@@ -75,10 +75,12 @@ review, stats): assets/viewer.html with <body data-tab="<tab>">, the tab the pag
 The page re-injects state.js and the current tab's artifacts/<id>.js every 1.5 s and writes
 nothing, so closing it never affects the run; a failure to write the entry pages only warns.
 
-Dashboard: init copies assets/dashboard.html into the run dir. In agterm it shows the
-split when none is shown (created_split records a split mt made), opens the page with
-`--cwd <run> --js --chromeless` over the pane the agent does not run in, and hands the
-focus back. Any failing agtermctl call there leaves `agterm: false` and init goes on.
+Dashboard: init copies assets/dashboard.html into the run dir. In agterm it closes an
+earlier run's dashboard still open over the pane it needs (taking over that run's
+created_split), shows the split when none is shown (created_split records a split mt made),
+opens the page with `--cwd <run> --js --chromeless` over the pane the agent does not run in,
+and hands the focus back. Any failing agtermctl call there leaves `agterm: false` and init
+goes on.
 Its file buttons open viewer-<tab>.html over the session (Changes opens revdiff). While a
 round is live (live_round's rule, repeated in the page's script) Review shows `live` and
 the round's row in the phase rail gets a compact block from its `live` summary.
@@ -638,11 +640,35 @@ def own_pane(session: dict[str, Any]) -> str:
     return "left"
 
 
+def earlier_dashboard(session: dict[str, Any], sid: str, pane: str) -> tuple[Path, dict[str, Any]] | None:
+    """(run dir, state) of an earlier run whose dashboard is open over `pane` of session `sid`, or None.
+
+    Only a page an earlier `mt init` opened there counts: <state root>/<run>/dashboard.html whose
+    state.json names this session and pane. Any other page or program in the pane is not mt's.
+    """
+    root = state_root().resolve()
+    for o in session.get("htmlOverlays") or []:
+        if not isinstance(o, dict) or o.get("pane") != pane or not isinstance(o.get("file"), str):
+            continue
+        page = Path(o["file"])
+        if page.name != "dashboard.html" or page.parent.parent.resolve() != root:
+            continue
+        try:
+            old = load(page.parent)
+        except MtError:
+            continue
+        if old.get("agterm_session") == sid and old.get("dashboard_pane") == pane:
+            return page.parent, old
+    return None
+
+
 def open_dashboard(run: Path, state: dict[str, Any]) -> None:
     """In agterm: show the split if needed and open the dashboard over the other pane.
 
-    Any failing agtermctl call leaves `agterm: false` (with a warning) and the run goes on without
-    the dashboard; a split mt created is closed again when the page cannot open.
+    An earlier run's dashboard still open over that pane is closed first, and the new run takes
+    over its `created_split`. Any failing agtermctl call leaves `agterm: false` (with a warning)
+    and the run goes on without the dashboard; a split mt created is closed again when the page
+    cannot open.
     """
     sid = agterm_session()
     if sid is None:
@@ -669,6 +695,14 @@ def open_dashboard(run: Path, state: dict[str, Any]) -> None:
     mine = own_pane(session)
     pane = "left" if mine == "right" else "right"
     created = False
+    earlier = earlier_dashboard(session, sid, pane)
+    if earlier is not None:
+        r = agtermctl("session", "overlay", "close", "--pane", pane, "--target", sid)
+        if not r.ok:
+            return give_up(f"agtermctl session overlay close failed: {r.why()}")
+        # a split the earlier run made goes with the new dashboard's Close, as it would have with the old one's
+        created = bool(earlier[1].get("created_split"))
+        add_event(state, f"Replaced the dashboard of run {earlier[0].name}")
     if not session.get("split"):
         argv = ["session", "split", "on", "--target", sid]
         if not session.get("hasSplit"):
@@ -676,7 +710,7 @@ def open_dashboard(run: Path, state: dict[str, Any]) -> None:
         r = agtermctl(*argv)
         if not r.ok:
             return give_up(f"agtermctl session split on failed: {r.why()}")
-        created = not session.get("hasSplit")
+        created = created or not session.get("hasSplit")
 
     r = agtermctl(
         "session", "overlay", "open", "--html", str(page), "--cwd", str(run),
