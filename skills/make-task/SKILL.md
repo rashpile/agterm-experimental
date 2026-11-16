@@ -1074,7 +1074,17 @@ here is reported and does not block completion.
 5. Final report: final status, the branch and (worktree mode) `worktree_path`, which tree was reviewed
    (`reviewed_sha`) and the final HEAD, the `info/exclude` edit if one was made, the stash outcome of
    step 3 (the spare `make-task <run_id>` entry when `entry=` named one), skipped archive housekeeping,
-   the stats, and the decisions report.
+   the changes table below, the stats, and the decisions report.
+
+   **Changes table: where the lines went.** Run `git -C <toplevel> diff --numstat <base> HEAD`, with
+   `<base>` the stored `review_base` while it is still an ancestor of HEAD
+   (`git -C <toplevel> merge-base --is-ancestor <review_base> HEAD`), else HEAD's merge-base with
+   `origin/<default_branch>` (`<default_branch>` without `origin`); say which base was used when it is not
+   `review_base`. Group the files by purpose, not by directory: the plan, tests, docs, one group for each
+   part of the change (a new component, a manager, a hook, a refactor that moved code), and code removed.
+   One row per group: the group, its added and removed lines, its main files with their counts. Under the
+   table: the totals, and the net lines of code outside tests, docs and the plan. Then one line on the
+   largest group and why it is that large (for example a project rule that asks for a manager and a proxy).
 
 ## Errors
 
