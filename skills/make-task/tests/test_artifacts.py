@@ -949,3 +949,54 @@ def test_changes_falls_back_to_origin_default(mt, git_repo, run_state, revdiff, 
     run = init_run(mt, git_repo)
     assert mt("artifact", "changes", cwd=git_repo).code == 0
     assert artifact(run_state(run), "changes")["command"].endswith(shlex.quote(base))
+
+
+def test_wrapup_registers_the_page_as_it_is(mt, git_repo, run_state, tmp_path):
+    """`artifact wrapup` takes a finished HTML page: no render, no copy, its directory as cwd."""
+    run = init_run(mt, git_repo)
+    page = tmp_path / "tasks" / "2026-01-01-x" / "index.html"
+    page.parent.mkdir(parents=True)
+    page.write_text("<!doctype html><h1>X</h1>\n")
+    assert mt("artifact", "wrapup", str(page), cwd=git_repo).code == 0
+    art = artifact(run_state(run), "wrapup")
+    assert art["html"] == art["source"] == str(page) and art["cwd"] == str(page.parent)
+    assert art["command"] is None and art["updated"] > 0
+    assert not (run / "artifacts" / "wrapup.html").exists() and not (run / "artifacts" / "wrapup.js").exists()
+    assert page.read_text() == "<!doctype html><h1>X</h1>\n"
+    assert "wrapup" not in MT.PAYLOAD_IDS and "wrapup" not in MT.VIEWER_TABS
+
+
+def test_wrapup_survives_a_refresh_and_follows_the_page(mt, git_repo, run_state, tmp_path):
+    """render_changed never renders the page as a code block; `updated` moves only with the file."""
+    run = init_run(mt, git_repo)
+    page = tmp_path / "index.html"
+    page.write_text("<h1>X</h1>\n")
+    assert mt("artifact", "wrapup", str(page), cwd=git_repo).code == 0
+    before = artifact(run_state(run), "wrapup")
+    assert mt("refresh", cwd=git_repo).code == 0
+    assert artifact(run_state(run), "wrapup") == before
+    bump_mtime(page)
+    assert mt("refresh", cwd=git_repo).code == 0
+    after = artifact(run_state(run), "wrapup")
+    assert after["html"] == str(page) and after["mtime"] != before["mtime"]
+    assert not (run / "artifacts" / "wrapup.html").exists()
+
+
+def test_wrapup_needs_an_existing_page(mt, git_repo, run_state, tmp_path):
+    run = init_run(mt, git_repo)
+    r = mt("artifact", "wrapup", cwd=git_repo)
+    assert r.code == 1 and "PATH is required" in r.err
+    r = mt("artifact", "wrapup", str(tmp_path / "missing.html"), cwd=git_repo)
+    assert r.code == 1 and "no such file" in r.err
+    assert all(a["id"] != "wrapup" for a in run_state(run).get("artifacts", []))
+
+
+def test_wrapup_registers_after_the_run_is_done(mt, git_repo, run_state, tmp_path):
+    """SKILL.md Completion runs the profile's `## finalize` section after `mt done`."""
+    run = init_run(mt, git_repo)
+    assert mt("done", "--status", "stopped", cwd=git_repo).code == 0
+    page = tmp_path / "index.html"
+    page.write_text("<h1>X</h1>\n")
+    assert mt("artifact", "wrapup", str(page), cwd=git_repo).code == 0
+    state = run_state(run)
+    assert artifact(state, "wrapup")["html"] == str(page) and state["final_status"] == "stopped"

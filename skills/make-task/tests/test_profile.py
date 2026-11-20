@@ -7,6 +7,7 @@ import datetime
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -1008,6 +1009,73 @@ def test_import_make_task_source(mt: Callable[..., Result], isolate: Env) -> Non
     assert out["version"] == version and version.startswith("sha256:")
     assert_copy(d, "foo")
     assert update_md(d)[0]["companions"]["foo"] == {"source": "make-task:default/foo", "version": version}
+
+
+def path_skill(tmp_path: Path) -> Path:
+    src = tmp_path / "skills" / "foo"
+    (src / "assets").mkdir(parents=True)
+    (src / "SKILL.md").write_text("# foo\n")
+    (src / "assets" / "a.txt").write_text("a\n")
+    return src
+
+
+def test_import_path_source(mt: Callable[..., Result], isolate: Env, tmp_path: Path) -> None:
+    """path:<dir> copies a directory on disk as it is; its version is the hash of what the copy holds."""
+    src = path_skill(tmp_path)
+    (src / ".git").mkdir()
+    (src / ".git" / "HEAD").write_text("ref\n")
+    d = bare_profile(isolate)
+    r, out = profile(mt, "import", "foo", "--source", f"path:{src}", "--profile", "p")
+    assert r.code == 0, r.err
+    assert out["version"] == MT.copied_hash(src) and out["version"].startswith("sha256:")
+    for tree in ("companions", "upstream"):
+        assert (d / tree / "foo" / "SKILL.md").read_text() == "# foo\n"
+        assert (d / tree / "foo" / "assets" / "a.txt").read_text() == "a\n"
+        assert not (d / tree / "foo" / ".git").exists()
+    assert update_md(d)[0]["companions"]["foo"] == {"source": f"path:{src}", "version": out["version"]}
+
+
+def test_path_source_edit_on_disk_is_an_update(mt: Callable[..., Result], isolate: Env, tmp_path: Path) -> None:
+    """outdated and check see an edit of the directory without the network; fetch and accept take it; a
+    change the copy leaves out (.git) is no update."""
+    src = path_skill(tmp_path)
+    d = bare_profile(isolate)
+    r, first = profile(mt, "import", "foo", "--source", f"path:{src}", "--profile", "p")
+    assert r.code == 0, r.err
+    (src / ".git").mkdir()
+    (src / ".git" / "HEAD").write_text("ref\n")
+    r, out = profile(mt, "outdated", "--profile", "p")
+    assert r.code == 0 and out["updates"] == [] and out["current"] == ["foo"] and out["skipped"] == []
+    (src / "SKILL.md").write_text("# foo, edited\n")
+    r, out = profile(mt, "outdated", "--profile", "p")
+    assert r.code == 0, r.err
+    assert [(u["id"], u["version"], u["available"]) for u in out["updates"]] == [
+        ("foo", first["version"], MT.copied_hash(src))
+    ]
+    r, fetched = profile(mt, "fetch", "foo", "--profile", "p")
+    assert r.code == 0 and fetched["changed"] is True, r.err
+    r, _ = profile(mt, "accept", "foo", "--expect", fetched["tree"], "--profile", "p")
+    assert r.code == 0, r.err
+    assert (d / "companions" / "foo" / "SKILL.md").read_text() == "# foo, edited\n"
+    assert profile(mt, "outdated", "--profile", "p")[1]["updates"] == []
+
+
+def test_path_source_home_and_failures(
+    mt: Callable[..., Result], isolate: Env, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = path_skill(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    d = bare_profile(isolate)
+    r, out = profile(mt, "import", "foo", "--source", "path:~/skills/foo", "--profile", "p")
+    assert r.code == 0, r.err
+    assert update_md(d)[0]["companions"]["foo"]["source"] == "path:~/skills/foo", "recorded as given"
+    r, _ = profile(mt, "import", "bar", "--source", "path:skills/foo", "--profile", "p")
+    assert r.code == 1 and "expected path:<absolute dir>" in r.err
+    r, _ = profile(mt, "import", "bar", "--source", f"path:{tmp_path / 'missing'}", "--profile", "p")
+    assert r.code == 1 and "is not a directory" in r.err
+    shutil.rmtree(src)
+    r, out = profile(mt, "outdated", "--profile", "p")
+    assert r.code == 0 and [e["id"] for e in out["errors"]] == ["foo"], "a source that went away keeps the copy"
 
 
 def test_import_make_task_missing_companion_fails(mt: Callable[..., Result], isolate: Env) -> None:

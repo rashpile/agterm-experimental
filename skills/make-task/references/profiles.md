@@ -56,7 +56,8 @@ The `phases` map in `profile.md` names a companion for each phase and paths insi
 
 `requires` (review only) lists commands that must be on PATH. A missing one is a `check` warning, and
 SKILL.md Start step 3 counts it as a failed preflight, so the run asks the preflight question. Finalize is not
-in the map: it always runs with the exec companion. `autonomy` is `autonomous`, `default` or
+in the map: it always runs with the exec companion. A `## finalize` section in the body is the user's own
+step at the end of the run (SKILL.md Completion step 5), not an instruction to the finalizer. `autonomy` is `autonomous`, `default` or
 `interactive`; `gates`, when present, replaces the preset's gates; `defaults.mode` and
 `defaults.leftovers` answer the worktree and leftovers questions under `autonomous` (SKILL.md Question rule).
 
@@ -78,6 +79,7 @@ Each companion's `source` in the `UPDATE.md` frontmatter:
 | `make-task:default/<id>` | the template, `assets/profiles/default/companions/<id>` | a make-task release changed it; `check` sees it |
 | `plugin:<name>@<marketplace>[:<subpath>]` | the installed plugin, from `installed_plugins.json` | Claude Code installed another version; `check` sees it |
 | `git:<url>#<ref>[:<subpath>]` | a shallow clone of `<ref>` | `<ref>` moved; only `outdated --network` looks |
+| `path:<absolute dir>` | a directory on this machine as it is now, uncommitted edits included (`~/…` is fine) | a file in it changed; `check` sees it |
 | `local` | files the user wrote in `companions/<id>/` | never |
 
 ## First use
@@ -115,14 +117,19 @@ one line or one map entry at a time, never by rewriting the whole frontmatter.
      `design`, `plan` and `review-round` to pick from. `gates: []` turns them off; no `gates:` line means
      the preset's.
 2. **Phases to change.** One multi-select question: `brainstorm`, `plan`, `exec`, `review`. None picked →
-   step 4.
+   step 4. The end of the run is not an option: typed text that asks for a step there (a write-up of the
+   task, a notification) becomes the `## finalize` section, written like `instructions` below.
 3. **Each picked phase**, in that order: `keep`, `replace`, `skip` (brainstorm and review only) or
    `instructions`.
    - `keep`: nothing changes.
    - `instructions`: the free text becomes the profile's `## <phase>` section in the body of
      `profile.md` (`## brainstorm`, `## plan`, `## exec`, `## review`), added or replacing the one there.
      It wins over the copy's text and gives way to SKILL.md (SKILL.md Precedence). The `## exec` section
-     goes into every task prompt.
+     goes into every task prompt. A `## finalize` section runs once, after the run's status is set
+     (SKILL.md Completion step 5); an HTML page it leaves opens from the dashboard's Wrapup button.
+     When it runs a skill, that skill becomes a copy in the profile like any companion (Replacing a
+     phase, steps 1, 2 and 4, with no `phases` entry), and the section names its file by the path inside
+     the profile, `companions/<id>/<file>`.
    - `skip`: write `<phase>: skip` in the `phases` map. Say what it means first. Without brainstorm the
      task text is the design. Without review no review round runs and the run ends `review skipped`,
      never `clean`; make-task records that as an assumption and asks no question about it.
@@ -142,7 +149,8 @@ The new companion becomes a copy inside the profile, like the shipped ones.
 
 1. **Source.** Ask where the skill comes from: an installed plugin (`plugin:<name>@<marketplace>`, with
    `:<subpath>` when the skill is one directory of the plugin), a git repository
-   (`git:<url>#<ref>[:<subpath>]`), or files the user has (`local`). Pick a new companion id, usually the
+   (`git:<url>#<ref>[:<subpath>]`), a skill directory on this machine that the user keeps editing
+   (`path:<absolute dir>`), or files the user has (`local`). Pick a new companion id, usually the
    skill's name (letters, digits, `.`, `_` and `-`, starting with a letter or digit). Keep the old
    companion: `planning` serves both plan and exec, an unused companion costs nothing, and switching back
    is one `profile.md` edit.

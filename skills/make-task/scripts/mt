@@ -81,7 +81,8 @@ created_split), shows the split when none is shown (created_split records a spli
 opens the page with `--cwd <run> --js --chromeless` over the pane the agent does not run in,
 and hands the focus back. Any failing agtermctl call there leaves `agterm: false` and init
 goes on.
-Its file buttons open viewer-<tab>.html over the session (Changes opens revdiff). While a
+Its file buttons open viewer-<tab>.html over the session (Changes opens revdiff, Wrapup the
+page `artifact wrapup PATH` registered, as it is). While a
 round is live (live_round's rule, repeated in the page's script) Review shows `live` and
 the round's row in the phase rail gets a compact block from its `live` summary.
 `phase` and `activity` (not `--wait`) re-assert the sidebar status `active`, `fail`
@@ -191,7 +192,9 @@ source (a symlink) fails. Sources and their version: make-task:<profile>/<id> (t
 assets/profiles/<profile>/companions/<id>; sha256: of that tree), plugin:<name>@<marketplace>
 [:<subpath>] (installPath from MT_PLUGINS_JSON; <version>+<gitCommitSha[:12]>),
 git:<url>#<ref>[:<subpath>] (fetched at depth 1 into a temp dir, the subpath is the plugin root;
-the commit sha; `#` and the last `:` after it split the spec), local (companions/ID written by
+the commit sha; `#` and the last `:` after it split the spec), path:<absolute dir> (a directory
+on this machine as it is now, `~` allowed; sha256: of the files a copy of it holds, so `check`
+and `outdated` see an edit on disk without the network), local (companions/ID written by
 the user; version null, no upstream/ID). Left out of a copy: .git and .DS_Store at any depth,
 .in_use/ and hooks/ at its root. A symlink is copied as what it points to; one that leaves the
 source, dangles or loops fails the import. Unless profile.md says `template: true`, every UTF-8
@@ -299,7 +302,9 @@ SET_CHOICES = {
 ID = r"[A-Za-z0-9][A-Za-z0-9._-]*"
 ID_RULE = "letters, digits, '.', '_' and '-', starting with a letter or digit"
 
-ARTIFACT_IDS = ("design", "plan", "progress", "review", "stats", "changes")
+ARTIFACT_IDS = ("design", "plan", "progress", "review", "stats", "changes", "wrapup")
+# artifacts whose source is itself the page the dashboard opens: never rendered, never copied
+PAGE_IDS = ("wrapup",)
 # the viewer's tabs, in order: every artifact but changes, which stays revdiff
 VIEWER_TABS = ("design", "plan", "progress", "review", "stats")
 VIEWER_BODY = re.compile(r'<body data-tab="[^"]*">')
@@ -310,6 +315,7 @@ ARTIFACT_LABELS = {
     "review": "Review",
     "stats": "Stats",
     "changes": "Changes",
+    "wrapup": "Wrapup",
 }
 MARKDOWN_SUFFIXES = {".md", ".markdown", ".mdown", ".mkd"}
 
@@ -1626,13 +1632,18 @@ def render_artifact(run: Path, state: dict[str, Any], art: dict[str, Any]) -> st
     The source is read and rendered once (read_source, document_payload): the page and the payload share it.
     It renders again when the page is gone, or, for an id in PAYLOAD_IDS, the data script. A source that is
     not markdown renders as a code block (text_as_markdown). A failure leaves html and mtime as they were, so
-    the previous page stays and the next call retries.
+    the previous page stays and the next call retries. An id in PAGE_IDS is a finished HTML page: its source
+    becomes `html` as it is and `cwd` its directory (its relative files resolve there), nothing is written.
     """
     aid, src = art["id"], Path(art["source"])
     try:
         mtime = src.stat().st_mtime
     except OSError as e:
         return f"artifact {aid}: cannot stat {src}: {e.strerror or e}"
+    if aid in PAGE_IDS:
+        if art.get("mtime") != mtime or art.get("html") != str(src):
+            art.update(html=str(src), cwd=str(src.parent), mtime=mtime, updated=now())
+        return None
     js = run / "artifacts" / f"{aid}.js"
     if (
         art.get("mtime") == mtime
@@ -3750,7 +3761,10 @@ def run_profile(d: Path) -> tuple[dict[str, Any], list[str]]:
 
 # ---------------------------------------------------------------- profile import
 
-SOURCE_FORMS = "make-task:<profile>/<id>, plugin:<name>@<marketplace>[:<subpath>], git:<url>#<ref>[:<subpath>] or local"
+SOURCE_FORMS = (
+    "make-task:<profile>/<id>, plugin:<name>@<marketplace>[:<subpath>], git:<url>#<ref>[:<subpath>], "
+    "path:<absolute dir> or local"
+)
 PLUGIN_KEY = re.compile(rf"{ID}@{ID}")
 # never copied: a clone's git dir and Finder files at any depth; Claude Code's in-use markers and the
 # plugin's hooks (they hold user-specific absolute paths) at the copy root
@@ -3763,9 +3777,9 @@ GIT_FETCH_TIMEOUT = 300.0
 class Source(NamedTuple):
     """A companion source spec; `text` is what UPDATE.md records as `source`."""
 
-    kind: str  # make-task | plugin | git | local
+    kind: str  # make-task | plugin | git | path | local
     text: str
-    where: str = ""  # make-task: <profile>/<id>; plugin: <name>@<marketplace>; git: the URL
+    where: str = ""  # make-task: <profile>/<id>; plugin: <name>@<marketplace>; git: the URL; path: the dir
     ref: str = ""  # git: the ref to fetch
     subpath: str = ""  # plugin, git: the subtree to copy, normalized ("" = the whole root)
 
@@ -3802,6 +3816,12 @@ def parse_source(text: str) -> Source:
         if not (url and hash_ and ref) or url.startswith("-") or ref.startswith("-"):
             raise MtError(f"source {text!r}: expected git:<url>#<ref>[:<subpath>]")
         return Source(kind, text, url, ref, source_subpath(text, sub))
+    if kind == "path" and sep:
+        # a directory on this machine, as it is on disk now (uncommitted edits included); `~` is the home dir
+        where = os.path.expanduser(rest)
+        if not os.path.isabs(where):
+            raise MtError(f"source {text!r}: expected path:<absolute dir> (`~/...` is fine)")
+        return Source(kind, text, os.path.normpath(where))
     raise MtError(f"source {text!r}: expected {SOURCE_FORMS}")
 
 
@@ -3849,7 +3869,8 @@ def within(src: Source, base: Path, root: Path) -> Path:
 
 @contextlib.contextmanager
 def source_tree(src: Source) -> Iterator[tuple[Path, str]]:
-    """(the directory to copy, the source's current version) for a make-task, plugin or git source."""
+    """(the directory to copy, the source's current version) for a make-task, plugin, git or path source
+    (path: the tree's sha256, so an edit on disk is a new version)."""
     if src.kind == "make-task":
         prof, _, cid = src.where.partition("/")
         base = PROFILE_TEMPLATES / prof / "companions"
@@ -3874,6 +3895,11 @@ def source_tree(src: Source) -> Iterator[tuple[Path, str]]:
             if not root.is_dir():
                 raise MtError(f"source {src.text!r}: {src.subpath} is not a directory at {src.ref} ({sha[:12]})")
             yield within(src, Path(tmp), root), sha
+    elif src.kind == "path":
+        root = Path(src.where)
+        if not root.is_dir():
+            raise MtError(f"source {src.text!r}: {root} is not a directory")
+        yield root, copied_hash(root)
     else:
         raise MtError(f"source {src.text!r} has no files to copy")
 
@@ -3914,6 +3940,19 @@ def copy_entries(root: Path) -> tuple[list[str], list[tuple[str, Path]]]:
 
     walk(real_root, "", frozenset({real_root}))
     return dirs, files
+
+
+def copied_hash(root: Path) -> str:
+    """`sha256:` over what a copy of root holds (copy_entries: the exclusions applied, symlinks followed):
+    each file's relative path, executable bit and content. A path: source's version, so a .git dir or a
+    Finder file in the source never reads as an update."""
+    h = hashlib.sha256()
+    for rel, path in copy_entries(root)[1]:
+        with open(path, "rb") as f:
+            digest = hashlib.file_digest(f, "sha256").hexdigest()
+        kind = "x" if path.stat().st_mode & 0o111 else "f"
+        h.update(os.fsencode(rel) + b"\0" + kind.encode() + b"\0" + digest.encode() + b"\n")
+    return "sha256:" + h.hexdigest()
 
 
 def nearest_skill_dir(rel: str, skill_dirs: set[str]) -> str:
@@ -4624,7 +4663,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.set_defaults(func=cmd_refresh)
 
-    p = sub.add_parser("artifact", help="register (and render) an artifact; `artifact changes` registers revdiff")
+    p = sub.add_parser(
+        "artifact",
+        help="register (and render) an artifact; `artifact changes` registers revdiff, "
+        "`artifact wrapup PAGE.html` a finished HTML page shown as it is",
+    )
     p.add_argument("id", metavar="ID", help=f"one of: {', '.join(ARTIFACT_IDS)}")
     p.add_argument("path", nargs="?", metavar="PATH", help="source file, relative to the current directory")
     p.add_argument("--hint", metavar="H", help="tooltip text (default: the source path)")

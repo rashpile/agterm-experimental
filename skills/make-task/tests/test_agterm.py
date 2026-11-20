@@ -997,6 +997,25 @@ def test_page_file_buttons_open_the_viewer_on_their_tab(tmp_path):
     assert '<a class="open" data-open="plan">plan.md</a>' in html, "the plan phase's link opens the Plan tab too"
 
 
+def test_page_wrapup_button_opens_its_page_as_it_is(tmp_path):
+    """Wrapup is disabled until `mt artifact wrapup` registers a page, then opens that file, not the viewer."""
+    html = run_page(tmp_path, js(base_state()))["html"]
+    assert re.search(r'disabled title="not yet">Wrapup</button>', html)
+    s = base_state()
+    page = "/tasks/proj/2026-01-01-x/index.html"
+    s["artifacts"].append(
+        {"id": "wrapup", "hint": "~/tasks/x", "html": page, "cwd": "/tasks/proj/2026-01-01-x", "source": page,
+         "command": None, "updated": 1300}
+    )  # fmt: skip
+    out = run_page(tmp_path, js(s), [["[data-open]", {"open": "wrapup"}]])
+    args = {"html": page, "cwd": "/tasks/proj/2026-01-01-x", "javascript": True, "sizePercent": 85, "follow": True}
+    assert out["requests"] == [["session.overlay.open", {"args": args}]]
+    assert 'data-open="wrapup"' in out["html"]
+    del s["artifacts"][-1]["cwd"]  # the page's directory is the fallback
+    out = run_page(tmp_path, js(s), [["[data-open]", {"open": "wrapup"}]])
+    assert out["requests"] == [["session.overlay.open", {"args": args}]]
+
+
 def live_summary(**kw: Any) -> dict[str, Any]:
     s: dict[str, Any] = {
         "format_ok": True,

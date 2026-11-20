@@ -1047,3 +1047,23 @@ def test_mt_is_the_script_path_run_quietly_by_its_shebang() -> None:
     script = SKILL.parent / "scripts" / "mt"
     assert script.read_text(encoding="utf-8").splitlines()[0] == "#!/usr/bin/env -S uv run -q --script"
     assert script.stat().st_mode & 0o111, "SKILL.md runs the script by its path"
+
+
+def test_profile_finalize_section_runs_after_done_and_registers_its_page() -> None:
+    """The profile's `## finalize` section is the user's step at the end: after `mt done`, before the final
+    report, best-effort, with no git change; its HTML page becomes the dashboard's Wrapup button."""
+    completion = section(TEXT, "### Completion", "## Errors")
+    marks = ("4. `mt done --status", "5. **The profile's `## finalize` section**", "6. Final report:")
+    done, step, report = (completion.index(s) for s in marks)
+    assert done < step < report
+    body = flat(completion[step:report])
+    assert "`mt artifact wrapup <absolute path of the page>`" in body
+    assert "best-effort" in body and "changes no git state" in body and "asks the user nothing" in body
+    assert "is not `stopped`" in body
+    assert "`<profile_dir>/companions/<id>/`" in body and "never through the Skill tool" in body
+    interview = flat(section(PROFILES_TEXT, "## The interview", "## Replacing a phase"))
+    assert "becomes a copy in the profile like any companion" in interview and "`companions/<id>/<file>`" in interview
+    assert "`## finalize` section" in flat(section(TEXT, "## Precedence", "### Running a companion"))
+    assert "Completion steps 5 and 6" in flat(section(TEXT, "## Recovery", "## Start"))
+    assert "SKILL.md Completion step 5" in flat(section(PROFILES_TEXT, "## What a profile holds", "## First use"))
+    assert "`## finalize` section" in flat(section(PROFILES_TEXT, "## The interview", "## Replacing a phase"))

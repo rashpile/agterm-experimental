@@ -96,7 +96,8 @@ Highest first:
 1. **This file**: safety (every step that touches git state, the stash, `review_base`, the branch and
    `.revmux/`), the Question rule, autonomy, gates and questions.
 2. **The profile's `## <phase>` section** in `<profile_dir>/profile.md` (`## brainstorm`, `## plan`,
-   `## exec`, `## review`): the user's own instructions for that phase.
+   `## exec`, `## review`): the user's own instructions for that phase. A `## finalize` section is the
+   user's own step at the end of the run (Completion step 5); the finalizer's prompt never gets it.
 3. **The companion copy's text**: the phase's entry file and the files it points to, and the exec
    prompts' surrounding instructions.
 
@@ -196,7 +197,9 @@ recipe's `stash-applied` marker then keeps it from being applied twice.
 `.revmux/` edits are set aside (Finalize step 2) and only the copies under `<state_dir>/revmux-tree/files/`
 hold them: never `git checkout -- .revmux` outside `mt revmux aside`, never delete or edit that directory;
 Completion step 3 or a stop puts them back (`mt revmux put-back`).
-`final_status` set → the run is over; only the final report is left. A stop that left the session
+`final_status` set → the run is over; only Completion steps 5 and 6 are left (the profile's `## finalize`
+section, then the final report; when the section's page is already registered, `mt artifact wrapup` again
+and go on). A stop that left the session
 without `mt done` (a failing workflow-state command) still owes the stash: see "Every stop gives the
 stash back" in Errors.
 
@@ -1071,10 +1074,22 @@ here is reported and does not block completion.
    reviewed), `stop_reason` is `skipped`, `verify-final` has not checked `reviewed_sha`, the `finalize`
    checkpoint did not end `ok`, or an error is set; then pick the status the message names. A second
    `mt done` is harmless.
-5. Final report: final status, the branch and (worktree mode) `worktree_path`, which tree was reviewed
+5. **The profile's `## finalize` section**, only when `<profile_dir>/profile.md` has one and the final
+   status is not `stopped`: read it and follow it now. Its inputs are the run's results: the task text,
+   `<state_dir>/design.md`, the plan (`plan_path`), the assumptions, decisions and review rounds in
+   `mt status`, the final status of step 4, `<state_dir>/stats.md` and the decisions report of step 1.
+   A skill the section names is a companion copy in the profile, `<profile_dir>/companions/<id>/`: read
+   its file and follow it as Running a companion says, never through the Skill tool.
+   It changes no git state (Precedence: no commit, no push, no edit under `<toplevel>`) and asks the user
+   nothing. It is best-effort, like Stats: a failure goes into the final report and changes neither the
+   final status nor anything before it. When it leaves an HTML page about the task, register that page:
+   `mt artifact wrapup <absolute path of the page>`. The dashboard's Wrapup button, disabled until then,
+   opens that file as it is, with its directory as the working directory.
+6. Final report: final status, the branch and (worktree mode) `worktree_path`, which tree was reviewed
    (`reviewed_sha`) and the final HEAD, the `info/exclude` edit if one was made, the stash outcome of
    step 3 (the spare `make-task <run_id>` entry when `entry=` named one), skipped archive housekeeping,
-   the changes table below, the stats, and the decisions report.
+   the changes table below, the stats, the decisions report, and the outcome of step 5 (the page's path,
+   or what failed).
 
    **Changes table: where the lines went.** Run `git -C <toplevel> diff --numstat <base> HEAD`, with
    `<base>` the stored `review_base` while it is still an ancestor of HEAD

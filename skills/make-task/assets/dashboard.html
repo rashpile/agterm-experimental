@@ -294,17 +294,23 @@
   }
 
   // artifacts open over the whole session as a wide floating panel; the dashboard keeps its pane.
-  // The viewer's tabs open the viewer on that tab; Changes opens revdiff.
+  // The viewer's tabs open the viewer on that tab; Changes opens revdiff; Wrapup opens its own page as it is.
   const FILES = [['design', 'Design'], ['plan', 'Plan'], ['progress', 'Progress log'], ['review', 'Review'],
-                 ['stats', 'Stats'], ['changes', 'Changes']];
+                 ['stats', 'Stats'], ['changes', 'Changes'], ['wrapup', 'Wrapup']];
   const VIEWER = ['design', 'plan', 'progress', 'review', 'stats'];
+  const PAGE = ['wrapup'];
   const artifact = id => list(state && state.artifacts).find(x => x.id === id);
   const isLive = id => id === 'review' && liveRound(state) != null;
   // Review opens from its first round on (mt review start writes the tab's data): live, failed or done,
   // with or without the review.md page that only `mt review result` renders
   const hasRound = id => id === 'review' && list(state && state.review).length > 0;
-  const openable = (id, a) => (VIEWER.includes(id) ? !!((a && a.html) || hasRound(id)) : !!(a && a.command));
+  const openable = (id, a) => (VIEWER.includes(id) ? !!((a && a.html) || hasRound(id))
+    : PAGE.includes(id) ? !!(a && a.html) : !!(a && a.command));
   function openArgs(id, a) {
+    if (PAGE.includes(id)) {
+      const html = String(a.html);
+      return { html, cwd: String(a.cwd || html.replace(/\/[^/]*$/, '')), javascript: true, sizePercent: 85, follow: true };
+    }
     if (!VIEWER.includes(id)) return { command: a.command, cwd: a.cwd, sizePercent: 90, follow: true };
     const run = String((state && state.state_dir) || '').replace(/\/+$/, '');
     return { html: `${run}/viewer-${id}.html`, cwd: run, javascript: true, sizePercent: 85, follow: true };
