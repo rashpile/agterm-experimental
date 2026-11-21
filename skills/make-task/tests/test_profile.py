@@ -462,6 +462,56 @@ def test_check_defaults_optional_unless_autonomous(mt: Callable[..., Result], pr
     assert out["ok"] is True, out
 
 
+def test_ask_leaves_a_question_out_at_any_autonomy(mt: Callable[..., Result], profile_factory: Factory) -> None:
+    """`ask` lists which of the two questions the run asks; the one left out needs its `defaults` key."""
+    d = profile_factory(config={"ask": ["mode"], "defaults": {"mode": "worktree", "leftovers": "fix"}})
+    _, out = check(mt, d)
+    assert out["ok"] is True and out["warnings"] == [], out
+    values, _ = MT.run_profile(d)
+    assert values["ask"] == ["mode"] and values["autonomy"] == "default" and values["gates"] == []
+    assert profile(mt, "status")[1]["ask"] == ["mode"]
+    reconfig(d, lambda c: c["defaults"].pop("leftovers"))
+    _, out = check(mt, d)
+    assert out["ok"] is False
+    assert out["errors"] == ["defaults.leftovers: `ask` leaves it out and needs it (leave or fix)"]
+
+
+@pytest.mark.parametrize(
+    ("config", "ask"),
+    [
+        ({}, ["mode", "leftovers"]),
+        ({"autonomy": "interactive"}, ["mode", "leftovers"]),
+        ({"autonomy": "autonomous"}, []),
+        ({"autonomy": "autonomous", "ask": ["leftovers"]}, ["leftovers"]),
+        ({"ask": []}, []),
+        ({"ask": ["leftovers", "mode"]}, ["mode", "leftovers"]),
+    ],
+)
+def test_ask_resolves_to_the_profile_or_the_preset(
+    mt: Callable[..., Result], profile_factory: Factory, config: dict[str, Any], ask: list[str]
+) -> None:
+    d = profile_factory(config=config)
+    _, out = check(mt, d)
+    assert out["ok"] is True, out
+    assert MT.run_profile(d)[0]["ask"] == ask
+
+
+@pytest.mark.parametrize(
+    ("value", "error"),
+    [
+        ("leftovers", "ask: expected a list of mode, leftovers"),
+        (["gates"], "ask: unknown question 'gates'"),
+        (["mode", "mode"], "ask: a question is listed twice"),
+    ],
+)
+def test_ask_bad_values_are_errors(
+    mt: Callable[..., Result], profile_factory: Factory, value: Any, error: str
+) -> None:
+    d = profile_factory(config={"ask": value})
+    _, out = check(mt, d)
+    assert out["ok"] is False and any(error in e for e in out["errors"]), out
+
+
 def test_check_reviewer_model_is_optional(mt: Callable[..., Result], profile_factory: Factory) -> None:
     d = profile_factory()
     (d / PLANNING / "agents" / "plan-review.md").write_text("---\nname: plan-review\n---\nbody\n")

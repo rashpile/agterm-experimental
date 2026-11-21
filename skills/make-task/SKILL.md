@@ -71,7 +71,7 @@ when the part below `companions/<id>/` holds it (a `phases` path in `profile.md`
 | key | value |
 |---|---|
 | `<profile_name>`, `<profile_dir>` | the profile and its directory (`profile.md`, `companions/`, `data/`) |
-| `<autonomy>`, `<gates>`, `<defaults>` | the autonomy level, the gates the run shows, the `defaults` map (`defaults.mode`, `defaults.leftovers`); see the Question rule |
+| `<autonomy>`, `<gates>`, `<ask>`, `<defaults>` | the autonomy level, the gates the run shows, which of the worktree and leftovers questions it asks, the `defaults` map (`defaults.mode`, `defaults.leftovers`); see the Question rule |
 | `<brainstorm_entry>` | the brainstorm companion's entry file |
 | `<plan_entry>`, `<plan_reviewer>`, `<plan_reviewer_model>` | the plan companion's entry file; the plan reviewer's file (null: no plan review) and its frontmatter `model` |
 | `<exec_root>` | the exec companion's root; finalize uses the exec companion too |
@@ -274,17 +274,21 @@ status `active`. Smaller steps: `mt activity "<what is happening now>"`. Timelin
 Each autonomy level is a preset. The classes it asks go to the user (Questions); every other class is
 `mt assume`:
 
-| `<autonomy>` | brainstorm questions asked | the design | gates (preset) | worktree question, leftovers question |
+| `<autonomy>` | brainstorm questions asked | the design | gates (preset) | worktree question, leftovers question (preset) |
 |---|---|---|---|---|
 | `autonomous` | none: class 3 too becomes `mt assume` with the reason | written once | none | not asked: answered from `defaults` |
 | `default` | class 3 | written once | none | asked |
 | `interactive` | classes 2 and 3 (class 2 with the recommendation marked) | validated section by section (Brainstorm step 2) | `design`, `plan`, `review-round` | asked |
 
 `<gates>` is the list this run shows: the profile's `gates` when its `profile.md` sets them, else the
-preset's. Under `autonomous` the two questions are answered from `<defaults>` and each answer is recorded
-with `mt assume`: the worktree question from `defaults.mode` (`worktree` or `inplace`; it never overrides
-the linked-worktree rule, which always runs in place), the leftovers question from `defaults.leftovers`
-(`fix` or `leave`).
+preset's. `<ask>` is the list of those two questions this run asks, `mode` for the worktree question and
+`leftovers` for the leftovers question: the profile's `ask` when its `profile.md` sets it, else the
+preset's (none under `autonomous`, both otherwise; null in a run started before this key: the preset's).
+A question `<ask>` leaves out is not asked at any autonomy level: it is answered from `<defaults>` and the
+answer is recorded with `mt assume`: the worktree question from `defaults.mode` (`worktree` or `inplace`;
+it never overrides the linked-worktree rule, which always runs in place), the leftovers question from
+`defaults.leftovers` (`fix` or `leave`). `ask` changes nothing else: the brainstorm questions, the gates
+and the error questions stay as `<autonomy>` and `<gates>` set them.
 
 After brainstorm every question becomes `mt assume` with the reason, at every level. The only later
 questions are the error questions (Errors), which are asked at every level, the gates in `<gates>` and the
@@ -447,9 +451,9 @@ Inputs: the user's task text (the invocation without `--profile` and `--update`)
    view shows the section. A revision changes the section and asks its question again.
 3. The preflight question, only when Start step 3's preflight failed (Errors row "revmux preflight fails at
    Start"). A review the profile skips has no question.
-4. **Last question — worktree or in place**, only when `linked_worktree` is false. Under `autonomous` there
-   is no question: `mt set mode=<defaults.mode>` and
-   `mt assume "mode <defaults.mode>" --why "autonomy autonomous: defaults.mode"` (on a dirty tree name in
+4. **Last question — worktree or in place**, only when `linked_worktree` is false. When `<ask>` lacks
+   `mode` (the `autonomous` preset, or the profile's `ask`) there is no question: `mt set mode=<defaults.mode>` and
+   `mt assume "mode <defaults.mode>" --why "profile <profile_name>: defaults.mode, not asked"` (on a dirty tree name in
    `--why` which paths stay behind in worktree mode, or are stashed in place; in worktree mode with
    `branch` set and not `default_branch`, say in `--why` that the worktree starts where
    `worktree.baseRef` puts it, so `<branch>`'s own commits may be absent from it). Otherwise the question:
@@ -818,9 +822,12 @@ and short titles; each finding with file:line and its mechanism is in the Review
 - Only minors or open questions → options `fix` "Fix the listed minors" / `leave` "Leave them"; typed text
   answers open questions or narrows the list.
 
-Under `autonomous` there is no question: the answer is `defaults.leftovers` (`fix` or `leave`), recorded with
-`mt assume "leftovers: <defaults.leftovers>" --why "autonomy autonomous: defaults.leftovers"`; open
-questions stay unanswered and go to the final report.
+When `<ask>` lacks `leftovers` (the `autonomous` preset, or the profile's `ask`) there is no question,
+whatever is open, gating or deferred findings as well as minors: the answer is `defaults.leftovers` (`fix`
+or `leave`), recorded with
+`mt assume "leftovers: <defaults.leftovers>" --why "profile <profile_name>: defaults.leftovers, not asked"`.
+`fix` then takes the whole list the question would have offered; open questions stay unanswered and go to
+the final report.
 
 The fix answer runs one fixer subagent between `mt checkpoint begin review.fix.leftovers` and
 `mt checkpoint end review.fix.leftovers` (`FINDINGS_LIST` = the open gating and deferred findings, or the

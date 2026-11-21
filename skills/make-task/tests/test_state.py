@@ -300,6 +300,7 @@ def run_profile_values(d: Path) -> dict:
         "profile_dir": str(d),
         "autonomy": config["autonomy"],
         "gates": [],
+        "ask": ["mode", "leftovers"],
         "defaults": config["defaults"],
         "brainstorm_entry": str(companion_path(d, "brainstorm", "entry")),
         "plan_entry": str(companion_path(d, "plan", "entry")),

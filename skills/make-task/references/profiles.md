@@ -24,7 +24,7 @@ time, with the recommended option first. A question that `## Preferences` alread
 
 ```
 <profile_dir>/
-├── profile.md        frontmatter: schema, template, autonomy, gates, defaults, phases; body: ## <phase> sections
+├── profile.md        frontmatter: schema, template, autonomy, gates, ask, defaults, phases; body: ## <phase> sections
 ├── UPDATE.md         frontmatter: rewritten_for, each companion's source and version; body: ## Preferences, ## Changes, ## Wanted
 ├── LICENSES/<id>     the companions' licenses
 ├── companions/<id>/  the copies a run reads and runs
@@ -58,8 +58,12 @@ The `phases` map in `profile.md` names a companion for each phase and paths insi
 SKILL.md Start step 3 counts it as a failed preflight, so the run asks the preflight question. Finalize is not
 in the map: it always runs with the exec companion. A `## finalize` section in the body is the user's own
 step at the end of the run (SKILL.md Completion step 5), not an instruction to the finalizer. `autonomy` is `autonomous`, `default` or
-`interactive`; `gates`, when present, replaces the preset's gates; `defaults.mode` and
-`defaults.leftovers` answer the worktree and leftovers questions under `autonomous` (SKILL.md Question rule).
+`interactive`; `gates`, when present, replaces the preset's gates; `ask`, when present, lists which of
+the worktree question (`mode`) and the leftovers question (`leftovers`) the run asks, replacing the
+preset's (none under `autonomous`, both otherwise); `defaults.mode` and `defaults.leftovers` answer the
+one it does not ask, so `check` fails a profile that leaves a question out and has no `defaults` key for
+it (SKILL.md Question rule). `ask: [mode]` with `defaults.leftovers: fix` fixes what the review left open
+without asking, at any autonomy level.
 
 The body of `UPDATE.md` has three sections:
 
@@ -113,6 +117,9 @@ one line or one map entry at a time, never by rewriting the whole frontmatter.
    and the current value recommended. Write the answer into the `autonomy:` line.
    - `autonomous` answers the worktree and leftovers questions from `defaults`. Show `defaults.mode` and
      `defaults.leftovers` and ask whether to keep them.
+   - The worktree and leftovers questions, only when the user wants one answered without asking (or
+     asked under `autonomous`): write `ask: [<question>, ...]` with `mode` and `leftovers` to pick from,
+     and the `defaults` key of each question left out. No `ask:` line means the preset's.
    - Gates only when the user wants other gates than the preset's: write `gates: [<gate>, ...]` with
      `design`, `plan` and `review-round` to pick from. `gates: []` turns them off; no `gates:` line means
      the preset's.

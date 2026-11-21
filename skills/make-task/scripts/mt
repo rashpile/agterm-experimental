@@ -62,6 +62,8 @@ Init: `init --profile-dir DIR` runs `profile check` on DIR (without the update l
 anything is written and fails with its errors, creating no run; a `template: true` profile is
 refused too. It stores the profile's resolved values as flat run-state keys, printed by init and
 `status`: profile_name, profile_dir, autonomy, gates (the profile's or its autonomy preset's),
+ask (which of the worktree (`mode`) and `leftovers` questions the run asks: the profile's or the
+preset's, none under autonomous and both otherwise; a question left out needs its `defaults` key),
 defaults, brainstorm_entry, plan_entry, plan_reviewer, plan_reviewer_model (the reviewer's
 frontmatter `model`), exec_root (the exec companion), exec_scripts, exec_rules, exec_data
 (<profile>/data/<exec companion>), review_entry, review_scripts, review_data; paths are absolute
@@ -163,7 +165,7 @@ Profiles: `profile` commands take --profile NAME (default `default`, under
 <config root>/profiles/) or --dir DIR (any profile dir, e.g. the template), never --run, and
 print one JSON line. `resolve` prints {"name", "dir", "status": "ok"|"missing"} (ok: profile.md
 exists). `check` validates profile.md (schema, phases, skip rules, entries, the exec and review
-companion contracts, the plan reviewer's frontmatter, autonomy, gates, defaults, tokens left in
+companion contracts, the plan reviewer's frontmatter, autonomy, gates, ask, defaults, tokens left in
 the copies and profile.md, and UPDATE.md's `rewritten_for`) and prints {"ok", "errors",
 "warnings", "updates"}, exit 1 when not ok. A token no run fills in is an error: a path variable
 the install did not rewrite (${CLAUDE_PLUGIN_ROOT}, ${CLAUDE_SKILL_DIR}, ${CLAUDE_PLUGIN_DATA},
@@ -172,7 +174,7 @@ scanned as an install would leave it. Any other $CLAUDE_… variable is a warnin
 (the dir install-default, import and accept rewrote the copies for) other than the profile's dir
 is an error: the profile was copied or moved. A review `requires` command missing on PATH is a
 warning (`requires` is a review field only); `updates` are outdated's for the make-task: and
-plugin: sources (one it cannot read is a warning). `status` prints autonomy, gates (resolved),
+plugin: sources (one it cannot read is a warning). `status` prints autonomy, gates and ask (resolved),
 defaults, phases and every companion with its source, version and `modified` (companions/<id>
 differs from upstream/<id>; null without an upstream/<id>).
 `install-default` installs the skill's template assets/profiles/default (profile.md must say
@@ -3138,9 +3140,11 @@ AUTONOMY_PRESETS: dict[str, tuple[str, ...]] = {
     "default": (),
     "interactive": GATES,
 }
-# `defaults` answer the worktree and leftovers questions under `autonomous`; defaults.mode goes to `mt set mode=`
+# `defaults` answer the worktree and leftovers questions the run does not ask; defaults.mode goes to `mt set mode=`
 DEFAULTS_CHOICES = {"mode": SET_CHOICES["mode"], "leftovers": ("leave", "fix")}
-PROFILE_KEYS = ("schema", "template", "autonomy", "gates", "defaults", "phases")
+# the two questions a profile's `ask` list can keep: `mode` (worktree or in place) and `leftovers`
+ASK = tuple(DEFAULTS_CHOICES)
+PROFILE_KEYS = ("schema", "template", "autonomy", "gates", "ask", "defaults", "phases")
 # the path variables a profile install rewrites (import, install-default, fetch)
 PATH_VARS = ("CLAUDE_PLUGIN_ROOT", "CLAUDE_SKILL_DIR", "CLAUDE_PLUGIN_DATA")
 _VARS = "|".join(PATH_VARS)
@@ -3172,6 +3176,7 @@ PROFILE_STATE_KEYS = (
     "profile_dir",
     "autonomy",
     "gates",
+    "ask",
     "defaults",
     "brainstorm_entry",
     "plan_entry",
@@ -3404,6 +3409,15 @@ def resolved_gates(data: dict[str, Any]) -> list[str]:
     return list(AUTONOMY_PRESETS.get(str(data.get("autonomy")), ()))
 
 
+def resolved_ask(data: dict[str, Any]) -> list[str]:
+    """Which of the ASK questions the run asks: the profile's `ask`, else its autonomy preset's (none under
+    `autonomous`, both otherwise). The others are answered from `defaults`."""
+    ask = data.get("ask")
+    if isinstance(ask, list):
+        return [q for q in ASK if q in ask]
+    return [] if data.get("autonomy") == "autonomous" else list(ASK)
+
+
 def line_of(text: str, pos: int) -> int:
     """The 1-based line number of position pos in text."""
     return text.count("\n", 0, pos) + 1
@@ -3595,11 +3609,23 @@ def check_profile(d: Path, *, with_updates: bool = True) -> dict[str, Any]:
     if defaults is not None and not isinstance(defaults, dict):
         errors.append(f"defaults: expected a mapping with {', '.join(DEFAULTS_CHOICES)}, got {defaults!r}")
         defaults = None
+    ask = data.get("ask")
+    if ask is not None:
+        if not isinstance(ask, list):
+            errors.append(f"ask: expected a list of {', '.join(ASK)}, got {ask!r}")
+        else:
+            for q in ask:
+                if q not in ASK:
+                    errors.append(f"ask: unknown question {q!r} (questions: {', '.join(ASK)})")
+            if len({str(q) for q in ask}) != len(ask):
+                errors.append("ask: a question is listed twice")
+    asked = resolved_ask(data)
     for key, choices in DEFAULTS_CHOICES.items():
         value = (defaults or {}).get(key)
         if value is None:
-            if autonomy == "autonomous":
-                errors.append(f"defaults.{key}: autonomy autonomous needs it ({' or '.join(choices)})")
+            if key not in asked:
+                who = "`ask` leaves it out and" if isinstance(ask, list) else "autonomy autonomous"
+                errors.append(f"defaults.{key}: {who} needs it ({' or '.join(choices)})")
         elif value not in choices:
             errors.append(f"defaults.{key}: expected {' or '.join(choices)}, got {value!r}")
     for key in defaults or {}:
@@ -3683,6 +3709,7 @@ def profile_status(name: str, d: Path) -> dict[str, Any]:
         "template": data.get("template", False),
         "autonomy": data.get("autonomy"),
         "gates": resolved_gates(data),
+        "ask": resolved_ask(data),
         "defaults": data.get("defaults"),
         "phases": data.get("phases"),
         "companions": companions,
@@ -3718,6 +3745,7 @@ def run_profile(d: Path) -> tuple[dict[str, Any], list[str]]:
         profile_dir=str(d),
         autonomy=data["autonomy"],
         gates=resolved_gates(data),
+        ask=resolved_ask(data),
         defaults=None if defaults is None else {k: defaults[k] for k in DEFAULTS_CHOICES if k in defaults},
     )
 

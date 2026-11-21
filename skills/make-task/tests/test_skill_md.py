@@ -329,6 +329,12 @@ def test_question_rule_names_the_presets_and_gates() -> None:
     assert "mt set mode=<defaults.mode>" in brainstorm and "`autonomous`" in brainstorm
     leftovers = section(TEXT, "### Leftovers question", "### Finalize")
     assert "`defaults.leftovers`" in leftovers and "`autonomous`" in leftovers
+    # the profile's `ask` list takes either question away at any autonomy level; nothing else changes
+    assert "A question `<ask>` leaves out is not asked at any autonomy level" in flat(rule)
+    assert "the brainstorm questions, the gates and the error questions stay" in flat(rule)
+    assert "When `<ask>` lacks `mode`" in flat(brainstorm) and "When `<ask>` lacks `leftovers`" in flat(leftovers)
+    assert "gating or deferred findings as well as minors" in flat(leftovers)
+    assert "`ask: [<question>, ...]`" in section(PROFILES_TEXT, "## The interview", "## Replacing a phase")
 
 
 @pytest.mark.parametrize(("doc", "text"), [("SKILL.md", TEXT), ("profiles.md", PROFILES_TEXT)])
